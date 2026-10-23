@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Halhadus/va-request/report/v1",
+  "title": "va-request test report v1",
+  "type": "object",
+  "required": ["schema", "run_id", "profile", "source", "platform", "suites", "complete", "exit_code", "summary"],
+  "properties": {
+    "schema": {"const": "va-request.test-report/v1"},
+    "run_id": {"type": "string"},
+    "profile": {"enum": ["unit", "hardware", "smoke", "acceptance", "rk3588"]},
+    "complete": {"type": "boolean"},
+    "exit_code": {"type": "integer"},
+    "source": {"type": "object", "required": ["commit", "tree", "dirty", "driver_sha256"]},
+    "platform": {"type": "object", "required": ["machine", "kernel"]},
+    "suites": {"type": "array", "items": {"$ref": "#/$defs/result"}},
+    "summary": {"type": "object", "required": ["pass", "fail", "skip", "complete", "exit_code"], "properties": {"pass": {"type": "integer", "minimum": 0}, "fail": {"type": "integer", "minimum": 0}, "skip": {"type": "integer", "minimum": 0}, "complete": {"type": "boolean"}, "exit_code": {"type": "integer"}}}
+  },
+  "$defs": {
+    "result": {"type": "object", "required": ["name", "status", "exit_code"], "properties": {"name": {"type": "string"}, "status": {"enum": ["PASS", "FAIL", "SKIP"]}, "exit_code": {"type": ["integer", "null"]}, "duration_s": {"type": "number", "minimum": 0}, "cases": {"type": "array", "items": {"$ref": "#/$defs/result"}}}}
+  }
+}
