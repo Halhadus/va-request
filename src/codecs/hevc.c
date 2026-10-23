@@ -375,7 +375,7 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     _Static_assert(sizeof(sps) <= sizeof(ctx->g_ctrl_payload), "grow cache");
     if (!ctx->g_ctrl_valid ||
         memcmp(ctx->g_ctrl_payload, &sps, sizeof(sps)) != 0) {
-        if (vareq_set_global_controls(v4l2_fd, &sps_ctrls) < 0) {
+        if (vareq_codec_controls(ctx, -1, &sps_ctrls) < 0) {
             fprintf(stderr, "v4l2request: failed to set HEVC SPS\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
@@ -416,7 +416,7 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     pps_ctrls.controls = &pps_ctrl;
     pps_ctrls.count = 1;
 
-    if (vareq_set_request_controls(request_fd, v4l2_fd, &pps_ctrls) < 0) {
+    if (vareq_codec_controls(ctx, request_fd, &pps_ctrls) < 0) {
         fprintf(stderr, "v4l2request: failed to set HEVC PPS\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
@@ -442,7 +442,7 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     sm_ctrls.controls = &sm_ctrl;
     sm_ctrls.count = 1;
 
-    if (vareq_set_request_controls(request_fd, v4l2_fd, &sm_ctrls) < 0) {
+    if (vareq_codec_controls(ctx, request_fd, &sm_ctrls) < 0) {
         fprintf(stderr, "v4l2request: failed to set HEVC scaling matrix\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
@@ -457,7 +457,7 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     dec_ctrls.controls = &dec_ctrl;
     dec_ctrls.count = 1;
 
-    if (vareq_set_request_controls(request_fd, v4l2_fd, &dec_ctrls) < 0) {
+    if (vareq_codec_controls(ctx, request_fd, &dec_ctrls) < 0) {
         fprintf(stderr, "v4l2request: failed to set HEVC decode params\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }

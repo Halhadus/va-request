@@ -24,6 +24,7 @@ struct vareq_node_fmts {
     int request_api;
     uint64_t h264_max_area;
     uint32_t h264_profiles;
+    struct vareq_compat_identity identity;
 };
 
 int vareq_codec_coded_fourcc(enum vareq_codec codec, uint32_t *fourcc_out);
@@ -31,7 +32,7 @@ const char *vareq_codec_name(enum vareq_codec codec);
 void vareq_fourcc_to_str(uint32_t fourcc, char out[5]);
 
 /* Matching OUTPUT fourcc and a usable request API are mandatory. H.264
- * candidates are ranked by advertised extended profiles, then frame area.
+ * candidates use compatibility preference, then advertised extended profiles and frame area.
  * Returns NULL if none match. Does not open devices. */
 const char *vareq_pick_device_for_codec(enum vareq_codec codec,
                                          const struct vareq_node_fmts *nodes,

@@ -857,7 +857,7 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
         _Static_assert(sizeof(*sps) <= sizeof(ctx->g_ctrl_payload), "grow cache");
         if (!ctx->g_ctrl_valid ||
             memcmp(ctx->g_ctrl_payload, sps, sizeof(*sps)) != 0) {
-            if (vareq_set_global_controls(v4l2_fd, &g_sps_ctrls) < 0) {
+            if (vareq_codec_controls(ctx, -1, &g_sps_ctrls) < 0) {
                 fprintf(stderr,
                         "v4l2request: H.264 global SPS not accepted\n");
                 if (ctx->capture_bufs_allocd <= 0)
@@ -899,7 +899,7 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
     batch.controls = pic_ctrls;
     batch.count = 3;
 
-    if (vareq_set_request_controls(request_fd, v4l2_fd, &batch) < 0) {
+    if (vareq_codec_controls(ctx, request_fd, &batch) < 0) {
         fprintf(stderr, "v4l2request: failed to set H.264 picture controls\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
@@ -915,7 +915,7 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
         sm_ctrls.controls = &sm_ctrl;
         sm_ctrls.count = 1;
 
-        if (vareq_set_request_controls(request_fd, v4l2_fd, &sm_ctrls) < 0) {
+        if (vareq_codec_controls(ctx, request_fd, &sm_ctrls) < 0) {
             fprintf(stderr, "v4l2request: failed to set H.264 scaling matrix\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }

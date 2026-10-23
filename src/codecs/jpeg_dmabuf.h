@@ -37,14 +37,14 @@ static unsigned jpeg_prime_plane(const VADRMPRIMESurfaceDescriptor *d, unsigned 
     return p && d->fourcc == VA_FOURCC_YV12 ? 3 - p : p;
 }
 
-static int jpeg_dma_format(int fd, struct v4l2_format *f, const VADRMPRIMESurfaceDescriptor *d, unsigned raw)
+static int jpeg_dma_format(struct vareq_context *ctx, struct v4l2_format *f, const VADRMPRIMESurfaceDescriptor *d, unsigned raw)
 {
     *f = (struct v4l2_format){.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE};
     f->fmt.pix_mp.width = d->width; f->fmt.pix_mp.height = d->height;
     f->fmt.pix_mp.pixelformat = raw; f->fmt.pix_mp.field = V4L2_FIELD_NONE;
     f->fmt.pix_mp.num_planes = raw == V4L2_PIX_FMT_NV12 ? 1 : raw == V4L2_PIX_FMT_NV12M ? 2 : 3;
     for (unsigned p = 0; p < f->fmt.pix_mp.num_planes; p++) f->fmt.pix_mp.plane_fmt[p].bytesperline = d->layers[0].pitch[jpeg_prime_plane(d, p)];
-    return xioctl(fd, VIDIOC_S_FMT, f);
+    return vareq_codec_format(ctx, f);
 }
 
 static int jpeg_dma_spans(const struct v4l2_format *f, const VADRMPRIMESurfaceDescriptor *d, unsigned raw)

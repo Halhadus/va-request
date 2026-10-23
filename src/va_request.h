@@ -188,6 +188,7 @@ struct vareq_m2m_state {
 
 /* Per-context state (one decode session) */
 struct vareq_context {
+    struct vareq_compat_backend compat_backend;
     VAContextID context_id;
     VAConfigID config_id;
     enum vareq_codec codec;
@@ -427,6 +428,14 @@ void vareq_decode_trace(const struct vareq_context *ctx, const char *stage, int 
 
 /* Device helpers (device.c) */
 int vareq_open_device(const char *path);
+int vareq_codec_backend_init(struct vareq_context *ctx);
+void vareq_close_context_device(struct vareq_context *ctx);
+int vareq_codec_format(struct vareq_context *ctx, struct v4l2_format *format);
+int vareq_codec_control(struct vareq_context *ctx, struct v4l2_control *control);
+int vareq_codec_prepare_controls(struct vareq_context *ctx, int request_fd, struct v4l2_ext_controls *controls);
+int vareq_codec_controls(struct vareq_context *ctx, int request_fd, struct v4l2_ext_controls *controls);
+int vareq_setup_codec_output(struct vareq_context *ctx, uint32_t codec_format, int width, int height);
+int vareq_setup_codec_capture(struct vareq_context *ctx, int width, int height, uint32_t pixelformat, int count);
 int vareq_open_media_for_device(const char *video_path);
 int vareq_request_alloc(int media_fd);
 int vareq_setup_output_queue(int fd, uint32_t codec_format, int width, int height);

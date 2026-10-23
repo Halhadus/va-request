@@ -37,6 +37,7 @@ const char *vareq_pick_device_for_codec(enum vareq_codec codec,
     unsigned i, j;
     const struct vareq_node_fmts *best = NULL;
     unsigned best_profiles = 0;
+    int best_score = -1;
 
     if (!nodes || vareq_codec_coded_fourcc(codec, &want) < 0)
         return NULL;
@@ -49,15 +50,16 @@ const char *vareq_pick_device_for_codec(enum vareq_codec codec,
         for (j = 0; j < nodes[i].n_fourccs; j++) {
             if (nodes[i].fourccs[j] != want)
                 continue;
-            if (codec != VAREQ_CODEC_H264)
-                return nodes[i].path;
-            unsigned profiles =
+            struct vareq_compat_codec job = {.direction = VAREQ_COMPAT_DECODE, .coded_format = want};
+            int score = vareq_compat_codec_score(&nodes[i].identity, &job);
+            if (score < 0) continue;
+            unsigned profiles = codec == VAREQ_CODEC_H264 ?
                 !!(nodes[i].h264_profiles & (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH_10)) +
-                2 * !!(nodes[i].h264_profiles & (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH_422));
-            if (!best || profiles > best_profiles ||
-                (profiles == best_profiles && nodes[i].h264_max_area > best->h264_max_area)) {
+                2 * !!(nodes[i].h264_profiles & (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH_422)) : 0;
+            if (!best || score > best_score || (score == best_score && (profiles > best_profiles ||
+                (codec == VAREQ_CODEC_H264 && profiles == best_profiles && nodes[i].h264_max_area > best->h264_max_area)))) {
                 best = &nodes[i];
-                best_profiles = profiles;
+                best_profiles = profiles; best_score = score;
             }
             break;
         }
@@ -395,6 +397,7 @@ void vareq_scan_vpp_devices(struct vareq_driver_data *dd)
 static void fill_decoder_node(struct vareq_node_fmts *dst,
                               const struct scan_node *src)
 {
+    dst->identity = src->identity;
     dst->path = src->path;
     dst->fourccs = src->out_fcc;
     dst->n_fourccs = (unsigned)src->nout;
@@ -525,6 +528,13 @@ static int validate_cached_node(const char *path, enum vareq_codec codec)
         int nc = valid ? vareq_enum_capture_fourccs(fd, capture, VAREQ_PROBE_MAX_FOURCCS) : -1;
         valid = nc > 0 && (codec == VAREQ_CODEC_JPEG_ENC ? fourcc_in(capture, nc, V4L2_PIX_FMT_JPEG) && jpeg_encoder_usable(fd) : count > 0 && vareq_vpp_formats_usable(formats, count, capture, nc));
     }
+    if (valid && codec != VAREQ_CODEC_VPP) {
+        struct vareq_compat_identity identity; vareq_compat_identity(&cap, &identity);
+        struct vareq_compat_codec job = {.direction = codec == VAREQ_CODEC_JPEG_ENC ? VAREQ_COMPAT_ENCODE : VAREQ_COMPAT_DECODE,
+            .coded_format = V4L2_PIX_FMT_JPEG};
+        if (codec != VAREQ_CODEC_JPEG_ENC) valid = vareq_codec_coded_fourcc(codec, &job.coded_format) == 0;
+        if (valid) valid = vareq_compat_codec_score(&identity, &job) >= 0;
+    }
     close(fd); return valid;
 }
 
@@ -627,7 +637,7 @@ static int scan_all_uncached(char *h264_out, char *hevc_out, char *av1_out,
 {
     struct vareq_node_fmts nodes[VAREQ_PROBE_MAX_NODES];
     struct scan_node raw[VAREQ_PROBE_MAX_NODES];
-    int n_raw, i, n_nodes = 0, vpp_rotate = 0;
+    int n_raw, i, n_nodes = 0, vpp_rotate = 0, jpeg_score = -1;
     const char *p;
 
     if (h264_out && out_len) h264_out[0] = 0;
@@ -640,8 +650,11 @@ static int scan_all_uncached(char *h264_out, char *hevc_out, char *av1_out,
 
     n_raw = scan_nodes(raw, VAREQ_PROBE_MAX_NODES);
     for (i = 0; i < n_raw && n_nodes < VAREQ_PROBE_MAX_NODES; i++) {
-        if (raw[i].has_jpeg_encoder && jpeg_enc_out && out_len && !jpeg_enc_out[0])
-            copy_path(jpeg_enc_out, out_len, raw[i].path);
+        if (raw[i].has_jpeg_encoder && jpeg_enc_out && out_len) {
+            struct vareq_compat_codec job = {.direction = VAREQ_COMPAT_ENCODE, .coded_format = V4L2_PIX_FMT_JPEG};
+            int score = vareq_compat_codec_score(&raw[i].identity, &job);
+            if (score >= 0 && score > jpeg_score) { copy_path(jpeg_enc_out, out_len, raw[i].path); jpeg_score = score; }
+        }
         if (vareq_codec_enabled(VAREQ_CODEC_VPP) && !raw[i].has_jpeg_cap &&
             !node_has_coded_output(&raw[i]) &&
             vareq_vpp_formats_usable(raw[i].out_fcc, raw[i].nout, raw[i].cap_fcc, raw[i].ncap) &&

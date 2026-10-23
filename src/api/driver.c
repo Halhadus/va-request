@@ -116,7 +116,7 @@ static int codec_for_profile(VAProfile profile, enum vareq_codec *codec)
     return -1;
 }
 
-static const char *cached_device(struct vareq_driver_data *dd, enum vareq_codec codec)
+static const char *cached_device(const struct vareq_driver_data *dd, enum vareq_codec codec)
 {
     const char *p = NULL;
 
@@ -133,7 +133,7 @@ static const char *cached_device(struct vareq_driver_data *dd, enum vareq_codec 
     return (p && p[0]) ? p : NULL;
 }
 
-static int profile_available(const struct vareq_driver_data *dd, VAProfile profile)
+static int kernel_profile_available(const struct vareq_driver_data *dd, VAProfile profile)
 {
     if (profile == VAProfileHEVCMain || profile == VAProfileHEVCMain10) {
         unsigned bit = profile == VAProfileHEVCMain ? V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN : V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_10;
@@ -152,6 +152,26 @@ static int profile_available(const struct vareq_driver_data *dd, VAProfile profi
     default: return 1;
     }
     return !!(dd->h264_profiles & (1u << bit));
+}
+
+static int profile_available(const struct vareq_driver_data *dd, VAProfile profile)
+{
+    if (!kernel_profile_available(dd, profile)) return 0;
+    if (!vareq_compat_backend_needed()) return 1;
+    enum vareq_codec kind;
+    if (codec_for_profile(profile, &kind) < 0 || kind == VAREQ_CODEC_VPP) return 1;
+    const char *path = cached_device(dd, kind);
+    if (!path) return 0;
+    int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return 0;
+    struct v4l2_capability cap = {0};
+    int result = vareq_xioctl(fd, VIDIOC_QUERYCAP, &cap); close(fd);
+    if (result < 0) return 0;
+    struct vareq_compat_identity identity; vareq_compat_identity(&cap, &identity);
+    struct vareq_compat_codec codec = {.direction = kind == VAREQ_CODEC_JPEG_ENC ? VAREQ_COMPAT_ENCODE : VAREQ_COMPAT_DECODE,
+        .coded_format = V4L2_PIX_FMT_JPEG, .va_profile = profile, .profile_known = 1};
+    if (kind != VAREQ_CODEC_JPEG_ENC && vareq_codec_coded_fourcc(kind, &codec.coded_format) < 0) return 0;
+    return vareq_compat_codec_score(&identity, &codec) >= 0;
 }
 
 /*
@@ -1220,6 +1240,8 @@ vareq_create_context(VADriverContextP ctx,
         goto fail;
     }
 
+    if (vareq_codec_backend_init(context) < 0) goto fail;
+
     /* Encoding and raw processing use M2M queues without decode requests. */
     if (context->codec == VAREQ_CODEC_JPEG_ENC ||
         context->codec == VAREQ_CODEC_VPP) {
@@ -1251,7 +1273,7 @@ vareq_create_context(VADriverContextP ctx,
     }
 
     /* Setup output queue (compressed input) */
-    int n_out = vareq_setup_output_queue(context->v4l2_fd, v4l2_format,
+    int n_out = vareq_setup_codec_output(context, v4l2_format,
                                           picture_width, picture_height);
     if (n_out <= 0) {
         fprintf(stderr, "v4l2request: failed to setup output queue\n");

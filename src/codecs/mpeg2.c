@@ -198,6 +198,7 @@ VAStatus vareq_mpeg2_translate(struct vareq_context *ctx,
         _Static_assert(sizeof(seq) <= sizeof(ctx->g_ctrl_payload), "grow cache");
         if (!ctx->g_ctrl_valid ||
             memcmp(ctx->g_ctrl_payload, &seq, sizeof(seq)) != 0) {
+            if (vareq_codec_prepare_controls(ctx, -1, &gctrls) < 0) return VA_STATUS_ERROR_OPERATION_FAILED;
             if (vareq_set_global_controls(v4l2_fd, &gctrls) < 0)
                 fprintf(stderr, "v4l2request: warning: MPEG-2 global sequence failed\n");
             memcpy(ctx->g_ctrl_payload, &seq, sizeof(seq));
@@ -236,7 +237,7 @@ VAStatus vareq_mpeg2_translate(struct vareq_context *ctx,
         ctrls_arr[2].size = sizeof(quant);
         ctrls.controls = ctrls_arr;
         ctrls.count = 3;
-        if (vareq_set_request_controls(request_fd, v4l2_fd, &ctrls) < 0) {
+        if (vareq_codec_controls(ctx, request_fd, &ctrls) < 0) {
             fprintf(stderr, "v4l2request: failed to set MPEG-2 request controls\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }

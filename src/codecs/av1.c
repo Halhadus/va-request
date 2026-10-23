@@ -1233,7 +1233,7 @@ VAStatus vareq_av1_translate(struct vareq_context *ctx,
     _Static_assert(sizeof(seq) <= sizeof(ctx->g_ctrl_payload), "grow cache");
     if (!ctx->g_ctrl_valid ||
         memcmp(ctx->g_ctrl_payload, &seq, sizeof(seq)) != 0) {
-        if (vareq_set_global_controls(v4l2_fd, &seq_ctrls) < 0) {
+        if (vareq_codec_controls(ctx, -1, &seq_ctrls) < 0) {
             fprintf(stderr, "v4l2request: failed to set AV1 sequence params\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
@@ -1333,7 +1333,7 @@ VAStatus vareq_av1_translate(struct vareq_context *ctx,
         /* One S_EXT_CTRLS per frame. Failure is terminal — no per-control
          * fallback. Submitted before the output-buffer pop so a failure
          * has no pool state to unwind. */
-        if (vareq_set_request_controls(request_fd, v4l2_fd, &req_ctrls_batch) < 0) {
+        if (vareq_codec_controls(ctx, request_fd, &req_ctrls_batch) < 0) {
             fprintf(stderr, "v4l2request: failed to set AV1 request controls\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }

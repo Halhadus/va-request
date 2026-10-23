@@ -1,5 +1,7 @@
 compat_sources = files('compat.c')
 compat_symbols = []
+subdir('rockchip-rga')
+subdir('rockchip-hantro')
 compat_declarations = ''
 compat_entries = ''
 foreach symbol : compat_symbols

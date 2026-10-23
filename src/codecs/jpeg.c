@@ -69,7 +69,7 @@ static int surface_420(struct vareq_surface *s, struct vareq_image_view *view)
 }
 
 /* Hantro selects its raw defaults when coded CAPTURE is configured. */
-static int set_output_420(int fd, struct v4l2_format *format, unsigned width, unsigned height, int planar)
+static int set_output_420(struct vareq_context *ctx, struct v4l2_format *format, unsigned width, unsigned height, int planar)
 {
     const uint32_t candidates[] = {V4L2_PIX_FMT_YUV420M, V4L2_PIX_FMT_NV12M, V4L2_PIX_FMT_NV12};
     for (unsigned i = planar ? 0 : 1; i < 3; i++) {
@@ -78,7 +78,7 @@ static int set_output_420(int fd, struct v4l2_format *format, unsigned width, un
         format->fmt.pix_mp.width = width; format->fmt.pix_mp.height = height;
         format->fmt.pix_mp.pixelformat = candidates[i]; format->fmt.pix_mp.num_planes = 3 - i;
         format->fmt.pix_mp.field = V4L2_FIELD_NONE;
-        if (xioctl(fd, VIDIOC_S_FMT, format) == 0 && format->fmt.pix_mp.pixelformat == candidates[i]) return 0;
+        if (vareq_codec_format(ctx, format) == 0 && format->fmt.pix_mp.pixelformat == candidates[i]) return 0;
     }
     return -1;
 }
@@ -193,14 +193,14 @@ retry_transport:
             cfmt.fmt.pix_mp.height = h;
             cfmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_JPEG;
             cfmt.fmt.pix_mp.num_planes = 1;
-            if (xioctl(fd, VIDIOC_S_FMT, &cfmt) < 0) {
+            if (vareq_codec_format(ctx, &cfmt) < 0) {
                 fprintf(stderr, "v4l2request: JPEG S_FMT capture: %s\n",
                         strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
 
-            if ((direct ? jpeg_dma_format(fd, &ofmt, &dma, dma_raw) : set_output_420(fd, &ofmt, w, h, planar_source)) < 0) {
+            if ((direct ? jpeg_dma_format(ctx, &ofmt, &dma, dma_raw) : set_output_420(ctx, &ofmt, w, h, planar_source)) < 0) {
                 if (direct && (errno == EINVAL || errno == ENOTTY)) goto fallback_dma;
                 fprintf(stderr, "v4l2request: JPEG S_FMT output: %s\n", strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
@@ -208,7 +208,7 @@ retry_transport:
             }
             ctrl.id = V4L2_CID_JPEG_COMPRESSION_QUALITY;
             ctrl.value = quality;
-            if (xioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+            if (vareq_codec_control(ctx, &ctrl) < 0) {
                 fprintf(stderr, "v4l2request: JPEG quality=%d failed: %s\n", quality, strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;

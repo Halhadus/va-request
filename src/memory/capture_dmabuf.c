@@ -58,7 +58,7 @@ int vareq_capture_dma_setup(struct vareq_context *ctx, unsigned width, unsigned 
     struct v4l2_format fmt = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE};
     fmt.fmt.pix_mp.width = width; fmt.fmt.pix_mp.height = height; fmt.fmt.pix_mp.pixelformat = fourcc;
     fmt.fmt.pix_mp.num_planes = 1; fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
-    if (vareq_xioctl(ctx->v4l2_fd, VIDIOC_S_FMT, &fmt) < 0) return required ? -1 : 0;
+    if (vareq_codec_format(ctx, &fmt) < 0) return required ? -1 : 0;
     struct v4l2_pix_format_mplane *f = &fmt.fmt.pix_mp;
     if (f->width < width || f->height < height || f->pixelformat != fourcc || f->num_planes != 1 ||
         f->field != V4L2_FIELD_NONE || f->plane_fmt[0].bytesperline < f->width ||

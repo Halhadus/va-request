@@ -209,7 +209,7 @@ VAStatus vareq_vp8_translate(struct vareq_context *ctx,
         ctrl.size = sizeof(frame);
         ctrls.controls = &ctrl;
         ctrls.count = 1;
-        if (vareq_set_request_controls(request_fd, v4l2_fd, &ctrls) < 0) {
+        if (vareq_codec_controls(ctx, request_fd, &ctrls) < 0) {
             fprintf(stderr, "v4l2request: failed to set VP8 frame params\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
