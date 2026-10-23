@@ -1,0 +1,3 @@
+option('tests', type: 'boolean', value: true, description: 'Build hardware-free regression suites')
+option('hardware_tests', type: 'feature', value: 'auto', description: 'Build hardware test clients; EGL/GLES clients follow available development dependencies')
+option('driverdir', type: 'string', value: '', description: 'Override the libva driver install directory')
