@@ -1,0 +1,69 @@
+name: Build and test
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: Unit (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, sanitizers]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential meson ninja-build pkg-config libdrm-dev libgbm-dev
+      - name: libva 2.23.0
+        run: |
+          git clone --depth 1 --branch 2.23.0 https://github.com/intel/libva.git "$RUNNER_TEMP/libva"
+          meson setup "$RUNNER_TEMP/libva-build" "$RUNNER_TEMP/libva" --prefix="$RUNNER_TEMP/va" --libdir=lib -Dwith_x11=no -Dwith_glx=no -Dwith_wayland=no -Dwith_win32=no
+          meson compile -C "$RUNNER_TEMP/libva-build"
+          meson install -C "$RUNNER_TEMP/libva-build"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/va/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/va/lib" >> "$GITHUB_ENV"
+      - name: Tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: python3 tools/test.py --suite unit ${{ matrix.mode == 'sanitizers' && '--sanitize' || '' }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-report-${{ matrix.mode }}
+          path: verify/va-request-run-*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+  source:
+    name: Source package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Commit whitespace
+        run: git show --format= --check HEAD
+      - name: Debian source package
+        run: |
+          package=$(dpkg-parsechangelog -S Source)
+          version=$(dpkg-parsechangelog -S Version)
+          stage="$RUNNER_TEMP/$package-$version"
+          mkdir "$stage"
+          git archive HEAD | tar -x -C "$stage"
+          cd "$RUNNER_TEMP"
+          dpkg-source --build "$stage"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source-package
+          path: |
+            ${{ runner.temp }}/va-request_*.dsc
+            ${{ runner.temp }}/va-request_*.tar.xz
+          if-no-files-found: error
+          retention-days: 30

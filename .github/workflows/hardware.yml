@@ -1,0 +1,44 @@
+name: Hardware tests
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Reviewed branch, tag or commit to test
+        required: true
+        default: main
+      suite:
+        description: Hardware profile
+        type: choice
+        options: [hardware, smoke, acceptance]
+        default: hardware
+      render_node:
+        description: DRM render node
+        required: true
+        default: /dev/dri/renderD128
+permissions:
+  contents: read
+concurrency:
+  group: hardware-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  hardware:
+    name: Hardware report
+    runs-on: [self-hosted, linux, va-request-hardware]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - name: Test selected hardware
+        env:
+          TEST_SUITE: ${{ inputs.suite }}
+          TEST_RENDER_NODE: ${{ inputs.render_node }}
+        run: python3 tools/test.py --suite "$TEST_SUITE" --render-node "$TEST_RENDER_NODE"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hardware-report-${{ github.run_id }}
+          path: verify/va-request-run-*.tar.gz
+          if-no-files-found: error
+          retention-days: 30

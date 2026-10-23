@@ -1,0 +1,44 @@
+name: Bug report
+description: Report incorrect behavior, a regression or a crash.
+title: "[Bug] "
+labels: [bug, needs-triage]
+body:
+  - type: input
+    id: revision
+    attributes:
+      label: Source revision or package version
+      description: Include the commit and any local changes.
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System
+      description: Device, SoC, distribution, architecture, kernel release and relevant V4L2/DRM drivers. Note custom kernel patches.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Exact command or application settings, application version, codec/profile, dimensions and input sample if shareable.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: input
+    id: regression
+    attributes:
+      label: Last working version
+      description: Include source and kernel revisions if this is a regression.
+  - type: textarea
+    id: reports
+    attributes:
+      label: Reports and logs
+      description: Attach the REPORT archive from tools/test.py and the capability inventory for hardware failures. If a test could not run, include its error and the attempted command. See CONTRIBUTING.md.
+    validations:
+      required: true
