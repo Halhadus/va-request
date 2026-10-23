@@ -18,3 +18,5 @@ __pycache__/
 *.ddeb
 *.buildinfo
 *.changes
+/debian/tmp/
+/debian/*.debhelper.log
