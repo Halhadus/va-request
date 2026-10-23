@@ -1,12 +1,273 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/*
+ * v4l2request — VP8 parameter translation
+ *
+ * Maps VA-API VP8 buffers to V4L2_CID_STATELESS_VP8_FRAME and submits
+ * a decode request on hantro (VP8F).
+ *
+ * ffmpeg's vaapi_vp8 hwaccel strips the 3/10-byte uncompressed chunk
+ * before handing us slice data. The G1 kernel's cfg_parts() always
+ * skips those bytes (10 on KEY, 3 otherwise) without parsing them, so
+ * we prepend zeros of that length. first_part_size / dct_part_sizes
+ * stay relative to the compressed payload, matching the frame tag.
+ *
+ * VA pic_fields.key_frame is inverted vs the bitstream: 0 = key frame.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <poll.h>
+#include <unistd.h>
+
+#include <va/va.h>
+#include <va/va_dec_vp8.h>
+#include <linux/v4l2-controls.h>
+#include <linux/videodev2.h>
+
 #include "va_request.h"
-const int vareq_has_vp8 = 0;
+
 void vareq_vp8_fill_frame(struct v4l2_ctrl_vp8_frame *frame,
                            const VAPictureParameterBufferVP8 *pic,
                            const VASliceParameterBufferVP8 *slice,
                            const VAProbabilityDataBufferVP8 *prob,
                            const VAIQMatrixBufferVP8 *iq,
-                           struct vareq_driver_data *dd) { (void)frame; (void)pic; (void)slice; (void)prob; (void)iq; (void)dd; }
+                           struct vareq_driver_data *dd)
+{
+    int is_key;
+    unsigned i;
+
+    memset(frame, 0, sizeof(*frame));
+
+    is_key = !pic->pic_fields.bits.key_frame;
+
+    frame->width = (uint16_t)pic->frame_width;
+    frame->height = (uint16_t)pic->frame_height;
+    frame->version = (uint8_t)pic->pic_fields.bits.version;
+    frame->prob_skip_false = pic->prob_skip_false;
+    frame->prob_intra = pic->prob_intra;
+    frame->prob_last = pic->prob_last;
+    frame->prob_gf = pic->prob_gf;
+
+    frame->coder_state.range = pic->bool_coder_ctx.range;
+    frame->coder_state.value = pic->bool_coder_ctx.value;
+    frame->coder_state.bit_count = pic->bool_coder_ctx.count;
+
+    memcpy(frame->entropy.y_mode_probs, pic->y_mode_probs, 4);
+    memcpy(frame->entropy.uv_mode_probs, pic->uv_mode_probs, 3);
+    memcpy(frame->entropy.mv_probs, pic->mv_probs, sizeof(pic->mv_probs));
+    if (prob)
+        memcpy(frame->entropy.coeff_probs, prob->dct_coeff_probs,
+               sizeof(prob->dct_coeff_probs));
+
+    frame->lf.sharpness_level = (uint8_t)pic->pic_fields.bits.sharpness_level;
+    frame->lf.level = pic->pic_fields.bits.loop_filter_disable
+                          ? 0 : pic->loop_filter_level[0];
+    memcpy(frame->lf.ref_frm_delta, pic->loop_filter_deltas_ref_frame, 4);
+    memcpy(frame->lf.mb_mode_delta, pic->loop_filter_deltas_mode, 4);
+    if (pic->pic_fields.bits.filter_type)
+        frame->lf.flags |= V4L2_VP8_LF_FILTER_TYPE_SIMPLE;
+    if (pic->pic_fields.bits.loop_filter_adj_enable)
+        frame->lf.flags |= V4L2_VP8_LF_ADJ_ENABLE;
+    if (pic->pic_fields.bits.mode_ref_lf_delta_update)
+        frame->lf.flags |= V4L2_VP8_LF_DELTA_UPDATE;
+
+    if (iq) {
+        int yac = iq->quantization_index[0][0];
+
+        frame->quant.y_ac_qi = (uint8_t)yac;
+        frame->quant.y_dc_delta = (int8_t)((int)iq->quantization_index[0][1] - yac);
+        frame->quant.y2_dc_delta = (int8_t)((int)iq->quantization_index[0][2] - yac);
+        frame->quant.y2_ac_delta = (int8_t)((int)iq->quantization_index[0][3] - yac);
+        frame->quant.uv_dc_delta = (int8_t)((int)iq->quantization_index[0][4] - yac);
+        frame->quant.uv_ac_delta = (int8_t)((int)iq->quantization_index[0][5] - yac);
+        for (i = 0; i < 4; i++)
+            frame->segment.quant_update[i] =
+                (int8_t)iq->quantization_index[i][0];
+    }
+
+    memcpy(frame->segment.segment_probs, pic->mb_segment_tree_probs, 3);
+    for (i = 0; i < 4; i++)
+        frame->segment.lf_update[i] = (int8_t)pic->loop_filter_level[i];
+    if (pic->pic_fields.bits.segmentation_enabled)
+        frame->segment.flags |= V4L2_VP8_SEGMENT_FLAG_ENABLED;
+    if (pic->pic_fields.bits.update_mb_segmentation_map)
+        frame->segment.flags |= V4L2_VP8_SEGMENT_FLAG_UPDATE_MAP;
+    if (pic->pic_fields.bits.update_segment_feature_data)
+        frame->segment.flags |= V4L2_VP8_SEGMENT_FLAG_UPDATE_FEATURE_DATA;
+    /* VA already applied absolute vs delta into loop_filter_level[] and
+     * quantization_index[][]; feed those as absolute segment values. */
+
+    if (slice) {
+        unsigned header_bytes = (slice->macroblock_offset + 7) / 8;
+        unsigned nparts = slice->num_of_partitions;
+
+        frame->first_part_header_bits = slice->macroblock_offset;
+        frame->first_part_size = slice->partition_size[0] + header_bytes;
+        if (nparts > 0)
+            nparts--;
+        if (nparts == 0)
+            nparts = 1;
+        if (nparts > 8)
+            nparts = 8;
+        frame->num_dct_parts = (uint8_t)nparts;
+        for (i = 0; i < 8; i++)
+            frame->dct_part_sizes[i] = slice->partition_size[i + 1];
+    } else {
+        frame->num_dct_parts = 1;
+    }
+
+    frame->last_frame_ts = vareq_surface_ts(dd, pic->last_ref_frame);
+    frame->golden_frame_ts = vareq_surface_ts(dd, pic->golden_ref_frame);
+    frame->alt_frame_ts = vareq_surface_ts(dd, pic->alt_ref_frame);
+
+    if (is_key)
+        frame->flags |= V4L2_VP8_FRAME_FLAG_KEY_FRAME;
+    frame->flags |= V4L2_VP8_FRAME_FLAG_SHOW_FRAME;
+    if (pic->pic_fields.bits.mb_no_coeff_skip)
+        frame->flags |= V4L2_VP8_FRAME_FLAG_MB_NO_SKIP_COEFF;
+    if (pic->pic_fields.bits.sign_bias_golden)
+        frame->flags |= V4L2_VP8_FRAME_FLAG_SIGN_BIAS_GOLDEN;
+    if (pic->pic_fields.bits.sign_bias_alternate)
+        frame->flags |= V4L2_VP8_FRAME_FLAG_SIGN_BIAS_ALT;
+}
+
 VAStatus vareq_vp8_translate(struct vareq_context *ctx,
                               struct vareq_buffer **buffers,
-                              int num_buffers) { (void)ctx; (void)buffers; (void)num_buffers; return VA_STATUS_ERROR_UNIMPLEMENTED; }
+                              int num_buffers)
+{
+    VAPictureParameterBufferVP8 *pic_param = NULL;
+    VASliceParameterBufferVP8 *slice_param = NULL;
+    VAProbabilityDataBufferVP8 *prob = NULL;
+    VAIQMatrixBufferVP8 *iq = NULL;
+    uint32_t slice_size = 0;
+    struct v4l2_ctrl_vp8_frame frame;
+    size_t prefix, total;
+    int request_fd, v4l2_fd;
+    int out_buf_idx, done_cap;
+    uint64_t timestamp;
+    uint8_t *dst;
+
+    struct vareq_collected cb;
+
+    vareq_collect_decode_buffers(buffers, num_buffers, &cb);
+    pic_param = cb.pic;
+    slice_param = cb.n_slice_params ? cb.slice_params[0] : NULL;
+    prob = cb.prob;
+    iq = cb.iq;
+
+    if (!pic_param) {
+        fprintf(stderr, "v4l2request: VP8 decode missing picture params\n");
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    }
+    if (pic_param->pic_fields.bits.key_frame) { /* VA uses one for inter pictures. */
+        VASurfaceID refs[] = {pic_param->last_ref_frame, pic_param->golden_ref_frame, pic_param->alt_ref_frame};
+        for (unsigned i = 0; i < 3; i++) {
+            VAStatus status = vareq_validate_reference(ctx, refs[i]);
+            if (status != VA_STATUS_SUCCESS) return status;
+        }
+    }
+    size_t measured = 0;
+    VAStatus packet_status = vareq_packetize_slices(VAREQ_CODEC_VP8, buffers, num_buffers, NULL, UINT32_MAX - 10, &measured);
+    if (packet_status != VA_STATUS_SUCCESS) {
+        fprintf(stderr, "v4l2request: VP8 decode missing slice data\n");
+        return packet_status;
+    }
+    slice_size = measured;
+
+    vareq_vp8_fill_frame(&frame, pic_param, slice_param, prob, iq,
+                          ctx->driver_data);
+
+    request_fd = ctx->request_fd;
+    v4l2_fd = ctx->v4l2_fd;
+    if (request_fd < 0) {
+        fprintf(stderr, "v4l2request: VP8 no request fd available\n");
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
+
+    if (vareq_ensure_capture(ctx, pic_param->frame_width, pic_param->frame_height,
+                              V4L2_PIX_FMT_NV12) < 0) {
+        fprintf(stderr, "v4l2request: VP8 capture reconfig failed\n");
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
+
+    if (!ctx->streamed) {
+        if (vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
+            vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
+            fprintf(stderr, "v4l2request: VP8 STREAMON failed\n");
+            return VA_STATUS_ERROR_OPERATION_FAILED;
+        }
+        ctx->streamed = 1;
+    }
+
+    {
+        struct v4l2_ext_control ctrl = { 0 };
+        struct v4l2_ext_controls ctrls = { 0 };
+
+        ctrl.id = V4L2_CID_STATELESS_VP8_FRAME;
+        ctrl.ptr = &frame;
+        ctrl.size = sizeof(frame);
+        ctrls.controls = &ctrl;
+        ctrls.count = 1;
+        if (vareq_set_request_controls(request_fd, v4l2_fd, &ctrls) < 0) {
+            fprintf(stderr, "v4l2request: failed to set VP8 frame params\n");
+            return VA_STATUS_ERROR_OPERATION_FAILED;
+        }
+    }
+
+    if (ctx->n_free_out == 0) {
+        fprintf(stderr, "v4l2request: VP8 no free output buffer\n");
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
+    out_buf_idx = ctx->free_out_bufs[--ctx->n_free_out];
+
+    timestamp = ctx->current_surface ? ctx->current_surface->timestamp : 0;
+    prefix = (frame.flags & V4L2_VP8_FRAME_FLAG_KEY_FRAME) ? 10 : 3;
+    total = prefix + slice_size;
+
+    dst = ctx->output_buf_ptr[out_buf_idx];
+    if (total > ctx->output_buf_size) {
+        fprintf(stderr, "v4l2request: VP8 slice data too large (%zu > %u)\n",
+                total, ctx->output_buf_size);
+        vareq_out_pool_push(ctx, out_buf_idx);
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
+    if (dst) {
+        memset(dst, 0, prefix);
+        packet_status = vareq_packetize_slices(VAREQ_CODEC_VP8, buffers, num_buffers,
+            dst + prefix, ctx->output_buf_size - prefix, &measured);
+        if (packet_status != VA_STATUS_SUCCESS) {
+            vareq_out_pool_push(ctx, out_buf_idx);
+            return packet_status;
+        }
+    } else {
+        fprintf(stderr, "v4l2request: VP8 output buffer not mapped\n");
+        vareq_out_pool_push(ctx, out_buf_idx);
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
+
+    /* On failure decode_submit resets both queues — do not push back. */
+    done_cap = vareq_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
+    if (done_cap == -2)
+        return VA_STATUS_ERROR_DECODING_ERROR;
+    if (done_cap < 0)
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
+    {
+        struct vareq_surface *surf = ctx->current_surface;
+
+        if (surf) {
+            if (vareq_surface_pull_capture(ctx, surf, done_cap) < 0) {
+                fprintf(stderr, "v4l2request: VP8 pull capture failed\n");
+                if (!vareq_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vareq_cap_pool_push(ctx, done_cap);
+                return VA_STATUS_ERROR_OPERATION_FAILED;
+            }
+        } else {
+            vareq_cap_pool_push(ctx, done_cap);
+        }
+    }
+
+    return VA_STATUS_SUCCESS;
+}
+
+const int vareq_has_vp8 = 1;
