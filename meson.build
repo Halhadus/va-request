@@ -41,6 +41,9 @@ shared_library('v4l2request_drv_video', [], link_whole: core, dependencies: core
 python = find_program('python3')
 dl_dep = cc.find_library('dl')
 if get_option('tests')
+  # Linker wrapping requires calls to remain external to each translation unit.
+  test_no_lto = cc.get_supported_arguments('-fno-lto')
+  test_core = static_library('va_request_test_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps, c_args: test_no_lto, override_options: ['b_lto=false'])
   metadata_adapter = shared_library('hevc_slice_interpose', 'tests/hevc_slice_interpose.c', name_prefix: '', install: false, dependencies: [libva_dep, threads_dep, dl_dep])
   units = {
     'allocator': ['open', 'open64', 'vareq_list_video_nodes'],
@@ -90,7 +93,7 @@ if get_option('tests')
     if name == 'compatibility'
       test_sources += ['tests/compat_fixture.c']
     endif
-    exe = executable('test_' + name, test_sources, link_with: core, link_args: wrap_args, include_directories: inc, dependencies: core_deps + [dl_dep])
+    exe = executable('test_' + name, test_sources, link_with: test_core, c_args: test_no_lto, link_args: wrap_args + test_no_lto, override_options: ['b_lto=false'], include_directories: inc, dependencies: core_deps + [dl_dep])
     test(name, exe, suite: 'unit')
     if name == 'buffer_info'
       preload = metadata_adapter.full_path()
