@@ -1,4 +1,5 @@
 /* Trace actual queue failure paths without a decoder or writable procfs. */
+#include "test_config.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -12,10 +13,19 @@
 static int failures, storage = -1, opens, fail_open, fail_write, trace_cloexec, last_fd = -1;
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL decode trace %s\n", tag); failures++; } }
 int __real_open(const char *, int, ...);
+#if VAV4L2_TEST_LFS64
 int __real_open64(const char *, int, ...);
+#endif
 static int trace_open(const char *path, int flags, mode_t mode, int large)
 {
-    if (strcmp(path, "decode-trace-fixture")) return large ? __real_open64(path, flags, mode) : __real_open(path, flags, mode);
+    if (strcmp(path, "decode-trace-fixture")) {
+#if VAV4L2_TEST_LFS64
+        if (large) return __real_open64(path, flags, mode);
+#else
+        (void)large;
+#endif
+        return __real_open(path, flags, mode);
+    }
     opens++; trace_cloexec = !!(flags & O_CLOEXEC);
     if (fail_open) { errno = ENOSPC; return -1; }
     return last_fd = fcntl(storage, F_DUPFD_CLOEXEC, 0);
@@ -23,7 +33,9 @@ static int trace_open(const char *path, int flags, mode_t mode, int large)
 ssize_t __real_write(int fd, const void *data, size_t size);
 ssize_t __wrap_write(int fd, const void *data, size_t size) { if (fail_write && fd == last_fd) { errno = ENOSPC; return -1; } return __real_write(fd, data, size); }
 int __wrap_open(const char *path, int flags, ...) { mode_t mode = 0; if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); } return trace_open(path, flags, mode, 0); }
+#if VAV4L2_TEST_LFS64
 int __wrap_open64(const char *path, int flags, ...) { mode_t mode = 0; if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); } return trace_open(path, flags, mode, 1); }
+#endif
 static int fault_ioctl(int fd, unsigned long request, void *arg) { (void)fd; (void)request; (void)arg; errno = EIO; return -1; }
 int main(void)
 {

@@ -1,3 +1,4 @@
+#include "test_config.h"
 #include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
@@ -40,12 +41,14 @@ void *__wrap_mmap(void *address, size_t length, int prot, int flags, int fd, off
     return __real_mmap(address, length, prot, flags, fd, offset);
 }
 /* Meson enables large-file redirects, including mmap -> mmap64 on glibc. */
+#if VAV4L2_TEST_LFS64
 void *__real_mmap64(void *, size_t, int, int, int, off64_t);
 void *__wrap_mmap64(void *address, size_t length, int prot, int flags, int fd, off64_t offset)
 {
     if (fail_shared_map) { errno = ENOMEM; return MAP_FAILED; }
     return __real_mmap64(address, length, prot, flags, fd, offset);
 }
+#endif
 static void expect(int ok, const char *tag)
 {
     if (!ok) { fprintf(stderr, "FAIL %s\n", tag); failures++; }

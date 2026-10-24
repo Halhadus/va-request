@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential meson ninja-build pkg-config libdrm-dev libgbm-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential meson ninja-build pkg-config libdrm-dev libgbm-dev ffmpeg
       - name: libva 2.23.0
         run: |
           git clone --depth 1 --branch 2.23.0 https://github.com/intel/libva.git "$RUNNER_TEMP/libva"
@@ -37,6 +37,33 @@ jobs:
         if: always()
         with:
           name: test-report-${{ matrix.mode }}
+          path: verify/libva-v4l2-run-*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+  musl:
+    name: Unit (musl, BusyBox)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Alpine build and tests
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.23 sh -ec '
+            apk add --no-cache build-base meson ninja python3 pkgconf linux-headers libdrm-dev mesa-dev bash git ffmpeg
+            git clone --depth 1 --branch 2.23.0 https://github.com/intel/libva.git /tmp/libva
+            meson setup /tmp/libva-build /tmp/libva --prefix=/usr --libdir=lib -Dwith_x11=no -Dwith_glx=no -Dwith_wayland=no -Dwith_win32=no
+            meson compile -C /tmp/libva-build -j 2
+            meson install -C /tmp/libva-build
+            meson setup build-musl -Dwerror=true -Db_lto=true
+            meson compile -C build-musl -j 2
+            python3 tools/test.py --suite unit --build-dir build-musl
+          '
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-report-musl
           path: verify/libva-v4l2-run-*.tar.gz
           if-no-files-found: error
           retention-days: 30

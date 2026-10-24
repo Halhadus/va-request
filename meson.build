@@ -41,6 +41,24 @@ shared_library('v4l2_drv_video', [], link_whole: core, dependencies: core_deps, 
 python = find_program('python3')
 dl_dep = cc.find_library('dl')
 if get_option('tests')
+  # glibc redirects large-file calls to distinct symbols; musl uses the POSIX
+  # names and does not expose/link the transitional LFS64 interfaces.
+  test_lfs64 = cc.compiles('''
+    #include <fcntl.h>
+    #include <unistd.h>
+    #include <sys/mman.h>
+    #include <dirent.h>
+    #if defined(open64) || defined(mmap64) || defined(pread64) || defined(readdir64) || defined(scandir64)
+    #error LFS64 interfaces are aliases
+    #endif
+    int main(void) {
+      return sizeof(off64_t) + sizeof(struct dirent64) + sizeof(&open64) +
+             sizeof(&mmap64) + sizeof(&pread64) + sizeof(&readdir64) + sizeof(&scandir64);
+    }
+  ''', args: ['-D_GNU_SOURCE'], name: 'distinct LFS64 test interfaces')
+  test_config = configuration_data()
+  test_config.set10('VAV4L2_TEST_LFS64', test_lfs64)
+  configure_file(output: 'test_config.h', configuration: test_config)
   # Linker wrapping requires calls to remain external to each translation unit.
   test_no_lto = cc.get_supported_arguments('-fno-lto')
   test_core = static_library('va_v4l2_test_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps, c_args: test_no_lto, override_options: ['b_lto=false'])
@@ -50,7 +68,7 @@ if get_option('tests')
     'api_state': ['vav4l2_vp8_translate'],
     'av1_tiles': [],
     'buffer_info': [],
-    'buffers': [],
+    'buffers': ['vav4l2_scan_all_cached'],
     'capture_dmabuf': ['poll'],
     'capture_pool': ['vav4l2_alloc_shared_storage', 'poll', 'mmap', 'mmap64', 'munmap'],
     'capture_readback': ['realloc'],
@@ -87,7 +105,9 @@ if get_option('tests')
   foreach name, symbols : units
     wrap_args = []
     foreach symbol : symbols
-      wrap_args += '-Wl,--wrap=' + symbol
+      if test_lfs64 or not symbol.endswith('64')
+        wrap_args += '-Wl,--wrap=' + symbol
+      endif
     endforeach
     test_sources = ['tests/test_' + name + '.c']
     if name == 'compatibility'

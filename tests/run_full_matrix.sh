@@ -1,5 +1,5 @@
 #!/bin/bash
-# Full VA-API → V4L2-stateless matrix. Must run on the RK3588 host.
+# Full VA-API → V4L2 fixture matrix. Requires the complete codec/VPP interface set.
 # Success = hwdownload framemd5 vs software, except MPEG-2 which is
 # compared to GStreamer v4l2slmpeg2dec (same kernel IDCT; ffmpeg SW differs).
 set -uo pipefail
@@ -454,10 +454,10 @@ stage=jpeg
 echo "== JPEG mjpeg_vaapi =="
 # A failed encoder may leave an older va.jpg untouched. Validate a unique
 # output from this run, then publish va.jpg only after successful decoding.
-jpeg_current=$(mktemp "$OUT/jpeg-current.XXXXXX.jpg") || exit 1
+jpeg_current=$(mktemp "$OUT/jpeg-current.XXXXXX") || exit 1
 VAV4L2_DEBUG=1 "$FF" -nostdin -hide_banner -vaapi_device "$DRM" -f lavfi \
   -i testsrc=size=320x240:rate=5:duration=1 -vf "format=nv12,hwupload" \
-  -c:v mjpeg_vaapi -frames:v 1 -y "$jpeg_current"
+  -c:v mjpeg_vaapi -frames:v 1 -f image2 -y "$jpeg_current"
 jpeg_exit=$?
 printf '%s\n' "$jpeg_exit" > "$OUT/jpeg-exit.txt"
 if [ "$jpeg_exit" -eq 0 ] && \

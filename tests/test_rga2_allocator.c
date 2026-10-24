@@ -1,5 +1,6 @@
 /* Allocation/provider selection, exact page bounds and FD ownership. Real
  * cache coherency is covered by the hardware transport/decoder/renderer runs. */
+#include "test_config.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -32,7 +33,9 @@ int __wrap_open(const char *path, int flags, ...)
     else { if (fd >= 0) close(fd); errno = EMFILE; return -1; }
     return fd;
 }
+#if VAV4L2_TEST_LFS64
 int __wrap_open64(const char *path, int flags, ...) { return __wrap_open(path, flags); }
+#endif
 static int mock_ioctl(int fd, unsigned long request, void *arg)
 {
     expect(fd >= 0 && fd < 1024 && fcntl(fd, F_GETFD) >= 0, "live exporter context");

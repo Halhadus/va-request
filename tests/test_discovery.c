@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#include "test_config.h"
 #include <assert.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -80,6 +81,7 @@ int __wrap_scandir(const char *path, struct dirent ***out, int (*filter)(const s
     }
     *out = entries; return count;
 }
+#if VAV4L2_TEST_LFS64
 int __wrap_scandir64(const char *path, struct dirent64 ***out, int (*filter)(const struct dirent64 *), int (*compare)(const struct dirent64 **, const struct dirent64 **))
 {
     assert(!strcmp(path, "/dev"));
@@ -94,6 +96,7 @@ int __wrap_scandir64(const char *path, struct dirent64 ***out, int (*filter)(con
     }
     *out = entries; return count;
 }
+#endif
 
 DIR *__wrap_opendir(const char *path) { assert(!strcmp(path, "/dev")); media_cursor = 0; return (DIR *)(uintptr_t)1; }
 int __wrap_closedir(DIR *directory) { assert(directory == (DIR *)(uintptr_t)1); return 0; }
@@ -103,19 +106,23 @@ struct dirent *__wrap_readdir(DIR *directory)
     if (media_cursor >= 2) return NULL;
     strcpy(entry.d_name, media_cursor++ ? "media4" : "media9"); return &entry;
 }
+#if VAV4L2_TEST_LFS64
 struct dirent64 *__wrap_readdir64(DIR *directory)
 {
     assert(directory == (DIR *)(uintptr_t)1); static struct dirent64 entry;
     if (media_cursor >= 2) return NULL;
     strcpy(entry.d_name, media_cursor++ ? "media4" : "media9"); return &entry;
 }
+#endif
 int __wrap_open(const char *path, int flags, ...)
 {
     assert(flags == (O_RDWR | O_CLOEXEC) || flags == (O_RDWR | O_NONBLOCK | O_CLOEXEC));
     int role = !strcmp(path, "/dev/media9") ? 9 : !strcmp(path, "/dev/media4") ? 4 : !strncmp(path, "/dev/video", 10) ? 42 : 0; assert(role);
     int fd = fcntl(media_owner, F_DUPFD_CLOEXEC, 0); assert(fd >= 0 && fd < 1024); media_roles[fd] = role; jpeg_selected[fd] = 0; return fd;
 }
+#if VAV4L2_TEST_LFS64
 int __wrap_open64(const char *path, int flags, ...) { return __wrap_open(path, flags); }
+#endif
 int __real_open(const char *path, int flags, ...);
 static void test_media_interface(void)
 {

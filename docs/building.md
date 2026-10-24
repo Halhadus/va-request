@@ -1,6 +1,6 @@
 # Build and packaging
 
-The driver is built against public libva, DRM/GBM and Linux UAPI headers. Compilation and package creation do not probe video hardware. Only hardware test commands open target devices.
+The driver is built against public libva, DRM/GBM and Linux UAPI headers. Compilation, package creation and regression tests do not require video hardware. Hardware test commands run against target devices.
 
 ```sh
 meson setup build --prefix=/usr --buildtype=release
@@ -18,7 +18,21 @@ Install the dependencies listed in `debian/control`, then:
 dpkg-buildpackage -us -uc -b
 ```
 
-The binary package is `libva-v4l2`; the source package is `libva-v4l2`. The driver installs into the architecture's multiarch `dri` directory. Native package builds run the hardware-free tests; hardware tests are never part of package creation. `DEB_BUILD_OPTIONS=nocheck` skips the native test run.
+The source and binary package are `libva-v4l2`. The driver installs into the architecture's multiarch `dri` directory. Native package builds run the hardware-free tests; hardware tests are never part of package creation. `DEB_BUILD_OPTIONS=nocheck` skips the native test run.
+
+## musl and Alpine
+
+The driver and tests build with glibc or musl. The shell test runners require Bash and support BusyBox utilities.
+
+On Alpine, install the build dependencies with:
+
+```sh
+apk add build-base meson ninja python3 pkgconf linux-headers libdrm-dev mesa-dev libva-dev bash
+```
+
+libva 2.23 or newer is required. If the distribution package is older, build libva from upstream first. Use the Meson commands above to build and run the unit tests. APK packaging is not included.
+
+Install `ffmpeg` for generated test streams and `v4l-utils` for capability collection. FFmpeg needs libx264/libx265 for the H.264/HEVC fixtures. See [testing](testing.md) for the full hardware test dependencies.
 
 ## Cross-compilation
 

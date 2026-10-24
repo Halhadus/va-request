@@ -1,5 +1,6 @@
 /* Real PRIME objects and independent logical-plane checks with mocked DMA.
  * Physical RGA format/crop correctness is tested by va_dmabuf_extended. */
+#include "test_config.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -14,18 +15,22 @@ static unsigned failures, jobs, syncs, active_sync, maps, image_size, expected_r
 static int fault, capture_fd, last_output, last_capture, processing;
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL extended DMA %s fault=%d\n", tag, fault); failures++; } }
 void *__real_mmap(void *, size_t, int, int, int, off_t);
+#if VAV4L2_TEST_LFS64
 void *__real_mmap64(void *, size_t, int, int, int, off64_t);
+#endif
 int __real_munmap(void *, size_t);
 void *__wrap_mmap(void *a, size_t n, int p, int f, int fd, off_t o)
 {
     if (processing) expect(active_sync && !(p & PROT_WRITE), "only read-only CPU mappings inside SYNC");
     void *v = __real_mmap(a, n, p, f, fd, o); if (v != MAP_FAILED && processing) maps++; return v;
 }
+#if VAV4L2_TEST_LFS64
 void *__wrap_mmap64(void *a, size_t n, int p, int f, int fd, off64_t o)
 {
     if (processing) expect(active_sync && !(p & PROT_WRITE), "LFS CPU mapping inside read SYNC");
     void *v = __real_mmap64(a, n, p, f, fd, o); if (v != MAP_FAILED && processing) maps++; return v;
 }
+#endif
 int __wrap_munmap(void *a, size_t n)
 {
     if (processing) expect(active_sync && maps, "unmap before END");

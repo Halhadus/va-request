@@ -1,4 +1,5 @@
 /* Queue-allocation negotiation and exported-FD lifetime; no device job. */
+#include "test_config.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -20,7 +21,9 @@ int __wrap_open(const char *path, int flags, ...)
     if (fd >= 0 && fd < 1024) exact_fd[fd] = exact;
     return fd;
 }
+#if VAV4L2_TEST_LFS64
 int __wrap_open64(const char *path, int flags, ...) { return __wrap_open(path, flags); }
+#endif
 static int mock_ioctl(int fd, unsigned long request, void *arg)
 {
     expect(fcntl(fd, F_GETFD) >= 0, "allocator-uses-live-device-fd");

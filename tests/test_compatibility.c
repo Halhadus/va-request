@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#include "test_config.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -38,7 +39,9 @@ int __wrap_open(const char *path, int flags, ...)
     assert(flags == (O_RDWR | O_NONBLOCK | O_CLOEXEC));
     return __real_open("/dev/null", O_RDWR | O_CLOEXEC);
 }
+#if VAV4L2_TEST_LFS64
 int __wrap_open64(const char *path, int flags, ...) { return __wrap_open(path, flags); }
+#endif
 int __wrap_vav4l2_list_video_nodes(char (*paths)[64], unsigned capacity)
 {
     assert(capacity >= 2);

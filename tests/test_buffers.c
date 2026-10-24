@@ -9,6 +9,13 @@
 
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 static int failures;
+/* The API fixture must not inherit the host decoder's profile menu. */
+int __wrap_vav4l2_scan_all_cached(char *h264, char *hevc, char *av1, char *vp8, char *mpeg2, char *jpeg, char *vpp, unsigned len)
+{
+    char *paths[] = {h264, hevc, av1, vp8, mpeg2, jpeg, vpp};
+    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) if (paths[i] && len) paths[i][0] = 0;
+    return 0;
+}
 static void expect(int ok, const char *tag)
 {
     if (!ok) { fprintf(stderr, "FAIL %s\n", tag); failures++; }
@@ -461,6 +468,12 @@ static void api_contracts(VADriverContextP driver)
     VAProfile profiles[32];
     int n = -1;
     strcpy(dd->dev_h264, "/dev/mock-h264");
+    dd->h264_profiles_known = 1;
+    dd->h264_profiles = (1u << V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE) |
+        (1u << V4L2_MPEG_VIDEO_H264_PROFILE_MAIN) | (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH);
+    expect(driver->vtable->vaCreateConfig(driver, VAProfileH264High10, VAEntrypointVLD, NULL, 0, &config) ==
+           VA_STATUS_ERROR_UNSUPPORTED_PROFILE && config == VA_INVALID_ID, "high10-rejected-by-device-profile-menu");
+    dd->h264_profiles |= 1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH_10;
     expect(driver->vtable->vaQueryConfigProfiles(driver, profiles, &n) == VA_STATUS_SUCCESS && n > 0 &&
            profiles[0] == VAProfileH264ConstrainedBaseline, "query-profiles-count-is-output");
     expect(driver->vtable->vaCreateConfig(driver, VAProfileH264High, VAEntrypointEncPicture, NULL, 0, &config) ==
@@ -470,7 +483,7 @@ static void api_contracts(VADriverContextP driver)
            VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT, "reject-unsupported-config-rt");
     expect(driver->vtable->vaCreateConfig(driver, VAProfileH264High10, VAEntrypointVLD, NULL, 0, &config) == VA_STATUS_SUCCESS,
            "high10-default-config");
-    int count;
+    int count = 0;
     VAConfigAttrib attrs[32];
     expect(driver->vtable->vaQueryConfigAttributes(driver, config, NULL, NULL, attrs, &count) == VA_STATUS_SUCCESS &&
            count > 0 && attrs[0].value == VA_RT_FORMAT_YUV420_10, "high10-default-rt-is-ten-bit");

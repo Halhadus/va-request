@@ -1,4 +1,5 @@
 /* Real FD/map lifetime with a native pool too small for eight retained frames. */
+#include "test_config.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -31,7 +32,9 @@ int __wrap_vav4l2_alloc_shared_storage(unsigned bytes, unsigned rows)
     return fd;
 }
 void *__real_mmap(void *a, size_t n, int p, int f, int fd, off_t o);
+#if VAV4L2_TEST_LFS64
 void *__real_mmap64(void *a, size_t n, int p, int f, int fd, off64_t o);
+#endif
 static int pool_map_allowed(int fd, int prot)
 {
     for (int i = 0; i < n_owned; i++) if (fd == owned[i]) {
@@ -46,7 +49,9 @@ static void track_pool_map(int fd, void *map)
     if (map != MAP_FAILED) for (int i = 0; i < n_owned; i++) if (fd == owned[i]) { expect(!pool_mapped, "one-temporary-pool-map"); pool_mapping = map; pool_mapped = 1; break; }
 }
 void *__wrap_mmap(void *a, size_t n, int p, int f, int fd, off_t o) { void *map = pool_map_allowed(fd, p) ? __real_mmap(a, n, p, f, fd, o) : MAP_FAILED; track_pool_map(fd, map); return map; }
+#if VAV4L2_TEST_LFS64
 void *__wrap_mmap64(void *a, size_t n, int p, int f, int fd, off64_t o) { void *map = pool_map_allowed(fd, p) ? __real_mmap64(a, n, p, f, fd, o) : MAP_FAILED; track_pool_map(fd, map); return map; }
+#endif
 int __real_munmap(void *map, size_t size);
 int __wrap_munmap(void *map, size_t size) { int result = __real_munmap(map, size); if (!result && pool_mapped && map == pool_mapping) { expect(sync_reads == 1 || sync_writes == 1, "pool-unmap-stays-inside-CPU-sync"); pool_mapped = 0; } return result; }
 static int mock_ioctl(int fd, unsigned long req, void *arg)

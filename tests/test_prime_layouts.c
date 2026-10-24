@@ -1,3 +1,4 @@
+#include "test_config.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -13,7 +14,9 @@ extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 static int failures, starts, ends, active, fail_start, fail_end, poll_failure, poll_calls, sync_again;
 static int stale_import_map, fail_cpu_map;
 void *__real_mmap(void *, size_t, int, int, int, off_t);
+#if VAV4L2_TEST_LFS64
 void *__real_mmap64(void *, size_t, int, int, int, off64_t);
+#endif
 static void *map_fixture(void *map, size_t length)
 {
     if (map == MAP_FAILED || !stale_import_map) return map;
@@ -27,11 +30,13 @@ void *__wrap_mmap(void *address, size_t length, int prot, int flags, int fd, off
     if (fail_cpu_map) { errno = ENOMEM; return MAP_FAILED; }
     return map_fixture(__real_mmap(address, length, prot, flags, fd, offset), length);
 }
+#if VAV4L2_TEST_LFS64
 void *__wrap_mmap64(void *address, size_t length, int prot, int flags, int fd, off64_t offset)
 {
     if (fail_cpu_map) { errno = ENOMEM; return MAP_FAILED; }
     return map_fixture(__real_mmap64(address, length, prot, flags, fd, offset), length);
 }
+#endif
 static void expect(int value, const char *tag) { if (!value) { fprintf(stderr, "FAIL %s\n", tag); failures++; } }
 int __wrap_poll(struct pollfd *p, nfds_t n, int timeout)
 {

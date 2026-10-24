@@ -1,6 +1,7 @@
 /* Exercise the actual public client, including fork, with DMA-BUF file I/O
  * semantics: mapping works, while pread is forbidden even on memfd fixtures. */
 #define VA_DMABUF_COMPLETE_MAIN unused_hardware_complete_main
+#include "test_config.h"
 #include "va_dmabuf_complete.c"
 #include <stdarg.h>
 
@@ -28,7 +29,9 @@ struct dirent *__wrap_readdir(DIR *d)
     errno = saved;
     return NULL;
 }
+#if VAV4L2_TEST_LFS64
 struct dirent64 *__wrap_readdir64(DIR *d) { struct dirent *e = __wrap_readdir(d); static struct dirent64 out; if (!e) return NULL; snprintf(out.d_name, sizeof(out.d_name), "%s", e->d_name); return &out; }
+#endif
 int __wrap_closedir(DIR *d) { (void)d; return 0; }
 static const struct dmabuf_format *format_at(unsigned n) { return n < 15 ? &dmabuf_formats[n] : &additions[n - 15]; }
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL complete client %s fault=%u\n", tag, fault); errors++; } }
@@ -37,7 +40,9 @@ pid_t __wrap_fork(void) { pid_t p = __real_fork(); if (!p) in_child = 1; return 
 void __real__exit(int);
 __attribute__((noreturn)) void __wrap__exit(int code) { __real__exit(active || maps || errors ? 90 : code); __builtin_unreachable(); }
 ssize_t __wrap_pread(int fd, void *p, size_t n, off_t o) { (void)fd; (void)p; (void)n; (void)o; errno = ESPIPE; return -1; }
+#if VAV4L2_TEST_LFS64
 ssize_t __wrap_pread64(int fd, void *p, size_t n, off64_t o) { (void)fd; (void)p; (void)n; (void)o; errno = ESPIPE; return -1; }
+#endif
 int __wrap_ioctl(int fd, unsigned long req, ...)
 {
     (void)fd; va_list args; va_start(args, req); struct dma_buf_sync *s = va_arg(args, struct dma_buf_sync *); va_end(args);
@@ -53,7 +58,9 @@ int __wrap_ioctl(int fd, unsigned long req, ...)
     return 0;
 }
 void *__real_mmap(void *, size_t, int, int, int, off_t);
+#if VAV4L2_TEST_LFS64
 void *__real_mmap64(void *, size_t, int, int, int, off64_t);
+#endif
 int __real_munmap(void *, size_t);
 static int map_allowed(int prot)
 {
@@ -67,11 +74,13 @@ void *__wrap_mmap(void *a, size_t n, int p, int f, int fd, off_t o)
     if (!map_allowed(p)) return MAP_FAILED;
     void *m = __real_mmap(a, n, p, f, fd, o); if (m != MAP_FAILED && in_child) maps++; return m;
 }
+#if VAV4L2_TEST_LFS64
 void *__wrap_mmap64(void *a, size_t n, int p, int f, int fd, off64_t o)
 {
     if (!map_allowed(p)) return MAP_FAILED;
     void *m = __real_mmap64(a, n, p, f, fd, o); if (m != MAP_FAILED && in_child) maps++; return m;
 }
+#endif
 int __wrap_munmap(void *a, size_t n)
 {
     int ret = __real_munmap(a, n);
