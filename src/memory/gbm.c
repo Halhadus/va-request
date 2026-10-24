@@ -13,9 +13,9 @@
 #include <xf86drm.h>
 #include <va/va.h>
 #include <va/va_drmcommon.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
-static struct vareq_gbm_state fallback_gbm = {.fd = -1, .drm_fd = -1};
+static struct vav4l2_gbm_state fallback_gbm = {.fd = -1, .drm_fd = -1};
 
 /* Preserve public Y/Cr/Cb semantics through descriptor offsets. Native
  * storage uses the working kernel Y/Cb/Cr transport without per-job repacks. */
@@ -24,25 +24,25 @@ static uint32_t native_storage_format(uint32_t fourcc)
     return fourcc == VA_FOURCC_YV12 ? VA_FOURCC_I420 : fourcc == VA_FOURCC_YV16 ? VA_FOURCC_422H : fourcc;
 }
 
-static void cleanup_gbm(struct vareq_gbm_state *state)
+static void cleanup_gbm(struct vav4l2_gbm_state *state)
 {
     if (state->device) gbm_device_destroy(state->device);
     if (state->fd >= 0) close(state->fd);
     state->device = NULL; state->fd = -1; state->failed = 0;
 }
 
-void vareq_gbm_driver_cleanup(struct vareq_driver_data *dd)
+void vav4l2_gbm_driver_cleanup(struct vav4l2_driver_data *dd)
 {
     cleanup_gbm(&dd->gbm);
 }
 
-void vareq_gbm_cleanup(void)
+void vav4l2_gbm_cleanup(void)
 {
     cleanup_gbm(&fallback_gbm);
-    vareq_allocator_cleanup();
+    vav4l2_allocator_cleanup();
 }
 
-static int open_gbm(struct vareq_gbm_state *state, int fd)
+static int open_gbm(struct vav4l2_gbm_state *state, int fd)
 {
     if (fd < 0) return 0;
     state->device = gbm_create_device(fd);
@@ -51,12 +51,12 @@ static int open_gbm(struct vareq_gbm_state *state, int fd)
     return 1;
 }
 
-static struct gbm_device *vareq_gbm_device(const struct vareq_surface *s)
+static struct gbm_device *vav4l2_gbm_device(const struct vav4l2_surface *s)
 {
-    struct vareq_gbm_state *state = s->driver_data ? &s->driver_data->gbm : &fallback_gbm;
+    struct vav4l2_gbm_state *state = s->driver_data ? &s->driver_data->gbm : &fallback_gbm;
     if (state->device) return state->device;
     if (state->failed) return NULL;
-    const char *node = getenv("VAREQ_RENDER_NODE");
+    const char *node = getenv("VAV4L2_RENDER_NODE");
     if (node && *node) {
         if (open_gbm(state, open(node, O_RDWR | O_CLOEXEC))) return state->device;
     } else if (state->drm_fd >= 0) {
@@ -75,17 +75,17 @@ static struct gbm_device *vareq_gbm_device(const struct vareq_surface *s)
     return NULL;
 }
 
-static int import_cpu_access(struct vareq_surface *s, uint64_t flags)
+static int import_cpu_access(struct vav4l2_surface *s, uint64_t flags)
 {
     int fd = s->gbm_imported ? s->import_fd : s->gbm_writable ? s->gbm_external_fd : -1;
-    return fd < 0 ? 0 : vareq_dmabuf_sync(fd, flags);
+    return fd < 0 ? 0 : vav4l2_dmabuf_sync(fd, flags);
 }
 
 struct cpu_bo_map { void *cookie; size_t length; int direct; };
 
 /* Shared linear objects must be mapped through the exported allocation. A
  * GBM map may be a driver transfer/shadow rather than that allocation. */
-static void *map_cpu_bo(struct vareq_surface *s, unsigned width, unsigned rows,
+static void *map_cpu_bo(struct vav4l2_surface *s, unsigned width, unsigned rows,
                         unsigned access, uint32_t *pitch, struct cpu_bo_map *map)
 {
     int fd = s->gbm_imported ? s->import_fd : s->gbm_writable ? s->gbm_external_fd : -1;
@@ -98,24 +98,24 @@ static void *map_cpu_bo(struct vareq_surface *s, unsigned width, unsigned rows,
     return ptr;
 }
 
-static void unmap_cpu_bo(struct vareq_surface *s, struct cpu_bo_map *map)
+static void unmap_cpu_bo(struct vav4l2_surface *s, struct cpu_bo_map *map)
 {
     if (map->direct) munmap(map->cookie, map->length);
     else gbm_bo_unmap(s->gbm_bo, map->cookie);
 }
 
-int vareq_import_refresh(struct vareq_surface *s)
+int vav4l2_import_refresh(struct vav4l2_surface *s)
 {
-    if (s->prime) return vareq_prime_read(s);
-    if (s->gbm_bo && s->format != VA_FOURCC_NV12 && (s->gbm_writable || s->last_writer == VAREQ_WRITER_BO)) return vareq_gbm_read_cpu(s);
+    if (s->prime) return vav4l2_prime_read(s);
+    if (s->gbm_bo && s->format != VA_FOURCC_NV12 && (s->gbm_writable || s->last_writer == VAV4L2_WRITER_BO)) return vav4l2_gbm_read_cpu(s);
     if (s->gbm_imported || s->gbm_writable) {
         if (s->gbm_dirty || !s->gbm_bo) return -1;
-        s->last_writer = VAREQ_WRITER_BO;
+        s->last_writer = VAV4L2_WRITER_BO;
     }
     return 0;
 }
 
-VAStatus vareq_gbm_surface_import(struct vareq_surface *s, const VADRMPRIMESurfaceDescriptor *desc)
+VAStatus vav4l2_gbm_surface_import(struct vav4l2_surface *s, const VADRMPRIMESurfaceDescriptor *desc)
 {
     if (desc->fourcc != VA_FOURCC_NV12) return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     if (desc->num_objects != 1 || desc->num_layers != 1 || desc->layers[0].num_planes != 2 ||
@@ -131,10 +131,10 @@ VAStatus vareq_gbm_surface_import(struct vareq_surface *s, const VADRMPRIMESurfa
     int fd = fcntl(desc->objects[0].fd, F_DUPFD_CLOEXEC, 0);
     if (fd < 0) return errno == EBADF ? VA_STATUS_ERROR_INVALID_PARAMETER : VA_STATUS_ERROR_ALLOCATION_FAILED;
     uint32_t actual;
-    if (vareq_export_fd_validate(fd, required, &actual) < 0 || desc->objects[0].size > actual) {
+    if (vav4l2_export_fd_validate(fd, required, &actual) < 0 || desc->objects[0].size > actual) {
         close(fd); return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
-    struct gbm_device *dev = vareq_gbm_device(s);
+    struct gbm_device *dev = vav4l2_gbm_device(s);
     struct gbm_import_fd_modifier_data input = {.width = s->width, .height = s->height + s->height / 2,
         .format = GBM_FORMAT_R8, .num_fds = 1, .fds = {fd}, .strides = {(int)pitch}, .modifier = DRM_FORMAT_MOD_LINEAR};
     struct gbm_bo *bo = dev ? gbm_bo_import(dev, GBM_BO_IMPORT_FD_MODIFIER, &input, GBM_BO_USE_LINEAR) : NULL;
@@ -144,7 +144,7 @@ VAStatus vareq_gbm_surface_import(struct vareq_surface *s, const VADRMPRIMESurfa
     }
     s->gbm_bo = bo; s->gbm_stride = pitch; s->gbm_dirty = 0; s->gbm_imported = 1; s->import_fd = fd;
     s->stride = pitch; s->aligned_h = s->height; s->cap_fourcc = V4L2_PIX_FMT_NV12;
-    s->has_pic = 1; s->last_writer = VAREQ_WRITER_BO;
+    s->has_pic = 1; s->last_writer = VAV4L2_WRITER_BO;
     return VA_STATUS_SUCCESS;
 }
 
@@ -160,7 +160,7 @@ static void copy_plane(uint8_t *dst, uint32_t dst_stride, const uint8_t *src,
                width);
 }
 
-int vareq_gbm_surface_upload(struct vareq_surface *s, const void *src,
+int vav4l2_gbm_surface_upload(struct vav4l2_surface *s, const void *src,
                               uint32_t src_stride, uint32_t src_alh)
 {
     uint32_t w, h;
@@ -172,16 +172,16 @@ int vareq_gbm_surface_upload(struct vareq_surface *s, const void *src,
     if (s->format != VA_FOURCC_NV12) {
         s->gbm_dirty = 1;
         if (src_alh < s->height || import_cpu_access(s, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE) < 0) return -1;
-        uint32_t rows = vareq_va_image_size(s->format, s->gbm_stride, s->height) / s->gbm_stride;
-        dst = map_cpu_bo(s, vareq_default_image_stride(s->format, s->width), rows, GBM_BO_TRANSFER_WRITE, &mstride, &map_data);
+        uint32_t rows = vav4l2_va_image_size(s->format, s->gbm_stride, s->height) / s->gbm_stride;
+        dst = map_cpu_bo(s, vav4l2_default_image_stride(s->format, s->width), rows, GBM_BO_TRANSFER_WRITE, &mstride, &map_data);
         int ret = -1;
         if (dst) {
-            struct vareq_image_view from = {.data = (void *)src, .fourcc = s->format, .stride = src_stride,
+            struct vav4l2_image_view from = {.data = (void *)src, .fourcc = s->format, .stride = src_stride,
                 .width = s->width, .height = s->height, .alloc_height = src_alh,
-                .size = vareq_va_image_size(s->format, src_stride, src_alh)};
-            struct vareq_image_view to = {.data = dst, .fourcc = native_storage_format(s->format), .stride = mstride,
-                .width = s->width, .height = s->height, .size = vareq_va_image_size(s->format, mstride, s->height)};
-            if (mstride == s->gbm_stride) ret = vareq_copy_image_rect(&to, 0, 0, &from, 0, 0, s->width, s->height) == VA_STATUS_SUCCESS ? 0 : -1;
+                .size = vav4l2_va_image_size(s->format, src_stride, src_alh)};
+            struct vav4l2_image_view to = {.data = dst, .fourcc = native_storage_format(s->format), .stride = mstride,
+                .width = s->width, .height = s->height, .size = vav4l2_va_image_size(s->format, mstride, s->height)};
+            if (mstride == s->gbm_stride) ret = vav4l2_copy_image_rect(&to, 0, 0, &from, 0, 0, s->width, s->height) == VA_STATUS_SUCCESS ? 0 : -1;
             unmap_cpu_bo(s, &map_data);
         }
         if (import_cpu_access(s, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) < 0) ret = -1;
@@ -195,7 +195,7 @@ int vareq_gbm_surface_upload(struct vareq_surface *s, const void *src,
     dst = map_cpu_bo(s, w + (w & 1), h + (h + 1) / 2,
                      GBM_BO_TRANSFER_WRITE, &mstride, &map_data);
     if (!dst) {
-        fprintf(stderr, "v4l2request: gbm: bo map failed\n");
+        fprintf(stderr, "v4l2: gbm: bo map failed\n");
         (void)import_cpu_access(s, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
         return -1;
     }
@@ -215,22 +215,22 @@ int vareq_gbm_surface_upload(struct vareq_surface *s, const void *src,
 /* Lazy memfd: refill the memfd snapshot (capture layout: Y@0,
  * UV@stride*aligned_h) from the bo (image layout: Y@0, UV@gbm_stride*h).
  * Only the visible rows/bytes are copied — padding is never read. */
-int vareq_surface_ensure_memfd(struct vareq_surface *s)
+int vav4l2_surface_ensure_memfd(struct vav4l2_surface *s)
 {
     uint32_t sz, w, h, uvw;
     struct cpu_bo_map bo_map = {0}; void *m;
     uint8_t *bo_data = NULL, *dst;
     uint32_t bo_stride = 0;
 
-    if (!s || !vareq_memfd_stale(s) || !s->gbm_bo)
+    if (!s || !vav4l2_memfd_stale(s) || !s->gbm_bo)
         return 0;
     if (!s->stride || !s->aligned_h)
         return -1;
     w = s->width;
     h = s->height;
     uvw = w + (w & 1);
-    sz = vareq_capture_plane_size(V4L2_PIX_FMT_NV12, s->stride, s->aligned_h);
-    if (vareq_surface_grow_memfd(s, sz) < 0)
+    sz = vav4l2_capture_plane_size(V4L2_PIX_FMT_NV12, s->stride, s->aligned_h);
+    if (vav4l2_surface_grow_memfd(s, sz) < 0)
         return -1;
     if (import_cpu_access(s, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0) return -1;
     bo_data = map_cpu_bo(s, w, h + (h + 1) / 2,
@@ -242,7 +242,7 @@ int vareq_surface_ensure_memfd(struct vareq_surface *s)
     if (bo_stride < uvw) {
         unmap_cpu_bo(s, &bo_map); (void)import_cpu_access(s, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ); return -1;
     }
-    m = vareq_surface_map_memfd(s, sz);
+    m = vav4l2_surface_map_memfd(s, sz);
     if (!m) {
         unmap_cpu_bo(s, &bo_map);
         (void)import_cpu_access(s, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
@@ -258,13 +258,13 @@ int vareq_surface_ensure_memfd(struct vareq_surface *s)
                bo_data + (size_t)bo_stride * (h + y), uvw);
     unmap_cpu_bo(s, &bo_map);
     if (import_cpu_access(s, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) < 0) return -1;
-    s->last_writer = VAREQ_WRITER_MEMFD;
+    s->last_writer = VAV4L2_WRITER_MEMFD;
     return 0;
 }
 
-static void storage_trace(const struct vareq_surface *s, const char *stage, int provider, int status, int error)
+static void storage_trace(const struct vav4l2_surface *s, const char *stage, int provider, int status, int error)
 {
-    int saved = errno; const char *path = getenv("VAREQ_STORAGE_TRACE"); if (!path || !*path) return;
+    int saved = errno; const char *path = getenv("VAV4L2_STORAGE_TRACE"); if (!path || !*path) return;
     FILE *file = fopen(path, "a"); if (!file) { perror("storage trace"); errno = saved; return; }
     if (!ftell(file)) fprintf(file, "PID\tSURFACE\tSTAGE\tPROVIDER\tSTATUS\tERRNO\tFORMAT\tWIDTH\tHEIGHT\n");
     fprintf(file, "%ld\t%u\t%s\t%d\t%d\t%d\t%08x\t%u\t%u\n", (long)getpid(), s->surface_id, stage, provider, status, error, s->format, s->width, s->height);
@@ -272,7 +272,7 @@ static void storage_trace(const struct vareq_surface *s, const char *stage, int 
     errno = saved;
 }
 
-int vareq_gbm_surface_ensure(struct vareq_surface *s)
+int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s)
 {
     struct gbm_device *dev;
     uint32_t rows;
@@ -280,23 +280,23 @@ int vareq_gbm_surface_ensure(struct vareq_surface *s)
     if (!s || s->width == 0 || s->height == 0)
         return -1;
     if (s->gbm_bo)
-        return s->gbm_dirty ? vareq_gbm_surface_sync(s) : 0;
-    struct vareq_prime_layout layout;
-    if (s->format != VA_FOURCC_NV12 && vareq_prime_layout(s->format, s->width, s->height, &layout) < 0) return -1;
-    dev = vareq_gbm_device(s);
+        return s->gbm_dirty ? vav4l2_gbm_surface_sync(s) : 0;
+    struct vav4l2_prime_layout layout;
+    if (s->format != VA_FOURCC_NV12 && vav4l2_prime_layout(s->format, s->width, s->height, &layout) < 0) return -1;
+    dev = vav4l2_gbm_device(s);
     if (!dev)
         return -1;
-    uint32_t bytes = s->format == VA_FOURCC_NV12 ? s->width + (s->width & 1) : vareq_default_image_stride(s->format, s->width);
+    uint32_t bytes = s->format == VA_FOURCC_NV12 ? s->width + (s->width & 1) : vav4l2_default_image_stride(s->format, s->width);
     if (s->format == VA_FOURCC_422H || s->format == VA_FOURCC_YV16) bytes = (bytes + 127) & ~127u;
-    uint32_t size = vareq_va_image_size(s->format, bytes, s->height);
+    uint32_t size = vav4l2_va_image_size(s->format, bytes, s->height);
     if (!bytes || !size || size % bytes) return -1;
     rows = size / bytes;
     unsigned shared_pitch = (bytes + 63) & ~63u;
-    const char *storage = getenv("VAREQ_SHARED_STORAGE");
+    const char *storage = getenv("VAV4L2_SHARED_STORAGE");
     int providers = storage && !strcmp(storage, "coherent") ? 1 : 2;
     for (int provider = 0; provider < providers && !s->gbm_bo; provider++) {
         errno = 0;
-        int shared = provider ? vareq_alloc_coherent_storage(shared_pitch, rows) : vareq_alloc_shared_storage(shared_pitch, rows);
+        int shared = provider ? vav4l2_alloc_coherent_storage(shared_pitch, rows) : vav4l2_alloc_shared_storage(shared_pitch, rows);
         storage_trace(s, "allocate", provider, shared < 0 ? -1 : 0, shared < 0 ? errno : 0);
         if (shared < 0) continue;
         struct gbm_import_fd_modifier_data input = {.width = bytes, .height = rows, .format = GBM_FORMAT_R8,
@@ -317,18 +317,18 @@ int vareq_gbm_surface_ensure(struct vareq_surface *s)
         storage_trace(s, "native-create", 2, s->gbm_bo ? 0 : -1, s->gbm_bo ? 0 : errno);
     }
     if (!s->gbm_bo) {
-        fprintf(stderr, "v4l2request: gbm: bo create %ux%u failed\n",
+        fprintf(stderr, "v4l2: gbm: bo create %ux%u failed\n",
                 s->width, rows);
         return -1;
     }
     s->gbm_stride = gbm_bo_get_stride_for_plane(s->gbm_bo, 0);
     if (s->gbm_stride < bytes || (s->format != VA_FOURCC_NV12 &&
-        vareq_va_image_size(s->format, s->gbm_stride, s->height) / s->gbm_stride != rows)) {
-        vareq_gbm_surface_destroy(s); return -1;
+        vav4l2_va_image_size(s->format, s->gbm_stride, s->height) / s->gbm_stride != rows)) {
+        vav4l2_gbm_surface_destroy(s); return -1;
     }
-    if (s->last_writer != VAREQ_WRITER_NONE && vareq_gbm_surface_sync(s) < 0) {
+    if (s->last_writer != VAV4L2_WRITER_NONE && vav4l2_gbm_surface_sync(s) < 0) {
         storage_trace(s, "initial-upload", -1, -1, errno);
-        vareq_gbm_surface_destroy(s);
+        vav4l2_gbm_surface_destroy(s);
         return -1;
     }
     return 0;
@@ -338,33 +338,33 @@ int vareq_gbm_surface_ensure(struct vareq_surface *s)
  * either cpu_ptr (VPP output, vaPutImage uploads; image layout: Y@0,
  * UV@cpu_stride*h) or the memfd (decode pull_capture; capture layout).
  * The last_writer marker says which backing was written last. */
-int vareq_gbm_surface_sync(struct vareq_surface *s)
+int vav4l2_gbm_surface_sync(struct vav4l2_surface *s)
 {
     if (!s || !s->gbm_bo)
         return -1;
-    if (s->last_writer == VAREQ_WRITER_BO)
+    if (s->last_writer == VAV4L2_WRITER_BO)
         return s->gbm_dirty ? -1 : 0; /* bo already holds the latest frame (lazy memfd) */
-    if ((s->last_writer == VAREQ_WRITER_CPU || s->format != VA_FOURCC_NV12) && s->cpu_ptr && s->cpu_stride)
-        return vareq_gbm_surface_upload(s, s->cpu_ptr, s->cpu_stride,
+    if ((s->last_writer == VAV4L2_WRITER_CPU || s->format != VA_FOURCC_NV12) && s->cpu_ptr && s->cpu_stride)
+        return vav4l2_gbm_surface_upload(s, s->cpu_ptr, s->cpu_stride,
                                          s->height);
-    if (s->last_writer == VAREQ_WRITER_MEMFD && s->memfd_fd >= 0 &&
+    if (s->last_writer == VAV4L2_WRITER_MEMFD && s->memfd_fd >= 0 &&
         s->stride && s->aligned_h) {
-        uint32_t sz = vareq_capture_plane_size(V4L2_PIX_FMT_NV12,
+        uint32_t sz = vav4l2_capture_plane_size(V4L2_PIX_FMT_NV12,
                                                 s->stride, s->aligned_h);
-        void *m = vareq_surface_map_memfd(s, sz);
+        void *m = vav4l2_surface_map_memfd(s, sz);
         int r;
 
         if (!m)
             return -1;
-        r = vareq_gbm_surface_upload(s, m, s->stride, s->aligned_h);
+        r = vav4l2_gbm_surface_upload(s, m, s->stride, s->aligned_h);
         if (r == 0)
-            s->last_writer = VAREQ_WRITER_BO; /* bo now holds the frame */
+            s->last_writer = VAV4L2_WRITER_BO; /* bo now holds the frame */
         return r;
     }
     return -1;
 }
 
-void vareq_gbm_surface_destroy(struct vareq_surface *s)
+void vav4l2_gbm_surface_destroy(struct vav4l2_surface *s)
 {
     if (s && s->gbm_bo) {
         gbm_bo_destroy(s->gbm_bo);
@@ -373,18 +373,18 @@ void vareq_gbm_surface_destroy(struct vareq_surface *s)
     }
     if (s && s->gbm_imported) { close(s->import_fd); s->import_fd = -1; s->gbm_imported = 0; }
     if (s && s->gbm_writable) { close(s->gbm_external_fd); s->gbm_external_fd = -1; s->gbm_writable = 0; }
-    vareq_prime_destroy(s);
+    vav4l2_prime_destroy(s);
 }
 
 /* Once shared, descriptor identity belongs to the retained DMA-BUF, not a
  * fresh GBM export which may flush or replace driver-private storage. */
-static int shared_bo_fd(const struct vareq_surface *s)
+static int shared_bo_fd(const struct vav4l2_surface *s)
 {
     int fd = s->gbm_imported ? s->import_fd : s->gbm_writable ? s->gbm_external_fd : -1;
     return fd >= 0 ? fcntl(fd, F_DUPFD_CLOEXEC, 0) : gbm_bo_get_fd_for_plane(s->gbm_bo, 0);
 }
 
-VAStatus vareq_surface_fill_prime_gbm(const struct vareq_surface *surf,
+VAStatus vav4l2_surface_fill_prime_gbm(const struct vav4l2_surface *surf,
                                        uint32_t flags, void *descriptor)
 {
     VADRMPRIMESurfaceDescriptor *desc = descriptor;
@@ -396,13 +396,13 @@ VAStatus vareq_surface_fill_prime_gbm(const struct vareq_surface *surf,
     h = surf->height;
     pitch = surf->gbm_stride;
     if (surf->format != VA_FOURCC_NV12) {
-        struct vareq_prime_layout l;
-        if (vareq_prime_layout(surf->format, surf->width, h, &l) < 0 || gbm_bo_get_modifier(surf->gbm_bo) != DRM_FORMAT_MOD_LINEAR)
+        struct vav4l2_prime_layout l;
+        if (vav4l2_prime_layout(surf->format, surf->width, h, &l) < 0 || gbm_bo_get_modifier(surf->gbm_bo) != DRM_FORMAT_MOD_LINEAR)
             return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
-        uint32_t size = vareq_va_image_size(surf->format, pitch, h), actual;
+        uint32_t size = vav4l2_va_image_size(surf->format, pitch, h), actual;
         fd = shared_bo_fd(surf);
         if (fd < 0) return errno == EMFILE || errno == ENFILE || errno == ENOMEM ? VA_STATUS_ERROR_ALLOCATION_FAILED : VA_STATUS_ERROR_OPERATION_FAILED;
-        if (vareq_export_fd_validate(fd, size, &actual) < 0) { close(fd); return VA_STATUS_ERROR_OPERATION_FAILED; }
+        if (vav4l2_export_fd_validate(fd, size, &actual) < 0) { close(fd); return VA_STATUS_ERROR_OPERATION_FAILED; }
         VADRMPRIMESurfaceDescriptor d = {.fourcc = surf->format, .width = surf->width, .height = h, .num_objects = 1};
         d.objects[0].fd = fd; d.objects[0].size = actual; d.objects[0].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
         int separate = (flags & VA_EXPORT_SURFACE_SEPARATE_LAYERS) && l.planes > 1;
@@ -430,46 +430,46 @@ VAStatus vareq_surface_fill_prime_gbm(const struct vareq_surface *surf,
     fd = shared_bo_fd(surf);
     if (fd < 0) return errno == EMFILE || errno == ENFILE || errno == ENOMEM ? VA_STATUS_ERROR_ALLOCATION_FAILED : VA_STATUS_ERROR_OPERATION_FAILED;
     uint32_t object_size;
-    if (vareq_export_fd_validate(fd, size, &object_size) < 0) {
+    if (vav4l2_export_fd_validate(fd, size, &object_size) < 0) {
         close(fd); return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    vareq_fill_prime_layers(desc, fd, object_size, DRM_FORMAT_MOD_LINEAR,
+    vav4l2_fill_prime_layers(desc, fd, object_size, DRM_FORMAT_MOD_LINEAR,
                              VA_FOURCC_NV12, surf->width, h, pitch, h,
                              DRM_FORMAT_NV12, DRM_FORMAT_R8, DRM_FORMAT_GR88,
                              flags);
     return VA_STATUS_SUCCESS;
 }
 
-int vareq_gbm_enable_write(struct vareq_surface *s)
+int vav4l2_gbm_enable_write(struct vav4l2_surface *s)
 {
     if (s->gbm_imported || s->gbm_writable) return 0;
     int fd = gbm_bo_get_fd_for_plane(s->gbm_bo, 0); uint32_t size;
-    uint32_t need = vareq_va_image_size(s->format, s->gbm_stride, s->height);
+    uint32_t need = vav4l2_va_image_size(s->format, s->gbm_stride, s->height);
     if (fd < 0) return -1;
-    if (vareq_export_fd_validate(fd, need, &size) < 0) { close(fd); return -1; }
-    if (vareq_dmabuf_sync(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0) { close(fd); return -1; }
-    if (vareq_dmabuf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) < 0) { close(fd); return -1; }
+    if (vav4l2_export_fd_validate(fd, need, &size) < 0) { close(fd); return -1; }
+    if (vav4l2_dmabuf_sync(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0) { close(fd); return -1; }
+    if (vav4l2_dmabuf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) < 0) { close(fd); return -1; }
     s->gbm_external_fd = fd; s->gbm_writable = 1; s->has_pic = 1; return 0;
 }
 
-int vareq_gbm_read_cpu(struct vareq_surface *s)
+int vav4l2_gbm_read_cpu(struct vav4l2_surface *s)
 {
-    if (!s->gbm_bo || s->gbm_dirty || vareq_surface_ensure_cpu(s) < 0 ||
+    if (!s->gbm_bo || s->gbm_dirty || vav4l2_surface_ensure_cpu(s) < 0 ||
         import_cpu_access(s, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0) return -1;
     struct cpu_bo_map map_data = {0}; uint32_t pitch = 0;
-    uint32_t rows = vareq_va_image_size(s->format, s->gbm_stride, s->height) / s->gbm_stride;
-    uint32_t bytes = s->format == VA_FOURCC_NV12 ? s->width + (s->width & 1) : vareq_default_image_stride(s->format, s->width);
+    uint32_t rows = vav4l2_va_image_size(s->format, s->gbm_stride, s->height) / s->gbm_stride;
+    uint32_t bytes = s->format == VA_FOURCC_NV12 ? s->width + (s->width & 1) : vav4l2_default_image_stride(s->format, s->width);
     void *map = map_cpu_bo(s, bytes, rows, GBM_BO_TRANSFER_READ, &pitch, &map_data);
     int ret = -1;
     if (map) {
-        struct vareq_image_view from = {.data = map, .fourcc = native_storage_format(s->format), .stride = pitch,
-            .width = s->width, .height = s->height, .size = vareq_va_image_size(s->format, pitch, s->height)};
-        struct vareq_image_view to = {.data = s->cpu_ptr, .fourcc = s->format, .stride = s->cpu_stride,
+        struct vav4l2_image_view from = {.data = map, .fourcc = native_storage_format(s->format), .stride = pitch,
+            .width = s->width, .height = s->height, .size = vav4l2_va_image_size(s->format, pitch, s->height)};
+        struct vav4l2_image_view to = {.data = s->cpu_ptr, .fourcc = s->format, .stride = s->cpu_stride,
             .width = s->width, .height = s->height, .size = s->cpu_size};
-        if (pitch == s->gbm_stride) ret = vareq_copy_image_rect(&to, 0, 0, &from, 0, 0, s->width, s->height) == VA_STATUS_SUCCESS ? 0 : -1;
+        if (pitch == s->gbm_stride) ret = vav4l2_copy_image_rect(&to, 0, 0, &from, 0, 0, s->width, s->height) == VA_STATUS_SUCCESS ? 0 : -1;
         unmap_cpu_bo(s, &map_data);
     }
     if (import_cpu_access(s, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) < 0) ret = -1;
-    if (!ret) s->last_writer = VAREQ_WRITER_CPU;
+    if (!ret) s->last_writer = VAV4L2_WRITER_CPU;
     return ret;
 }

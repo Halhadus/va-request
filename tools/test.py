@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and test va-request, preserving a machine-readable report on failure."""
+"""Build and test libva-v4l2, preserving a machine-readable report on failure."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -18,7 +18,7 @@ import time
 import xml.etree.ElementTree as ET
 import importlib.util
 
-SCHEMA = "va-request.test-report/v1"
+SCHEMA = "libva-v4l2.test-report/v1"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -27,7 +27,7 @@ def sha256(path):
 
 
 def source_identity(root, build):
-    result = {"commit": None, "tree": None, "dirty": None, "driver_sha256": sha256(build / "v4l2request_drv_video.so")}
+    result = {"commit": None, "tree": None, "dirty": None, "driver_sha256": sha256(build / "v4l2_drv_video.so")}
     if (root / ".git").exists():
         for field, args in (("commit", ["rev-parse", "HEAD"]), ("tree", ["rev-parse", "HEAD^{tree}"]), ("dirty", ["status", "--porcelain", "--untracked-files=no"])):
             value = subprocess.run(["git", *args], cwd=root, text=True, stdout=subprocess.PIPE, check=False)
@@ -74,7 +74,7 @@ def sanitize_meson_log(name, data):
         if not line.strip(): continue
         row = json.loads(line)
         if "env" in row:
-            row["env"] = {key: value for key, value in row["env"].items() if key.startswith(("VAREQ_", "LIBVA_")) or key in
+            row["env"] = {key: value for key, value in row["env"].items() if key.startswith(("VAV4L2_", "LIBVA_")) or key in
                 ("ASAN_OPTIONS", "UBSAN_OPTIONS", "MSAN_OPTIONS", "TSAN_OPTIONS", "MALLOC_PERTURB_", "MESON_TEST_ITERATION")}
         rows.append(json.dumps(row) + "\n")
     return "".join(rows).encode()
@@ -118,7 +118,7 @@ def write_report(record, output):
     with (output / "results.tsv").open("w") as file:
         file.write("NAME\tSTATUS\tEXIT_CODE\tDURATION_S\n")
         for case in cases: file.write(f"{case['name']}\t{case['status']}\t{case.get('exit_code')}\t{case.get('duration_s', 0)}\n")
-    suite = ET.Element("testsuite", name="va-request", tests=str(len(cases)), failures=str(record["summary"]["fail"]), skipped=str(record["summary"]["skip"]))
+    suite = ET.Element("testsuite", name="libva-v4l2", tests=str(len(cases)), failures=str(record["summary"]["fail"]), skipped=str(record["summary"]["skip"]))
     for case in cases:
         node = ET.SubElement(suite, "testcase", name=case["name"], time=str(case.get("duration_s", 0)))
         if case["status"] == "FAIL": ET.SubElement(node, "failure", message=f"exit {case.get('exit_code')}; see accompanying logs")
@@ -175,7 +175,7 @@ def main(argv=None):
                 if not any(result is old for old in record["suites"]): record["suites"].append(result)
             if any(item["status"] == "FAIL" for item in record["suites"]): record["complete"] = True; return 1
         elif args.suite in ("acceptance", "rk3588"):
-            env = dict(os.environ, VAREQ_BUILD_DIR=str(build), VAREQ_REPORT_FILE=str(output / "hardware.tar.gz"), VAREQ_RENDER_NODE=args.render_node)
+            env = dict(os.environ, VAV4L2_BUILD_DIR=str(build), VAV4L2_REPORT_FILE=str(output / "hardware.tar.gz"), VAV4L2_RENDER_NODE=args.render_node)
             result = run("acceptance", ["bash", "tests/run_dmabuf_completion.sh"], env)
             if (output / "hardware.tar.gz").is_file():
                 spec = importlib.util.spec_from_file_location("hardware", ROOT / "tools/hardware.py")
@@ -203,7 +203,7 @@ def main(argv=None):
                 if path.is_file() and (path.name.endswith(("testlog.json", "testlog.txt")) or path.name == "hardware.tar.gz"): path.unlink()
             print(f"Cannot prepare report logs: {error}", file=sys.stderr)
         write_report(record, output)
-        archive = parent / f"va-request-{output.name}.tar.gz"
+        archive = parent / f"libva-v4l2-{output.name}.tar.gz"
         with tarfile.open(archive, "w:gz") as tar: tar.add(output, arcname=output.name)
         print((output / "summary.txt").read_text().strip()); print(f"REPORT={archive}")
         if sanitation_failed: return 1

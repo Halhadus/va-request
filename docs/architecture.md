@@ -31,7 +31,7 @@ JPEG discovery selects coded CAPTURE before enumerating its raw OUTPUT menu and 
 
 Discovery results may be cached in a private, owned, mode-0700 XDG_RUNTIME_DIR. Cache files are created with unique mode-0600 temporary files and atomically renamed; reads refuse symlinks, nonregular files, wrong owners, broad permissions, oversized/truncated records, invalid paths and stale timestamps.
 
-A cache key includes the boot ID and numeric video-node identity/metadata. Selected paths are reopened and checked against current capabilities, formats and required controls before reuse. Topology changes, removed controls/formats, cache age above 60 seconds or `VAREQ_PROBE_NOCACHE=1` trigger discovery. The age limit also refreshes negative capability entries. Existing VA configs are snapshots; applications must recreate/reinitialize after kernel/driver changes.
+A cache key includes the boot ID and numeric video-node identity/metadata. Selected paths are reopened and checked against current capabilities, formats and required controls before reuse. Topology changes, removed controls/formats, cache age above 60 seconds or `VAV4L2_PROBE_NOCACHE=1` trigger discovery. The age limit also refreshes negative capability entries. Existing VA configs are snapshots; applications must recreate/reinitialize after kernel/driver changes.
 
 CAPTURE format depends on coded OUTPUT and sequence controls. Final format, depth/chroma, dimensions, physical plane count, pitches and sizeimage are validated during stream setup. Unsupported layouts or unavailable capabilities return an error. Software codec fallback is handled by the application.
 

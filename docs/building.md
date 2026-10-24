@@ -18,7 +18,7 @@ Install the dependencies listed in `debian/control`, then:
 dpkg-buildpackage -us -uc -b
 ```
 
-The binary package is `libva-v4l2-request`; the source package is `va-request`. The driver installs into the architecture's multiarch `dri` directory. Native package builds run the hardware-free tests; hardware tests are never part of package creation. `DEB_BUILD_OPTIONS=nocheck` skips the native test run.
+The binary package is `libva-v4l2`; the source package is `libva-v4l2`. The driver installs into the architecture's multiarch `dri` directory. Native package builds run the hardware-free tests; hardware tests are never part of package creation. `DEB_BUILD_OPTIONS=nocheck` skips the native test run.
 
 ## Cross-compilation
 

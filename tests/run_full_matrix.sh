@@ -4,7 +4,7 @@
 # compared to GStreamer v4l2slmpeg2dec (same kernel IDCT; ffmpeg SW differs).
 set -uo pipefail
 FF=${FF:-/usr/bin/ffmpeg}
-export LIBVA_DRIVER_NAME=v4l2request
+export LIBVA_DRIVER_NAME=v4l2
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CLIP=${CLIPDIR:-$ROOT/verify/clips}
 OUT=${OUTDIR:-$ROOT/verify/matrix}
@@ -32,9 +32,9 @@ cd "$ROOT" || exit 1
 # Abort command failures where continuing could compare stale output.
 must() { "$@" || { echo "COMMAND_FAILED: $*"; record_result FAIL "$stage:command"; exit 1; }; }
 compare_md5() { python3 "$ROOT/tests/compare_framemd5.py" "$@"; }
-if [ "${VAREQ_ADVERTISE_AV1:-0}" = 1 ]; then av1=1; else av1=0; fi
-if [ "${VAREQ_TEST_AV1_TILES:-0}" = 1 ] && [ "$av1" -ne 1 ]; then
-  echo "VAREQ_TEST_AV1_TILES=1 requires VAREQ_ADVERTISE_AV1=1"; exit 1
+if [ "${VAV4L2_ADVERTISE_AV1:-0}" = 1 ]; then av1=1; else av1=0; fi
+if [ "${VAV4L2_TEST_AV1_TILES:-0}" = 1 ] && [ "$av1" -ne 1 ]; then
+  echo "VAV4L2_TEST_AV1_TILES=1 requires VAV4L2_ADVERTISE_AV1=1"; exit 1
 fi
 
 enc() {
@@ -56,7 +56,7 @@ pair_sw() {
   echo "== SW $tag $src n=$n =="
   rm -f -- "$OUT/${tag}-hw.md5" "$OUT/${tag}-sw.md5" || { record_result FAIL "$tag:output-clear"; fail=$((fail+1)); return; }
   : > "$OUT/${tag}-decode.tsv" || { record_result FAIL "$tag:trace-create"; fail=$((fail+1)); return; }
-  VAREQ_DECODE_TRACE="$OUT/${tag}-decode.tsv" "$FF" -nostdin -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi \
+  VAV4L2_DECODE_TRACE="$OUT/${tag}-decode.tsv" "$FF" -nostdin -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi \
     -vaapi_device "$DRM" -i "$src" \
     -vf "hwdownload,format=$fmt" -pix_fmt "$pix" -frames:v "$n" \
     -f framemd5 -y "$OUT/${tag}-hw.md5"
@@ -170,7 +170,7 @@ echo "===== vainfo ====="
 if ! vainfo --display drm --device "$DRM" | tee "$OUT/vainfo.log"; then
   echo "VAINFO_FAILED"; record_result FAIL vainfo; exit 1
 fi
-if ! grep -q "va-request 0.1.0" "$OUT/vainfo.log"; then
+if ! grep -q "libva-v4l2 0.1.0" "$OUT/vainfo.log"; then
   echo "vainfo did not load driver"; record_result FAIL vainfo-driver; fail=$((fail+1))
 else
   # AV1 remains opt-in until multi-tile hardware validation is complete.
@@ -258,9 +258,9 @@ enc "$CLIP/mpeg2_b.mpg" -f lavfi -i testsrc=size=720x480:rate=25:duration=2 \
 enc "$CLIP/mpeg2_1080.mpg" -f lavfi -i testsrc=size=1920x1080:rate=25:duration=2 \
   -pix_fmt yuv420p -c:v mpeg2video -q:v 8 -g 12 -bf 2
 
-export VAREQ_STORAGE_TRACE="$OUT/storage-trace.tsv" VAREQ_DECODE_TRACE="$OUT/setup-decode.tsv"
-: > "$VAREQ_STORAGE_TRACE"
-: > "$VAREQ_DECODE_TRACE"
+export VAV4L2_STORAGE_TRACE="$OUT/storage-trace.tsv" VAV4L2_DECODE_TRACE="$OUT/setup-decode.tsv"
+: > "$VAV4L2_STORAGE_TRACE"
+: > "$VAV4L2_DECODE_TRACE"
 stage=decode
 echo "===== decode matrix ====="
 pair_sw "$CLIP/h264_high_b.mp4" 120 h264-high-b
@@ -284,7 +284,7 @@ pair_sw "$CLIP/h264_10.mp4" 8 h26410 p010le p010le
 	  img="${rest%%:*}"; rest="${rest#*:}"
 	  pfmt="${rest%%:*}"; cap="${rest##*:}"
 	  clip="$CLIP/h264_422_idr${d}.h264"
-	  LIBVA_DRIVER_NAME=v4l2request "$OUT/va422" "$DRM" "$clip" "$d" \
+	  LIBVA_DRIVER_NAME=v4l2 "$OUT/va422" "$DRM" "$clip" "$d" \
 	    >"$OUT/h264422${d}-va.raw"
 	  v4=$?
 	  if [ "$v4" -ne 0 ]; then echo "VA422_EXIT $v4 h264422-$d"; record_result FAIL "h264422-$d-va:exit-$v4"; fail=$((fail+1)); continue; fi
@@ -298,7 +298,7 @@ pair_sw "$CLIP/h264_10.mp4" 8 h26410 p010le p010le
 	  else echo "MD5_DIFF h264422-$d-va"; record_result FAIL "h264422-$d-va"; fail=$((fail+1)); fi
 	done
 stage=h264422-vpp
-LIBVA_DRIVER_NAME=v4l2request "$OUT/va422" "$DRM" "$CLIP/h264_422_idr8.h264" 8 vpp >"$OUT/h2644228-vpp.raw"
+LIBVA_DRIVER_NAME=v4l2 "$OUT/va422" "$DRM" "$CLIP/h264_422_idr8.h264" 8 vpp >"$OUT/h2644228-vpp.raw"
 v4=$?
 if [ "$v4" -ne 0 ]; then
   record_result FAIL "h264422-8-vpp:exit-$v4"; fail=$((fail+1))
@@ -315,7 +315,7 @@ fi
 stage=h264422-planar
 must "$FF" -nostdin -hide_banner -loglevel error -i "$CLIP/h264_422_idr8.h264" -pix_fmt yuv422p -frames:v 8 -f framemd5 -y "$OUT/h2644228-planar-sw.md5"
 for layout in 422H YV16 vpp-422H vpp-YV16; do
-  LIBVA_DRIVER_NAME=v4l2request "$OUT/va422" "$DRM" "$CLIP/h264_422_idr8.h264" 8 "$layout" >"$OUT/h2644228-$layout.raw"
+  LIBVA_DRIVER_NAME=v4l2 "$OUT/va422" "$DRM" "$CLIP/h264_422_idr8.h264" 8 "$layout" >"$OUT/h2644228-$layout.raw"
   v4=$?
   if [ "$v4" -ne 0 ]; then
     record_result FAIL "h264422-8-$layout:exit-$v4"; fail=$((fail+1)); continue
@@ -329,7 +329,7 @@ for layout in 422H YV16 vpp-422H vpp-YV16; do
 done
 must meson compile -C "$BUILD" va_export_client
 if [ -x "$BUILD/va_export_client" ]; then
-  LIBVA_DRIVER_NAME=v4l2request "$BUILD/va_export_client" \
+  LIBVA_DRIVER_NAME=v4l2 "$BUILD/va_export_client" \
     "$DRM" "$CLIP/h264_idr_nv12.h264" | tee "$OUT/va_export.log"
   ve=$?
   if [ "$ve" -eq 0 ] && grep -q "EXPORT_EXACT 7" "$OUT/va_export.log" \
@@ -406,9 +406,9 @@ pair_sw "$CLIP/hevc_main.mp4" 120 hevc-main
 pair_sw "$CLIP/hevc_wpp.mp4" 120 hevc-wpp
 pair_sw "$CLIP/hevc_4k.mp4" 8 hevc-4k
 # Forced internal CAPTURE pool hardware checks;never substitute native output.
-if [ "${VAREQ_TEST_CAPTURE_POOL:-0}" = 1 ]; then
-  VAREQ_CAPTURE_POOL_DMABUF=required pair_sw "$CLIP/h264_4k.mp4" 8 h264-4k-pool nv12 yuv420p 1
-  VAREQ_CAPTURE_POOL_DMABUF=required pair_sw "$CLIP/hevc_4k.mp4" 8 hevc-4k-pool nv12 yuv420p 1
+if [ "${VAV4L2_TEST_CAPTURE_POOL:-0}" = 1 ]; then
+  VAV4L2_CAPTURE_POOL_DMABUF=required pair_sw "$CLIP/h264_4k.mp4" 8 h264-4k-pool nv12 yuv420p 1
+  VAV4L2_CAPTURE_POOL_DMABUF=required pair_sw "$CLIP/hevc_4k.mp4" 8 hevc-4k-pool nv12 yuv420p 1
 fi
 # End forced internal CAPTURE pool checks.
 
@@ -433,7 +433,7 @@ else
   echo "SKIP AV1 (profile disabled)"; skip=$((skip+4))
   for tag in av1-aom-full av1-svt-full av1-4k av1-default-full; do record_result SKIP "$tag"; done
 fi
-if [ "${VAREQ_TEST_AV1_TILES:-0}" = 1 ]; then
+if [ "${VAV4L2_TEST_AV1_TILES:-0}" = 1 ]; then
   for grid in 2x1:1:0 4x1:2:0 8x1:3:0 2x2:1:1; do
     name=${grid%%:*}; rest=${grid#*:}; cols=${rest%%:*}; rows=${rest##*:}
     enc "$CLIP/av1_tiles_${name}.mkv" -f lavfi -i testsrc2=size=1920x1080:rate=30 \
@@ -455,7 +455,7 @@ echo "== JPEG mjpeg_vaapi =="
 # A failed encoder may leave an older va.jpg untouched. Validate a unique
 # output from this run, then publish va.jpg only after successful decoding.
 jpeg_current=$(mktemp "$OUT/jpeg-current.XXXXXX.jpg") || exit 1
-VAREQ_DEBUG=1 "$FF" -nostdin -hide_banner -vaapi_device "$DRM" -f lavfi \
+VAV4L2_DEBUG=1 "$FF" -nostdin -hide_banner -vaapi_device "$DRM" -f lavfi \
   -i testsrc=size=320x240:rate=5:duration=1 -vf "format=nv12,hwupload" \
   -c:v mjpeg_vaapi -frames:v 1 -y "$jpeg_current"
 jpeg_exit=$?
@@ -472,8 +472,8 @@ fi
 
 stage=vpp
 echo "== VPP scale_vaapi =="
-export VAREQ_VPP_TRACE="$OUT/vpp-trace.tsv"
-VAREQ_DEBUG=1 "$FF" -nostdin -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi \
+export VAV4L2_VPP_TRACE="$OUT/vpp-trace.tsv"
+VAV4L2_DEBUG=1 "$FF" -nostdin -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi \
   -vaapi_device "$DRM" -i "$CLIP/h264_qcif.mp4" \
   -vf "scale_vaapi=w=160:h=120,hwdownload,format=nv12" -frames:v 8 \
   -f framemd5 -y "$OUT/vpp.md5"

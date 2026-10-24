@@ -1,5 +1,5 @@
 /*
- * v4l2request — HEVC parameter translation
+ * v4l2 — HEVC parameter translation
  *
  * Maps VA-API HEVC buffers to V4L2 stateless controls and submits
  * a decode request. VA provides the current DPB/RPS, but not the complete
@@ -18,7 +18,7 @@
 #include <linux/v4l2-controls.h>
 #include <linux/videodev2.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
 static void hevc_fill_sps(struct v4l2_ctrl_hevc_sps *sps,
                           const VAPictureParameterBufferHEVC *pic)
@@ -72,7 +72,7 @@ static void hevc_fill_sps(struct v4l2_ctrl_hevc_sps *sps,
         sps->flags |= V4L2_HEVC_SPS_FLAG_SAMPLE_ADAPTIVE_OFFSET;
 }
 
-VAStatus vareq_hevc_fill_pps(struct v4l2_ctrl_hevc_pps *pps,
+VAStatus vav4l2_hevc_fill_pps(struct v4l2_ctrl_hevc_pps *pps,
                              const VAPictureParameterBufferHEVC *pic)
 {
     if (!pps || !pic) return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -161,22 +161,22 @@ VAStatus vareq_hevc_fill_pps(struct v4l2_ctrl_hevc_pps *pps,
 /*
  * Find the V4L2 timestamp assigned to a VA-API HEVC reference picture.
  */
-static uint64_t hevc_find_ref_timestamp(struct vareq_driver_data *dd,
+static uint64_t hevc_find_ref_timestamp(struct vav4l2_driver_data *dd,
                                         VASurfaceID picture_id)
 {
-    struct vareq_surface *surf;
+    struct vav4l2_surface *surf;
 
     if (!dd || picture_id == VA_INVALID_SURFACE)
         return 0;
-    surf = vareq_surface_by_id(dd, picture_id);
+    surf = vav4l2_surface_by_id(dd, picture_id);
     if (surf)
         return surf->timestamp;
     return 0;
 }
 
-void vareq_hevc_fill_decode_params(struct v4l2_ctrl_hevc_decode_params *dec,
+void vav4l2_hevc_fill_decode_params(struct v4l2_ctrl_hevc_decode_params *dec,
                                     const VAPictureParameterBufferHEVC *pic,
-                                    struct vareq_driver_data *dd)
+                                    struct vav4l2_driver_data *dd)
 {
     memset(dec, 0, sizeof(*dec));
 
@@ -234,13 +234,13 @@ void vareq_hevc_fill_decode_params(struct v4l2_ctrl_hevc_decode_params *dec,
 
 /* PPS identity precedes all SPS-dependent slice syntax. Its ue(v) is at
  * most13 bits,so no emulation-prevention byte can occur in this prefix. */
-VAStatus vareq_hevc_parse_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferHEVC *pic,
+VAStatus vav4l2_hevc_parse_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferHEVC *pic,
     struct v4l2_ctrl_hevc_pps *pps, struct v4l2_ctrl_hevc_decode_params *dec)
 {
     if (!pic || !pps) return VA_STATUS_ERROR_INVALID_PARAMETER;
     const uint8_t *nal; size_t offset = 0, length; unsigned slices = 0, pps_id = 0, identity = 0, no_output = 0;
     int next;
-    while ((next = vareq_annexb_next(data, size, &offset, &nal, &length)) == 1) {
+    while ((next = vav4l2_annexb_next(data, size, &offset, &nal, &length)) == 1) {
         unsigned prefix = nal[2] == 1 ? 3 : 4;
         if (length < prefix + 3) return VA_STATUS_ERROR_INVALID_PARAMETER;
         nal += prefix; length -= prefix;
@@ -276,28 +276,28 @@ VAStatus vareq_hevc_parse_headers(const uint8_t *data, size_t size, const VAPict
 /*
  * HEVC decode pipeline — translate and submit
  */
-VAStatus vareq_hevc_translate(struct vareq_context *ctx,
-                               struct vareq_buffer **buffers,
+VAStatus vav4l2_hevc_translate(struct vav4l2_context *ctx,
+                               struct vav4l2_buffer **buffers,
                                int num_buffers)
 {
     VAPictureParameterBufferHEVC *pic_param = NULL;
     VAQMatrixBufferHEVC *qm = NULL;
 
-    struct vareq_collected cb;
+    struct vav4l2_collected cb;
     int n_slice_data = 0;
 
-    vareq_collect_decode_buffers(buffers, num_buffers, &cb);
+    vav4l2_collect_decode_buffers(buffers, num_buffers, &cb);
     pic_param = cb.pic;
     qm = cb.iq;
     n_slice_data = cb.n_slice_datas;
 
     if (!pic_param) {
-        fprintf(stderr, "v4l2request: HEVC decode missing picture params\n");
+        fprintf(stderr, "v4l2: HEVC decode missing picture params\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
     if (n_slice_data == 0) {
-        fprintf(stderr, "v4l2request: HEVC decode missing slice data\n");
+        fprintf(stderr, "v4l2: HEVC decode missing slice data\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
@@ -316,7 +316,7 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
         /* Every populated entry is sent to the kernel DPB, including ST/LT
          * references kept for future pictures. Validate its retained storage;
          * an unresolved timestamp zero must not alias the valid first frame. */
-        VAStatus status = vareq_validate_reference(ctx, ref->picture_id);
+        VAStatus status = vav4l2_validate_reference(ctx, ref->picture_id);
         if (status != VA_STATUS_SUCCESS) return status;
         if (!current) continue;
         if (++total_current > 8 ||
@@ -328,7 +328,7 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     }
 
     size_t total = 0;
-    VAStatus packet_status = vareq_packetize_slices(VAREQ_CODEC_HEVC, buffers, num_buffers, NULL, UINT32_MAX, &total);
+    VAStatus packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_HEVC, buffers, num_buffers, NULL, UINT32_MAX, &total);
     if (packet_status != VA_STATUS_SUCCESS) return packet_status;
 
     struct v4l2_ctrl_hevc_sps sps;
@@ -336,27 +336,27 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     struct v4l2_ctrl_hevc_decode_params dec;
 
     hevc_fill_sps(&sps, pic_param);
-    packet_status = vareq_hevc_fill_pps(&pps, pic_param);
+    packet_status = vav4l2_hevc_fill_pps(&pps, pic_param);
     if (packet_status != VA_STATUS_SUCCESS) return packet_status;
-    vareq_hevc_fill_decode_params(&dec, pic_param, ctx->driver_data);
+    vav4l2_hevc_fill_decode_params(&dec, pic_param, ctx->driver_data);
     if (ctx->n_free_out <= 0) return VA_STATUS_ERROR_OPERATION_FAILED;
     int header_index = ctx->free_out_bufs[ctx->n_free_out - 1];
-    if (header_index < 0 || header_index >= VAREQ_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[header_index]) return VA_STATUS_ERROR_OPERATION_FAILED;
+    if (header_index < 0 || header_index >= VAV4L2_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[header_index]) return VA_STATUS_ERROR_OPERATION_FAILED;
     int temporary = total > ctx->output_buf_size;
     uint8_t *header_data = temporary ? malloc(total) : ctx->output_buf_ptr[header_index];
     if (!header_data) return VA_STATUS_ERROR_ALLOCATION_FAILED;
-    packet_status = vareq_packetize_slices(VAREQ_CODEC_HEVC, buffers, num_buffers, header_data,
+    packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_HEVC, buffers, num_buffers, header_data,
         temporary ? total : ctx->output_buf_size, &total);
-    if (packet_status == VA_STATUS_SUCCESS) packet_status = vareq_hevc_parse_headers(header_data, total, pic_param, &pps, &dec);
+    if (packet_status == VA_STATUS_SUCCESS) packet_status = vav4l2_hevc_parse_headers(header_data, total, pic_param, &pps, &dec);
     if (temporary) free(header_data);
     if (packet_status != VA_STATUS_SUCCESS) return packet_status;
-    vareq_decode_trace(ctx, "hevc-header", 0, pps.pic_parameter_set_id);
+    vav4l2_decode_trace(ctx, "hevc-header", 0, pps.pic_parameter_set_id);
 
     int request_fd = ctx->request_fd;
     int v4l2_fd = ctx->v4l2_fd;
 
     if (request_fd < 0) {
-        fprintf(stderr, "v4l2request: HEVC no request fd available\n");
+        fprintf(stderr, "v4l2: HEVC no request fd available\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -375,8 +375,8 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     _Static_assert(sizeof(sps) <= sizeof(ctx->g_ctrl_payload), "grow cache");
     if (!ctx->g_ctrl_valid ||
         memcmp(ctx->g_ctrl_payload, &sps, sizeof(sps)) != 0) {
-        if (vareq_codec_controls(ctx, -1, &sps_ctrls) < 0) {
-            fprintf(stderr, "v4l2request: failed to set HEVC SPS\n");
+        if (vav4l2_codec_controls(ctx, -1, &sps_ctrls) < 0) {
+            fprintf(stderr, "v4l2: failed to set HEVC SPS\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         memcpy(ctx->g_ctrl_payload, &sps, sizeof(sps));
@@ -384,23 +384,23 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     }
 
     {
-        uint32_t cap = vareq_capture_fourcc_from_sps(
+        uint32_t cap = vav4l2_capture_fourcc_from_sps(
             pic_param->bit_depth_luma_minus8,
             pic_param->pic_fields.bits.chroma_format_idc);
-        if (vareq_ensure_capture(ctx,
+        if (vav4l2_ensure_capture(ctx,
                                   pic_param->pic_width_in_luma_samples,
                                   pic_param->pic_height_in_luma_samples,
                                   cap) < 0) {
-            fprintf(stderr, "v4l2request: HEVC capture reconfig failed\n");
+            fprintf(stderr, "v4l2: HEVC capture reconfig failed\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
     }
 
     /* The kernel accepts STREAMON only after it has the SPS */
     if (!ctx->streamed) {
-        if (vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
-            vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
-            fprintf(stderr, "v4l2request: HEVC STREAMON failed\n");
+        if (vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
+            vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
+            fprintf(stderr, "v4l2: HEVC STREAMON failed\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         ctx->streamed = 1;
@@ -416,8 +416,8 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     pps_ctrls.controls = &pps_ctrl;
     pps_ctrls.count = 1;
 
-    if (vareq_codec_controls(ctx, request_fd, &pps_ctrls) < 0) {
-        fprintf(stderr, "v4l2request: failed to set HEVC PPS\n");
+    if (vav4l2_codec_controls(ctx, request_fd, &pps_ctrls) < 0) {
+        fprintf(stderr, "v4l2: failed to set HEVC PPS\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -442,8 +442,8 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     sm_ctrls.controls = &sm_ctrl;
     sm_ctrls.count = 1;
 
-    if (vareq_codec_controls(ctx, request_fd, &sm_ctrls) < 0) {
-        fprintf(stderr, "v4l2request: failed to set HEVC scaling matrix\n");
+    if (vav4l2_codec_controls(ctx, request_fd, &sm_ctrls) < 0) {
+        fprintf(stderr, "v4l2: failed to set HEVC scaling matrix\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -457,8 +457,8 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
     dec_ctrls.controls = &dec_ctrl;
     dec_ctrls.count = 1;
 
-    if (vareq_codec_controls(ctx, request_fd, &dec_ctrls) < 0) {
-        fprintf(stderr, "v4l2request: failed to set HEVC decode params\n");
+    if (vav4l2_codec_controls(ctx, request_fd, &dec_ctrls) < 0) {
+        fprintf(stderr, "v4l2: failed to set HEVC decode params\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -468,45 +468,45 @@ VAStatus vareq_hevc_translate(struct vareq_context *ctx,
      * the target surface.
      */
     if (ctx->n_free_out == 0) {
-        fprintf(stderr, "v4l2request: HEVC no free output buffer\n");
+        fprintf(stderr, "v4l2: HEVC no free output buffer\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     int out_buf_idx = ctx->free_out_bufs[--ctx->n_free_out];
-    if (out_buf_idx < 0 || out_buf_idx >= VAREQ_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx]) {
-        vareq_out_pool_push(ctx, out_buf_idx);
+    if (out_buf_idx < 0 || out_buf_idx >= VAV4L2_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx]) {
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
     uint64_t timestamp = ctx->current_surface ? ctx->current_surface->timestamp : 0;
 
-    packet_status = vareq_packetize_slices(VAREQ_CODEC_HEVC, buffers, num_buffers,
+    packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_HEVC, buffers, num_buffers,
         (uint8_t *)ctx->output_buf_ptr[out_buf_idx], ctx->output_buf_size, &total);
     if (packet_status != VA_STATUS_SUCCESS) {
-        fprintf(stderr, "v4l2request: HEVC slice packetization failed: %d\n", packet_status);
-        vareq_out_pool_push(ctx, out_buf_idx);
+        fprintf(stderr, "v4l2: HEVC slice packetization failed: %d\n", packet_status);
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return packet_status;
     }
 
     /* On failure decode_submit resets both queues — nothing stays queued
      * in the kernel and the pools are rebuilt. */
-    int done_cap = vareq_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
+    int done_cap = vav4l2_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
     if (done_cap == -2)
         return VA_STATUS_ERROR_DECODING_ERROR;
     if (done_cap < 0)
         return VA_STATUS_ERROR_OPERATION_FAILED;
 
-    struct vareq_surface *surf = ctx->current_surface;
+    struct vav4l2_surface *surf = ctx->current_surface;
     if (surf) {
-        if (vareq_surface_pull_capture(ctx, surf, done_cap) < 0) {
-            fprintf(stderr, "v4l2request: HEVC pull capture failed\n");
-            if (!vareq_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vareq_cap_pool_push(ctx, done_cap);
+        if (vav4l2_surface_pull_capture(ctx, surf, done_cap) < 0) {
+            fprintf(stderr, "v4l2: HEVC pull capture failed\n");
+            if (!vav4l2_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vav4l2_cap_pool_push(ctx, done_cap);
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
     } else {
-        vareq_cap_pool_push(ctx, done_cap);
+        vav4l2_cap_pool_push(ctx, done_cap);
     }
 
     return VA_STATUS_SUCCESS;
 }
 
-const int vareq_has_hevc = 1;
+const int vav4l2_has_hevc = 1;

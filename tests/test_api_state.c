@@ -3,12 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 static pthread_mutex_t fixture_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fixture_ready = PTHREAD_COND_INITIALIZER;
 static int wait_decode, entered, released;
-VAStatus __wrap_vareq_vp8_translate(struct vareq_context *ctx, struct vareq_buffer **buffers, int count)
+VAStatus __wrap_vav4l2_vp8_translate(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count)
 {
     pthread_mutex_lock(&fixture_lock);
     if (wait_decode) {
@@ -23,9 +23,9 @@ static void expect(int ok, const char *tag)
 {
     if (!ok) { fprintf(stderr, "FAIL %s\n", tag); failures++; }
 }
-static struct vareq_context *context(struct vareq_driver_data *dd, enum vareq_codec codec)
+static struct vav4l2_context *context(struct vav4l2_driver_data *dd, enum vav4l2_codec codec)
 {
-    struct vareq_context *c = calloc(1, sizeof(*c));
+    struct vav4l2_context *c = calloc(1, sizeof(*c));
     if (!c) exit(1);
     c->context_id = ++dd->next_context_id; c->codec = codec; c->driver_data = dd;
     c->v4l2_fd = c->media_fd = c->request_fd = -1;
@@ -51,14 +51,14 @@ static void *surface_stress(void *arg)
 int main(void)
 {
     struct VADriverVTable v = {0}; struct VADriverContext ctx = {.vtable = &v};
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     if (__vaDriverInit_1_20(&ctx)) return 1;
-    struct vareq_driver_data *dd = ctx.pDriverData;
-    struct vareq_context *a = context(dd, VAREQ_CODEC_VPP), *b = context(dd, VAREQ_CODEC_VPP);
-    struct vareq_context *jpeg = context(dd, VAREQ_CODEC_JPEG_ENC);
+    struct vav4l2_driver_data *dd = ctx.pDriverData;
+    struct vav4l2_context *a = context(dd, VAV4L2_CODEC_VPP), *b = context(dd, VAV4L2_CODEC_VPP);
+    struct vav4l2_context *jpeg = context(dd, VAV4L2_CODEC_JPEG_ENC);
     VASurfaceID ids[2];
     if (v.vaCreateSurfaces(&ctx, 4, 4, VA_RT_FORMAT_YUV420, 2, ids)) return 1;
-    struct vareq_surface *s = dd->surfaces[ids[0]];
+    struct vav4l2_surface *s = dd->surfaces[ids[0]];
     expect(v.vaBeginPicture(&ctx, a->context_id, ids[0]) == VA_STATUS_SUCCESS, "begin-first-picture");
     expect(v.vaSyncSurface(&ctx, ids[0]) == VA_STATUS_ERROR_SURFACE_BUSY && s->status == VASurfaceRendering,
            "sync-cannot-complete-an-unsubmitted-picture");
@@ -74,7 +74,7 @@ int main(void)
            "failed-end-releases-picture-state");
     expect(v.vaBeginPicture(&ctx, b->context_id, ids[0]) == VA_STATUS_SUCCESS, "target-reusable-after-failed-end");
     expect(v.vaEndPicture(&ctx, b->context_id) == VA_STATUS_ERROR_INVALID_PARAMETER, "finish-second-failed-picture");
-    a->codec = VAREQ_CODEC_VP8;
+    a->codec = VAV4L2_CODEC_VP8;
     a->v4l2_fd = open("/dev/null", O_RDWR | O_CLOEXEC); a->request_fd = dup(a->v4l2_fd);
     VASurfaceStatus status;
     expect(v.vaBeginPicture(&ctx, a->context_id, ids[0]) == VA_STATUS_SUCCESS &&

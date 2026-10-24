@@ -21,10 +21,10 @@ def main():
     root = Path(__file__).resolve().parent.parent
     build, output = map(Path, sys.argv[1:])
     record = {"schema": 1, "tree": None, "dirty": None,
-              "driver_sha256": digest(build / "v4l2request_drv_video.so"),
+              "driver_sha256": digest(build / "v4l2_drv_video.so"),
               "client_sha256": digest(build / "va_feature_client"),
-              "vpp_dmabuf": os.environ.get("VAREQ_VPP_DMABUF", "auto"),
-              "export": os.environ.get("VAREQ_EXPBUF_EXPORT", "default")}
+              "vpp_dmabuf": os.environ.get("VAV4L2_VPP_DMABUF", "auto"),
+              "export": os.environ.get("VAV4L2_EXPBUF_EXPORT", "default")}
     if (root / ".git").exists():
         record["tree"] = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"], text=True).strip()
         status = subprocess.run(["git", "-C", str(root), "diff", "--quiet", "HEAD", "--"]).returncode

@@ -291,7 +291,7 @@ int main(int argc, char **argv)
     if (fd < 0) { perror(argv[1]); fclose(logfile); return 2; }
     VADisplay va = vaGetDisplayDRM(fd);
     if (!va || vaInitialize(va, &major, &minor) != VA_STATUS_SUCCESS) return 2;
-    const char *vendor = vaQueryVendorString(va); if (!vareq_test_driver_identity(vendor)) return 2;
+    const char *vendor = vaQueryVendorString(va); if (!vav4l2_test_driver_identity(vendor)) return 2;
     struct gbm_device *gbm = gbm_create_device(fd);
     EGLContext context = EGL_NO_CONTEXT;
     PFNEGLGETPLATFORMDISPLAYEXTPROC platform = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");

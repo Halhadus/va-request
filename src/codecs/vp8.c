@@ -1,5 +1,5 @@
 /*
- * v4l2request — VP8 parameter translation
+ * v4l2 — VP8 parameter translation
  *
  * Maps VA-API VP8 buffers to V4L2_CID_STATELESS_VP8_FRAME and submits
  * a decode request on hantro (VP8F).
@@ -25,14 +25,14 @@
 #include <linux/v4l2-controls.h>
 #include <linux/videodev2.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
-void vareq_vp8_fill_frame(struct v4l2_ctrl_vp8_frame *frame,
+void vav4l2_vp8_fill_frame(struct v4l2_ctrl_vp8_frame *frame,
                            const VAPictureParameterBufferVP8 *pic,
                            const VASliceParameterBufferVP8 *slice,
                            const VAProbabilityDataBufferVP8 *prob,
                            const VAIQMatrixBufferVP8 *iq,
-                           struct vareq_driver_data *dd)
+                           struct vav4l2_driver_data *dd)
 {
     int is_key;
     unsigned i;
@@ -117,9 +117,9 @@ void vareq_vp8_fill_frame(struct v4l2_ctrl_vp8_frame *frame,
         frame->num_dct_parts = 1;
     }
 
-    frame->last_frame_ts = vareq_surface_ts(dd, pic->last_ref_frame);
-    frame->golden_frame_ts = vareq_surface_ts(dd, pic->golden_ref_frame);
-    frame->alt_frame_ts = vareq_surface_ts(dd, pic->alt_ref_frame);
+    frame->last_frame_ts = vav4l2_surface_ts(dd, pic->last_ref_frame);
+    frame->golden_frame_ts = vav4l2_surface_ts(dd, pic->golden_ref_frame);
+    frame->alt_frame_ts = vav4l2_surface_ts(dd, pic->alt_ref_frame);
 
     if (is_key)
         frame->flags |= V4L2_VP8_FRAME_FLAG_KEY_FRAME;
@@ -132,8 +132,8 @@ void vareq_vp8_fill_frame(struct v4l2_ctrl_vp8_frame *frame,
         frame->flags |= V4L2_VP8_FRAME_FLAG_SIGN_BIAS_ALT;
 }
 
-VAStatus vareq_vp8_translate(struct vareq_context *ctx,
-                              struct vareq_buffer **buffers,
+VAStatus vav4l2_vp8_translate(struct vav4l2_context *ctx,
+                              struct vav4l2_buffer **buffers,
                               int num_buffers)
 {
     VAPictureParameterBufferVP8 *pic_param = NULL;
@@ -148,53 +148,53 @@ VAStatus vareq_vp8_translate(struct vareq_context *ctx,
     uint64_t timestamp;
     uint8_t *dst;
 
-    struct vareq_collected cb;
+    struct vav4l2_collected cb;
 
-    vareq_collect_decode_buffers(buffers, num_buffers, &cb);
+    vav4l2_collect_decode_buffers(buffers, num_buffers, &cb);
     pic_param = cb.pic;
     slice_param = cb.n_slice_params ? cb.slice_params[0] : NULL;
     prob = cb.prob;
     iq = cb.iq;
 
     if (!pic_param) {
-        fprintf(stderr, "v4l2request: VP8 decode missing picture params\n");
+        fprintf(stderr, "v4l2: VP8 decode missing picture params\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
     if (pic_param->pic_fields.bits.key_frame) { /* VA uses one for inter pictures. */
         VASurfaceID refs[] = {pic_param->last_ref_frame, pic_param->golden_ref_frame, pic_param->alt_ref_frame};
         for (unsigned i = 0; i < 3; i++) {
-            VAStatus status = vareq_validate_reference(ctx, refs[i]);
+            VAStatus status = vav4l2_validate_reference(ctx, refs[i]);
             if (status != VA_STATUS_SUCCESS) return status;
         }
     }
     size_t measured = 0;
-    VAStatus packet_status = vareq_packetize_slices(VAREQ_CODEC_VP8, buffers, num_buffers, NULL, UINT32_MAX - 10, &measured);
+    VAStatus packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_VP8, buffers, num_buffers, NULL, UINT32_MAX - 10, &measured);
     if (packet_status != VA_STATUS_SUCCESS) {
-        fprintf(stderr, "v4l2request: VP8 decode missing slice data\n");
+        fprintf(stderr, "v4l2: VP8 decode missing slice data\n");
         return packet_status;
     }
     slice_size = measured;
 
-    vareq_vp8_fill_frame(&frame, pic_param, slice_param, prob, iq,
+    vav4l2_vp8_fill_frame(&frame, pic_param, slice_param, prob, iq,
                           ctx->driver_data);
 
     request_fd = ctx->request_fd;
     v4l2_fd = ctx->v4l2_fd;
     if (request_fd < 0) {
-        fprintf(stderr, "v4l2request: VP8 no request fd available\n");
+        fprintf(stderr, "v4l2: VP8 no request fd available\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
-    if (vareq_ensure_capture(ctx, pic_param->frame_width, pic_param->frame_height,
+    if (vav4l2_ensure_capture(ctx, pic_param->frame_width, pic_param->frame_height,
                               V4L2_PIX_FMT_NV12) < 0) {
-        fprintf(stderr, "v4l2request: VP8 capture reconfig failed\n");
+        fprintf(stderr, "v4l2: VP8 capture reconfig failed\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
     if (!ctx->streamed) {
-        if (vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
-            vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
-            fprintf(stderr, "v4l2request: VP8 STREAMON failed\n");
+        if (vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
+            vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
+            fprintf(stderr, "v4l2: VP8 STREAMON failed\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         ctx->streamed = 1;
@@ -209,14 +209,14 @@ VAStatus vareq_vp8_translate(struct vareq_context *ctx,
         ctrl.size = sizeof(frame);
         ctrls.controls = &ctrl;
         ctrls.count = 1;
-        if (vareq_codec_controls(ctx, request_fd, &ctrls) < 0) {
-            fprintf(stderr, "v4l2request: failed to set VP8 frame params\n");
+        if (vav4l2_codec_controls(ctx, request_fd, &ctrls) < 0) {
+            fprintf(stderr, "v4l2: failed to set VP8 frame params\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
     }
 
     if (ctx->n_free_out == 0) {
-        fprintf(stderr, "v4l2request: VP8 no free output buffer\n");
+        fprintf(stderr, "v4l2: VP8 no free output buffer\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     out_buf_idx = ctx->free_out_bufs[--ctx->n_free_out];
@@ -227,47 +227,47 @@ VAStatus vareq_vp8_translate(struct vareq_context *ctx,
 
     dst = ctx->output_buf_ptr[out_buf_idx];
     if (total > ctx->output_buf_size) {
-        fprintf(stderr, "v4l2request: VP8 slice data too large (%zu > %u)\n",
+        fprintf(stderr, "v4l2: VP8 slice data too large (%zu > %u)\n",
                 total, ctx->output_buf_size);
-        vareq_out_pool_push(ctx, out_buf_idx);
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     if (dst) {
         memset(dst, 0, prefix);
-        packet_status = vareq_packetize_slices(VAREQ_CODEC_VP8, buffers, num_buffers,
+        packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_VP8, buffers, num_buffers,
             dst + prefix, ctx->output_buf_size - prefix, &measured);
         if (packet_status != VA_STATUS_SUCCESS) {
-            vareq_out_pool_push(ctx, out_buf_idx);
+            vav4l2_out_pool_push(ctx, out_buf_idx);
             return packet_status;
         }
     } else {
-        fprintf(stderr, "v4l2request: VP8 output buffer not mapped\n");
-        vareq_out_pool_push(ctx, out_buf_idx);
+        fprintf(stderr, "v4l2: VP8 output buffer not mapped\n");
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
     /* On failure decode_submit resets both queues — do not push back. */
-    done_cap = vareq_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
+    done_cap = vav4l2_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
     if (done_cap == -2)
         return VA_STATUS_ERROR_DECODING_ERROR;
     if (done_cap < 0)
         return VA_STATUS_ERROR_OPERATION_FAILED;
 
     {
-        struct vareq_surface *surf = ctx->current_surface;
+        struct vav4l2_surface *surf = ctx->current_surface;
 
         if (surf) {
-            if (vareq_surface_pull_capture(ctx, surf, done_cap) < 0) {
-                fprintf(stderr, "v4l2request: VP8 pull capture failed\n");
-                if (!vareq_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vareq_cap_pool_push(ctx, done_cap);
+            if (vav4l2_surface_pull_capture(ctx, surf, done_cap) < 0) {
+                fprintf(stderr, "v4l2: VP8 pull capture failed\n");
+                if (!vav4l2_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vav4l2_cap_pool_push(ctx, done_cap);
                 return VA_STATUS_ERROR_OPERATION_FAILED;
             }
         } else {
-            vareq_cap_pool_push(ctx, done_cap);
+            vav4l2_cap_pool_push(ctx, done_cap);
         }
     }
 
     return VA_STATUS_SUCCESS;
 }
 
-const int vareq_has_vp8 = 1;
+const int vav4l2_has_vp8 = 1;

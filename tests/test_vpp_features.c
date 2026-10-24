@@ -6,11 +6,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 #include "probe.h"
 static int failures, selections, formats, ioctls, clamp_selection, rotation, hflip, vflip, rga3_mode, control_calls, tries, submissions;
 static int odd422_stride;
-static struct vareq_context *current;
+static struct vav4l2_context *current;
 static struct v4l2_format raw[2];
 static struct v4l2_rect crop, compose;
 static void expect(int ok, const char *tag)
@@ -67,7 +67,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
         struct v4l2_buffer *b = arg;
         if (rga3_mode) {
             int cap = b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-            b->m.planes[0].length = vareq_va_image_size(cap ? VA_FOURCC_NV12 : VA_FOURCC_BGRX,
+            b->m.planes[0].length = vav4l2_va_image_size(cap ? VA_FOURCC_NV12 : VA_FOURCC_BGRX,
                 raw[cap].fmt.pix_mp.plane_fmt[0].bytesperline, 128);
             b->m.planes[0].m.mem_offset = cap ? 1048576 : 0;
             return 0;
@@ -128,28 +128,28 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
     }
     return 0;
 }
-static VAStatus run(struct vareq_context *c, VAProcPipelineParameterBuffer *pipe)
+static VAStatus run(struct vav4l2_context *c, VAProcPipelineParameterBuffer *pipe)
 {
-    struct vareq_buffer params = {.type = VAProcPipelineParameterBufferType, .size = sizeof(*pipe), .data = pipe};
-    struct vareq_buffer *buffers[] = {&params};
+    struct vav4l2_buffer params = {.type = VAProcPipelineParameterBufferType, .size = sizeof(*pipe), .data = pipe};
+    struct vav4l2_buffer *buffers[] = {&params};
     current = c;
-    return vareq_vpp_run(c, buffers, 1);
+    return vav4l2_vpp_run(c, buffers, 1);
 }
 int main(void)
 {
-    struct vareq_driver_data dd = {0};
+    struct vav4l2_driver_data dd = {0};
     unsigned char input[192], output[512]; memset(input, 0x11, sizeof(input)); memset(output, 0xaa, sizeof(output));
-    struct vareq_surface src = {.width = 8, .height = 8, .format = VA_FOURCC_NV12,
-        .cpu_ptr = input, .cpu_stride = 16, .cpu_size = sizeof(input), .last_writer = VAREQ_WRITER_CPU};
-    struct vareq_surface dst = {.width = 8, .height = 8, .format = VA_FOURCC_NV12,
+    struct vav4l2_surface src = {.width = 8, .height = 8, .format = VA_FOURCC_NV12,
+        .cpu_ptr = input, .cpu_stride = 16, .cpu_size = sizeof(input), .last_writer = VAV4L2_WRITER_CPU};
+    struct vav4l2_surface dst = {.width = 8, .height = 8, .format = VA_FOURCC_NV12,
         .cpu_ptr = output, .cpu_stride = 16, .cpu_size = 192};
     dd.surfaces[1] = &src;
-    struct vareq_context c = {.codec = VAREQ_CODEC_VPP, .driver_data = &dd, .current_surface = &dst};
+    struct vav4l2_context c = {.codec = VAV4L2_CODEC_VPP, .driver_data = &dd, .current_surface = &dst};
     c.v4l2_fd = memfd_create("vpp-feature-queues", MFD_CLOEXEC);
     if (c.v4l2_fd < 0 || ftruncate(c.v4l2_fd, 8192) < 0) return 1;
     VARectangle in = {2, 2, 4, 4}, out = {2, 2, 4, 4};
     VAProcPipelineParameterBuffer pipe = {.surface = 1, .surface_region = &in, .output_region = &out};
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
     expect(run(&c, &pipe) == VA_STATUS_SUCCESS && selections == 2 && formats == 2 &&
            crop.left == 2 && compose.top == 2, "cold-crop-compose");
     expect(output[0] == 0xaa && output[2 * 16 + 2] == 0x33 && output[7 * 16 + 7] == 0xaa &&
@@ -196,7 +196,7 @@ int main(void)
     expect(run(&c, &pipe) == VA_STATUS_ERROR_INVALID_PARAMETER && ioctls == (int)before, "negative-compose-origin");
     out.x = 2; clamp_selection = 1;
     expect(run(&c, &pipe) == VA_STATUS_ERROR_OPERATION_FAILED && !c.vpp_q.valid, "clamped-selection-is-not-success");
-    clamp_selection = 0; c.vpp_behaviors = VAREQ_COMPAT_SWAP_MIRROR_AXES;
+    clamp_selection = 0; c.vpp_behaviors = VAV4L2_COMPAT_SWAP_MIRROR_AXES;
     dst.format = VA_FOURCC_NV12; dst.cpu_stride = 16; dst.cpu_size = 192;
     const uint32_t extra_layouts[] = {VA_FOURCC_NV21, VA_FOURCC_YV12};
     for (unsigned i = 0; i < 2; i++) {
@@ -243,21 +243,21 @@ int main(void)
                "packed422-invalid-chroma-origin-before-ioctl");
         out.x = 2;
     }
-    struct vareq_surface saved_src = src;
+    struct vav4l2_surface saved_src = src;
     unsigned char nv16[256] = {0};
     for (unsigned y = 0; y < 8; y++) for (unsigned x = 0; x < 8; x++) {
         nv16[y * 16 + x] = 17 + x + y * 11;
         nv16[128 + y * 16 + x] = (x & 1) ? 171 + y : 31 + x / 2;
     }
-    src = (struct vareq_surface){.width = 8, .height = 8, .format = VA_FOURCC_YUY2,
+    src = (struct vav4l2_surface){.width = 8, .height = 8, .format = VA_FOURCC_YUY2,
         .has_pic = 1, .cap_fourcc = V4L2_PIX_FMT_NV16, .cap_view = nv16, .buf_index = 0,
-        .stride = 16, .aligned_h = 8, .last_writer = VAREQ_WRITER_MEMFD, .memfd_fd = -1};
-    expect(vareq_surface_grow_memfd(&src, sizeof(nv16)) == 0, "nv16-memfd-fixture");
-    void *capture_copy = vareq_surface_map_memfd(&src, sizeof(nv16));
+        .stride = 16, .aligned_h = 8, .last_writer = VAV4L2_WRITER_MEMFD, .memfd_fd = -1};
+    expect(vav4l2_surface_grow_memfd(&src, sizeof(nv16)) == 0, "nv16-memfd-fixture");
+    void *capture_copy = vav4l2_surface_map_memfd(&src, sizeof(nv16));
     if (!capture_copy) return 1;
     memcpy(capture_copy, nv16, sizeof(nv16));
     for (unsigned fallback = 0; fallback < 2; fallback++) {
-        setenv("VAREQ_EXPBUF_EXPORT", fallback ? "0" : "1", 1);
+        setenv("VAV4L2_EXPBUF_EXPORT", fallback ? "0" : "1", 1);
         pipe = (VAProcPipelineParameterBuffer){.surface = 1};
         expect(run(&c, &pipe) == VA_STATUS_SUCCESS && raw[0].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_YUYV,
                "decoded-nv16-enters-existing-packed-vpp-transport");
@@ -266,7 +266,7 @@ int main(void)
             expect(!memcmp((unsigned char *)c.vpp_q.out_map[0] + y * 16 + x * 4, expected, 4),
                    "nv16-full-height-chroma-and-luma-preserved-in-yuy2-staging");
         }
-        expect(src.last_writer == VAREQ_WRITER_MEMFD && src.cap_view == nv16 && src.buf_index == 0,
+        expect(src.last_writer == VAV4L2_WRITER_MEMFD && src.cap_view == nv16 && src.buf_index == 0,
                "vpp-read-does-not-replace-decoder-reference-storage");
         int before_bad_capture = ioctls; src.stride = 7;
         expect(run(&c, &pipe) == VA_STATUS_ERROR_INVALID_PARAMETER && ioctls == before_bad_capture,
@@ -276,17 +276,17 @@ int main(void)
                "ten-bit-capture-is-not-silently-truncated-by-vpp");
         src.cap_fourcc = V4L2_PIX_FMT_NV16;
     }
-    src.cpu_ptr = input; src.cpu_stride = 16; src.cpu_size = sizeof(input); src.last_writer = VAREQ_WRITER_CPU;
+    src.cpu_ptr = input; src.cpu_stride = 16; src.cpu_size = sizeof(input); src.last_writer = VAV4L2_WRITER_CPU;
     expect(run(&c, &pipe) == VA_STATUS_SUCCESS && !memcmp(c.vpp_q.out_map[0], input, 16),
            "cpu-replacement-is-packed-even-with-stale-nv16-capture-metadata");
     if (src.memfd_map) munmap(src.memfd_map, src.memfd_map_size);
     if (src.memfd_retired) munmap(src.memfd_retired, src.memfd_retired_size);
     close(src.memfd_fd); src = saved_src; src.format = dst.format = VA_FOURCC_NV12;
-    struct vareq_surface before_planar_src = src, before_planar_dst = dst;
+    struct vav4l2_surface before_planar_src = src, before_planar_dst = dst;
     unsigned char planar_input[256], planar_output[256];
     const unsigned planar_formats[] = {VA_FOURCC_422H, VA_FOURCC_YV16};
     for (unsigned layout = 0; layout < 2; layout++) for (unsigned odd = 0; odd < 2; odd++) {
-        vareq_m2m_teardown(&c, &c.vpp_q); odd422_stride = odd;
+        vav4l2_m2m_teardown(&c, &c.vpp_q); odd422_stride = odd;
         memset(planar_input, 0xa5, sizeof(planar_input)); memset(planar_output, 0xa5, sizeof(planar_output));
         for (unsigned y = 0; y < 8; y++) {
             for (unsigned x = 0; x < 8; x++) planar_input[y * 16 + x] = 17 + y * 7 + x;
@@ -328,7 +328,7 @@ int main(void)
         expect(run(&c, &pipe) == VA_STATUS_SUCCESS && control_calls == before_controls + 3,
                "changed-transform-reprograms-all-controls");
         int wanted_rotation = turn * 90, wanted_hflip = mirror & 1, wanted_vflip = !!(mirror & 2);
-        vareq_vpp_transform_controls(VAREQ_COMPAT_SWAP_MIRROR_AXES, &wanted_rotation, &wanted_hflip, &wanted_vflip);
+        vav4l2_vpp_transform_controls(VAV4L2_COMPAT_SWAP_MIRROR_AXES, &wanted_rotation, &wanted_hflip, &wanted_vflip);
         expect(rotation == wanted_rotation && hflip == wanted_hflip && vflip == wanted_vflip,
                "warm-sequence-applies-requested-transform-including-270-mirrors");
         unsigned at = turn * 4 + mirror;
@@ -343,53 +343,53 @@ int main(void)
     VAProcPipelineParameterBuffer pipelines[] = {{.surface = 1, .surface_region = &source_region,
         .output_region = &output_regions[0], .output_background_color = 0xff000000},
         {.surface = 1, .surface_region = &source_region, .output_region = &output_regions[1]}};
-    struct vareq_buffer batch = {.type = VAProcPipelineParameterBufferType, .size = sizeof(pipelines[0]),
+    struct vav4l2_buffer batch = {.type = VAProcPipelineParameterBufferType, .size = sizeof(pipelines[0]),
         .num_elements = 2, .allocated_elements = 2, .data = pipelines};
-    struct vareq_buffer *batch_list[] = {&batch};
+    struct vav4l2_buffer *batch_list[] = {&batch};
     int before_submissions = submissions; current = &c;
-    expect(vareq_vpp_run(&c, batch_list, 1) == VA_STATUS_SUCCESS && submissions == before_submissions + 2 &&
+    expect(vav4l2_vpp_run(&c, batch_list, 1) == VA_STATUS_SUCCESS && submissions == before_submissions + 2 &&
            output[0] == 0x33 && output[4 * 16 + 4] == 0x33 && output[4] == 16 && output[4 * 16] == 16 &&
            output[128] == 0x44 && output[128 + 2 * 16 + 4] == 0x44, "compose-every-pipeline-array-element-in-order");
-    struct vareq_buffer first = batch, second = batch;
+    struct vav4l2_buffer first = batch, second = batch;
     first.num_elements = first.allocated_elements = second.num_elements = second.allocated_elements = 1;
     second.data = &pipelines[1];
-    struct vareq_buffer *pair[] = {&first, &second};
+    struct vav4l2_buffer *pair[] = {&first, &second};
     before_submissions = submissions; memset(output, 0xaa, sizeof(output));
-    expect(vareq_vpp_run(&c, pair, 2) == VA_STATUS_SUCCESS && submissions == before_submissions + 2 &&
+    expect(vav4l2_vpp_run(&c, pair, 2) == VA_STATUS_SUCCESS && submissions == before_submissions + 2 &&
            output[0] == 0x33 && output[4 * 16 + 4] == 0x33 && output[4] == 16,
            "compose-every-submitted-pipeline-buffer-in-order");
     second.type = VASliceDataBufferType; before_submissions = submissions;
-    expect(vareq_vpp_run(&c, pair, 2) == VA_STATUS_ERROR_INVALID_PARAMETER && submissions == before_submissions,
+    expect(vav4l2_vpp_run(&c, pair, 2) == VA_STATUS_ERROR_INVALID_PARAMETER && submissions == before_submissions,
            "wrong-vpp-buffer-type-is-not-silently-ignored-or-partially-submitted");
     src.status = VASurfaceRendering;
-    expect(vareq_vpp_run(&c, batch_list, 1) == VA_STATUS_ERROR_SURFACE_BUSY && submissions == before_submissions,
+    expect(vav4l2_vpp_run(&c, batch_list, 1) == VA_STATUS_ERROR_SURFACE_BUSY && submissions == before_submissions,
            "pending-input-writer-is-not-read-as-a-completed-frame");
     src.status = VASurfaceReady;
-    struct vareq_vpp_device rga2 = {.identity = {.driver = "rockchip-rga", .card = "rga2"}, .input = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_XBGR32},
+    struct vav4l2_vpp_device rga2 = {.identity = {.driver = "rockchip-rga", .card = "rga2"}, .input = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_XBGR32},
         .output = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_XBGR32}, .num_input = 3, .num_output = 3, .controls = 7,
         .min_width = {34, 34}, .min_height = {34, 34}, .max_width = {8192, 8192}, .max_height = {8192, 8192}};
-    struct vareq_vpp_device rga3 = {.identity = {.driver = "rockchip-rga", .card = "rga3"}, .input = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_YUYV},
+    struct vav4l2_vpp_device rga3 = {.identity = {.driver = "rockchip-rga", .card = "rga3"}, .input = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_YUYV},
         .output = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_YUYV}, .num_input = 3, .num_output = 3,
         .min_width = {128, 128}, .min_height = {128, 128}, .max_width = {8176, 8128}, .max_height = {8176, 8128}};
-    struct vareq_vpp_device generic = rga2;
+    struct vav4l2_vpp_device generic = rga2;
     strcpy(generic.identity.driver, "other");
-    expect(vareq_vpp_device_score(&generic, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 0) > 0,
+    expect(vav4l2_vpp_device_score(&generic, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 0) > 0,
         "unrelated-driver-does-not-inherit-rga-quirks-from-card-name");
-    expect(vareq_vpp_formats_usable(rga3.input, 3, rga3.output, 3), "rga3-raw-formats-do-not-require-rotate-control");
+    expect(vav4l2_vpp_formats_usable(rga3.input, 3, rga3.output, 3), "rga3-raw-formats-do-not-require-rotate-control");
     const uint32_t coded[] = {V4L2_PIX_FMT_VP9_FRAME};
-    expect(!vareq_vpp_formats_usable(coded, 1, rga3.output, 3), "vp9-decoder-not-a-raw-vpp-node");
-    expect(vareq_vpp_device_score(&rga3, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 0) > 0 &&
-           vareq_vpp_device_score(&rga2, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 0) < 0,
+    expect(!vav4l2_vpp_formats_usable(coded, 1, rga3.output, 3), "vp9-decoder-not-a-raw-vpp-node");
+    expect(vav4l2_vpp_device_score(&rga3, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 0) > 0 &&
+           vav4l2_vpp_device_score(&rga2, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 0) < 0,
            "rgb-to-yuv-selects-capable-rga3-not-unreliable-rga2");
-    expect(vareq_vpp_device_score(&rga3, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12, 90, 0, 0, 0, 0) < 0 &&
-           vareq_vpp_device_score(&rga3, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12, 0, 0, 0, 1, 0) < 0 &&
-           vareq_vpp_device_score(&rga3, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 1) < 0,
+    expect(vav4l2_vpp_device_score(&rga3, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12, 90, 0, 0, 0, 0) < 0 &&
+           vav4l2_vpp_device_score(&rga3, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12, 0, 0, 0, 1, 0) < 0 &&
+           vav4l2_vpp_device_score(&rga3, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12, 0, 0, 0, 0, 1) < 0,
            "rga3-unimplemented-transform-and-offset-selection-not-used");
-    expect(vareq_vpp_device_score(&rga2, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_YUYV, 0, 0, 0, 0, 0) < 0,
+    expect(vav4l2_vpp_device_score(&rga2, V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_YUYV, 0, 0, 0, 0, 0) < 0,
            "format-must-be-enumerated-in-both-queue-directions");
     for (int turn = 0; turn < 4; turn++) for (int mirror = 0; mirror < 4; mirror++) {
         int r = turn * 90, h = mirror & 1, v = !!(mirror & 2);
-        vareq_vpp_transform_controls(VAREQ_COMPAT_SWAP_MIRROR_AXES, &r, &h, &v);
+        vav4l2_vpp_transform_controls(VAV4L2_COMPAT_SWAP_MIRROR_AXES, &r, &h, &v);
         for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) {
             int vx = turn == 1 ? 3 - y : turn == 2 ? 3 - x : turn == 3 ? y : x;
             int vy = turn == 1 ? x : turn == 2 ? 3 - y : turn == 3 ? 3 - x : y;
@@ -405,11 +405,11 @@ int main(void)
     }
     dd.vpp_devices_scanned = 1; dd.num_vpp_devices = 1; dd.vpp_devices[0] = rga3;
     VAProcPipelineCaps caps;
-    expect(vareq_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS && caps.rotation_flags == 1 && !caps.mirror_flags &&
+    expect(vav4l2_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS && caps.rotation_flags == 1 && !caps.mirror_flags &&
            caps.min_input_width == 128 && caps.max_output_width == 8128 && caps.num_output_pixel_formats == 3,
            "rga3-only-caps-do-not-advertise-rga2-limits-or-controls");
     dd.num_vpp_devices = 2; dd.vpp_devices[1] = rga2; dd.vpp_caps_ready = 0;
-    expect(vareq_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS && (caps.rotation_flags & (1u << VA_ROTATION_90)) &&
+    expect(vav4l2_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS && (caps.rotation_flags & (1u << VA_ROTATION_90)) &&
            caps.mirror_flags == 3 && caps.min_input_width == 34 && caps.max_output_width == 8192,
            "combined-rga2-rga3-caps-union");
     const uint32_t all_formats[] = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV21, V4L2_PIX_FMT_YUV420,
@@ -418,7 +418,7 @@ int main(void)
     memcpy(dd.vpp_devices[0].output, all_formats, sizeof(all_formats));
     dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = 13;
     dd.num_vpp_devices = 1; dd.vpp_caps_ready = 0;
-    expect(vareq_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
+    expect(vav4l2_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
            caps.num_input_pixel_formats == 13 && caps.num_output_pixel_formats == 13 &&
            caps.input_pixel_format[8] == VA_FOURCC_UYVY && caps.output_pixel_format[8] == VA_FOURCC_UYVY &&
            caps.input_pixel_format[9] == VA_FOURCC_VYUY && caps.output_pixel_format[10] == VA_FOURCC_YVYU &&
@@ -426,18 +426,18 @@ int main(void)
            "all-thirteen-vpp-layouts-fit-per-driver-caps-storage");
     dd.vpp_devices[0].input[0] = V4L2_PIX_FMT_UYVY; dd.vpp_devices[0].output[0] = V4L2_PIX_FMT_NV12;
     dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = 1; dd.vpp_caps_ready = 0;
-    expect(vareq_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
+    expect(vav4l2_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
            caps.num_input_pixel_formats == 1 && caps.input_pixel_format[0] == VA_FOURCC_UYVY &&
            caps.num_output_pixel_formats == 1 && caps.output_pixel_format[0] == VA_FOURCC_NV12 &&
-           vareq_vpp_device_score(&dd.vpp_devices[0], V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_UYVY, 0, 0, 0, 0, 0) < 0,
+           vav4l2_vpp_device_score(&dd.vpp_devices[0], V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_UYVY, 0, 0, 0, 0, 0) < 0,
            "input-only-uyvy-is-not-advertised-or-selected-as-an-output");
     dd.vpp_devices[0].input[0] = dd.vpp_devices[0].output[0] = V4L2_PIX_FMT_YVU420;
     dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = 1; dd.vpp_caps_ready = 0;
-    expect(vareq_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
+    expect(vav4l2_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
            !caps.num_input_pixel_formats && !caps.num_output_pixel_formats &&
-           !vareq_vpp_formats_usable(dd.vpp_devices[0].input, 1, dd.vpp_devices[0].output, 1),
+           !vav4l2_vpp_formats_usable(dd.vpp_devices[0].input, 1, dd.vpp_devices[0].output, 1),
            "native-yvu420-only-node-does-not-advertise-canonical-yv12-transport");
-    vareq_m2m_teardown(&c, &c.vpp_q); close(c.v4l2_fd);
+    vav4l2_m2m_teardown(&c, &c.vpp_q); close(c.v4l2_fd);
     char node[] = "test-vpp-node-XXXXXX";
     int node_fd = mkstemp(node);
     if (node_fd < 0 || ftruncate(node_fd, 2097152) < 0) return 1;
@@ -445,9 +445,9 @@ int main(void)
     rga3_mode = 1; clamp_selection = 0;
     unsigned char *rgb_data = calloc(1, 65536), *nv12_data = calloc(1, 24576);
     if (!rgb_data || !nv12_data) return 1;
-    src = (struct vareq_surface){.width = 128, .height = 128, .format = VA_FOURCC_BGRX, .cpu_ptr = rgb_data,
-        .cpu_stride = 512, .cpu_size = 65536, .last_writer = VAREQ_WRITER_CPU};
-    dst = (struct vareq_surface){.width = 128, .height = 128, .format = VA_FOURCC_NV12, .cpu_ptr = nv12_data,
+    src = (struct vav4l2_surface){.width = 128, .height = 128, .format = VA_FOURCC_BGRX, .cpu_ptr = rgb_data,
+        .cpu_stride = 512, .cpu_size = 65536, .last_writer = VAV4L2_WRITER_CPU};
+    dst = (struct vav4l2_surface){.width = 128, .height = 128, .format = VA_FOURCC_NV12, .cpu_ptr = nv12_data,
         .cpu_stride = 128, .cpu_size = 24576};
     dd.num_vpp_devices = 1; dd.vpp_devices[0] = rga3;
     snprintf(dd.vpp_devices[0].path, sizeof(dd.vpp_devices[0].path), "%s", node);
@@ -468,7 +468,7 @@ int main(void)
     pipe.rotation_state = VA_ROTATION_90;
     expect(run(&c, &pipe) == VA_STATUS_ERROR_UNIMPLEMENTED && !c.vpp_q.valid && control_calls == old_controls,
            "rga3-only-rotation-fails-before-starting-hardware");
-    vareq_m2m_teardown(&c, &c.vpp_q); vareq_set_ioctl_hook(NULL); close(c.v4l2_fd);
+    vav4l2_m2m_teardown(&c, &c.vpp_q); vav4l2_set_ioctl_hook(NULL); close(c.v4l2_fd);
     free(c.device_path); free(rgb_data); free(nv12_data); unlink(node);
     return failures != 0;
 }

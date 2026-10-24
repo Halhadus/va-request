@@ -12,10 +12,10 @@
 #include "internal.h"
 
 static const void *
-expbuf_capture_src(struct vareq_surface *surf)
+expbuf_capture_src(struct vav4l2_surface *surf)
 {
-    if (!vareq_expbuf_export_wanted() || !surf || surf->gbm_imported || surf->gbm_writable || surf->buf_index < 0 ||
-        surf->last_writer == VAREQ_WRITER_CPU)
+    if (!vav4l2_expbuf_export_wanted() || !surf || surf->gbm_imported || surf->gbm_writable || surf->buf_index < 0 ||
+        surf->last_writer == VAV4L2_WRITER_CPU)
         return NULL;
     return surf->cap_view;
 }
@@ -52,7 +52,7 @@ static void image_format_metadata(VAImageFormat *f)
     }
 }
 
-VAStatus vareq_query_image_formats(VADriverContextP ctx,
+VAStatus vav4l2_query_image_formats(VADriverContextP ctx,
                            VAImageFormat *format_list,
                            int *num_formats)
 {
@@ -119,34 +119,34 @@ static void image_layout(VAImage *image, uint32_t fourcc, uint32_t stride, uint3
     }
 }
 
-VAStatus vareq_derive_image(VADriverContextP ctx,
+VAStatus vav4l2_derive_image(VADriverContextP ctx,
                     VASurfaceID surface,
                     VAImage *image)
 {
     if (!image)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
-    struct vareq_driver_data *driver_data = ctx->pDriverData;
-    struct vareq_surface *surf;
+    struct vav4l2_driver_data *driver_data = ctx->pDriverData;
+    struct vav4l2_surface *surf;
 
-    pthread_mutex_lock(&vareq_api_lock);
-    surf = vareq_surface_by_id(driver_data, surface);
+    pthread_mutex_lock(&vav4l2_api_lock);
+    surf = vav4l2_surface_by_id(driver_data, surface);
 
     if (!surf) {
-        if (vareq_debug)
-            fprintf(stderr, "v4l2request: derive lookup fail %#x\n",
+        if (vav4l2_debug)
+            fprintf(stderr, "v4l2: derive lookup fail %#x\n",
                     surface);
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
     if (surf->status == VASurfaceRendering) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_SURFACE_BUSY;
     }
     if (surf->status == VASurfaceSkipped || (!surf->has_pic && !surf->cpu_ptr)) {
-        fprintf(stderr, "v4l2request: derive_image: surface %d has no decoded frame\n",
+        fprintf(stderr, "v4l2: derive_image: surface %d has no decoded frame\n",
                 surface);
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
@@ -154,26 +154,26 @@ VAStatus vareq_derive_image(VADriverContextP ctx,
      * would be lost to the live decoder/display backing. Let clients use
      * CreateImage + GetImage/PutImage for those surfaces. */
     if (surf->prime || surf->gbm_bo || (surf->buf_index >= 0 &&
-        !(surf->cpu_ptr && surf->last_writer == VAREQ_WRITER_CPU))) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        !(surf->cpu_ptr && surf->last_writer == VAV4L2_WRITER_CPU))) {
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
     /* Owning context gives the negotiated capture geometry — the stride
      * can be padded well beyond the display width. */
-    struct vareq_context *c = vareq_context_for_surface(driver_data, surface);
+    struct vav4l2_context *c = vav4l2_context_for_surface(driver_data, surface);
     uint32_t stride = surf->stride ? surf->stride :
                       ((c && c->cap_stride) ? c->cap_stride : surf->width);
     uint32_t aligned_h = surf->aligned_h ? surf->aligned_h :
                           ((c && c->cap_height) ? c->cap_height : surf->height);
     uint32_t cap_fcc = surf->cap_fourcc ? surf->cap_fourcc :
                        ((c && c->cap_pixelformat) ? c->cap_pixelformat : V4L2_PIX_FMT_NV12);
-    uint32_t va_fcc = vareq_va_fourcc_for_capture(cap_fcc);
+    uint32_t va_fcc = vav4l2_va_fourcc_for_capture(cap_fcc);
     uint32_t data_size;
     void *map;
     int mmapped = 0;
 
-    if (surf->cpu_ptr && (surf->last_writer == VAREQ_WRITER_CPU || !surf->has_pic)) {
+    if (surf->cpu_ptr && (surf->last_writer == VAV4L2_WRITER_CPU || !surf->has_pic)) {
         map = surf->cpu_ptr;
         stride = surf->cpu_stride;
         aligned_h = surf->height;
@@ -182,19 +182,19 @@ VAStatus vareq_derive_image(VADriverContextP ctx,
         mmapped = 2; /* borrowed cpu backing — do not free on DestroyImage */
         surf->memfd_borrows++;
     } else if (cap_fcc != V4L2_PIX_FMT_NV12) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     } else {
-        if (vareq_surface_ensure_memfd(surf) < 0) {
-            pthread_mutex_unlock(&vareq_api_lock);
+        if (vav4l2_surface_ensure_memfd(surf) < 0) {
+            pthread_mutex_unlock(&vav4l2_api_lock);
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
-        data_size = vareq_capture_plane_size(cap_fcc, stride, aligned_h);
-        map = vareq_surface_map_memfd(surf, data_size);
+        data_size = vav4l2_capture_plane_size(cap_fcc, stride, aligned_h);
+        map = vav4l2_surface_map_memfd(surf, data_size);
         if (!map) {
-            fprintf(stderr, "v4l2request: derive_image: map memfd failed: %s\n",
+            fprintf(stderr, "v4l2: derive_image: map memfd failed: %s\n",
                     strerror(errno));
-            pthread_mutex_unlock(&vareq_api_lock);
+            pthread_mutex_unlock(&vav4l2_api_lock);
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         /* Borrowed persistent mapping — the surface owns it; DestroyImage
@@ -204,11 +204,11 @@ VAStatus vareq_derive_image(VADriverContextP ctx,
         va_fcc = VA_FOURCC_NV12;
     }
 
-    struct vareq_buffer *ib = calloc(1, sizeof(*ib));
+    struct vav4l2_buffer *ib = calloc(1, sizeof(*ib));
     if (!ib) {
         if (mmapped == 2 && surf->memfd_borrows)
             surf->memfd_borrows--;
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
     VABufferID id = ++driver_data->next_buffer_id;
@@ -237,32 +237,32 @@ VAStatus vareq_derive_image(VADriverContextP ctx,
     image_layout(image, va_fcc, stride, aligned_h);
     image->data_size = data_size;
 
-    pthread_mutex_unlock(&vareq_api_lock);
+    pthread_mutex_unlock(&vav4l2_api_lock);
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus vareq_destroy_image(VADriverContextP ctx, VAImageID image_id)
+VAStatus vav4l2_destroy_image(VADriverContextP ctx, VAImageID image_id)
 {
-    struct vareq_driver_data *driver_data = ctx->pDriverData;
+    struct vav4l2_driver_data *driver_data = ctx->pDriverData;
 
-    pthread_mutex_lock(&vareq_api_lock);
-    struct vareq_buffer **pp = &driver_data->orphan_buffers;
+    pthread_mutex_lock(&vav4l2_api_lock);
+    struct vav4l2_buffer **pp = &driver_data->orphan_buffers;
 
     while (*pp) {
         if ((*pp)->buffer_id == image_id) {
-            struct vareq_buffer *ib = *pp;
+            struct vav4l2_buffer *ib = *pp;
             if (ib->type != VAImageBufferType) {
-                pthread_mutex_unlock(&vareq_api_lock);
+                pthread_mutex_unlock(&vav4l2_api_lock);
                 return VA_STATUS_ERROR_INVALID_IMAGE;
             }
             *pp = ib->next;
-            vareq_free_buffer_locked(ib);
-            pthread_mutex_unlock(&vareq_api_lock);
+            vav4l2_free_buffer_locked(ib);
+            pthread_mutex_unlock(&vav4l2_api_lock);
             return VA_STATUS_SUCCESS;
         }
         pp = &(*pp)->next;
     }
-    pthread_mutex_unlock(&vareq_api_lock);
+    pthread_mutex_unlock(&vav4l2_api_lock);
 
     return VA_STATUS_ERROR_INVALID_IMAGE;
 }
@@ -272,11 +272,11 @@ VAStatus vareq_destroy_image(VADriverContextP ctx, VAImageID image_id)
  * probes vaDeriveImage with a fresh surface before any decode, then falls
  * back to vaCreateImage + vaGetImage + vaMapBuffer).
  */
-VAStatus vareq_create_image(VADriverContextP ctx, VAImageFormat *format,
+VAStatus vav4l2_create_image(VADriverContextP ctx, VAImageFormat *format,
                     int width, int height, VAImage *image)
 {
-    struct vareq_driver_data *driver_data = ctx->pDriverData;
-    struct vareq_buffer *ib;
+    struct vav4l2_driver_data *driver_data = ctx->pDriverData;
+    struct vav4l2_buffer *ib;
     uint32_t stride, aligned_h, data_size;
     VABufferID id;
 
@@ -294,9 +294,9 @@ VAStatus vareq_create_image(VADriverContextP ctx, VAImageFormat *format,
     if (!image || width <= 0 || height <= 0 || width > UINT16_MAX || height > UINT16_MAX)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
 
-    stride = vareq_default_image_stride(format->fourcc, width);
+    stride = vav4l2_default_image_stride(format->fourcc, width);
     aligned_h = height;
-    data_size = vareq_va_image_size(format->fourcc, stride, aligned_h);
+    data_size = vav4l2_va_image_size(format->fourcc, stride, aligned_h);
     if (!stride || !data_size)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
 
@@ -308,7 +308,7 @@ VAStatus vareq_create_image(VADriverContextP ctx, VAImageFormat *format,
         free(ib);
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
-    pthread_mutex_lock(&vareq_api_lock);
+    pthread_mutex_lock(&vav4l2_api_lock);
     id = ++driver_data->next_buffer_id;
     ib->buffer_id = id;
     ib->type = VAImageBufferType;
@@ -322,7 +322,7 @@ VAStatus vareq_create_image(VADriverContextP ctx, VAImageFormat *format,
                           * not a stride recomputed from the blit size */
     ib->next = driver_data->orphan_buffers;
     driver_data->orphan_buffers = ib;
-    pthread_mutex_unlock(&vareq_api_lock);
+    pthread_mutex_unlock(&vav4l2_api_lock);
 
     memset(image, 0, sizeof(*image));
     image->image_id = id;
@@ -337,35 +337,35 @@ VAStatus vareq_create_image(VADriverContextP ctx, VAImageFormat *format,
     return VA_STATUS_SUCCESS;
 }
 
-static struct vareq_image_view image_buffer_view(const struct vareq_buffer *ib)
+static struct vav4l2_image_view image_buffer_view(const struct vav4l2_buffer *ib)
 {
-    return (struct vareq_image_view){.data = ib->data, .fourcc = ib->fourcc, .stride = ib->pitch,
+    return (struct vav4l2_image_view){.data = ib->data, .fourcc = ib->fourcc, .stride = ib->pitch,
         .width = ib->image_width, .height = ib->image_height, .size = ib->size,
         .alloc_height = ib->image_alloc_height ? ib->image_alloc_height : ib->image_height};
 }
 
-static struct vareq_image_view surface_cpu_view(const struct vareq_surface *surf)
+static struct vav4l2_image_view surface_cpu_view(const struct vav4l2_surface *surf)
 {
-    return (struct vareq_image_view){.data = surf->cpu_ptr, .fourcc = surf->format ? surf->format : VA_FOURCC_NV12,
+    return (struct vav4l2_image_view){.data = surf->cpu_ptr, .fourcc = surf->format ? surf->format : VA_FOURCC_NV12,
         .stride = surf->cpu_stride, .width = surf->width, .height = surf->height,
         .alloc_height = surf->height, .size = surf->cpu_size};
 }
 
-/* Caller holds vareq_api_lock. Used for GetImage and preserving pixels outside
+/* Caller holds vav4l2_api_lock. Used for GetImage and preserving pixels outside
  * a partial upload before switching a decoded surface to CPU backing. */
-VAStatus vareq_surface_read_image_locked(struct vareq_driver_data *driver_data,
-                                          struct vareq_surface *surf, struct vareq_buffer *ib,
+VAStatus vav4l2_surface_read_image_locked(struct vav4l2_driver_data *driver_data,
+                                          struct vav4l2_surface *surf, struct vav4l2_buffer *ib,
                                           int x, int y, unsigned width, unsigned height)
 {
     if (surf->status == VASurfaceRendering) return VA_STATUS_ERROR_SURFACE_BUSY;
     if (surf->status == VASurfaceSkipped) return VA_STATUS_ERROR_DECODING_ERROR;
-    if (vareq_import_refresh(surf) < 0) return VA_STATUS_ERROR_OPERATION_FAILED;
+    if (vav4l2_import_refresh(surf) < 0) return VA_STATUS_ERROR_OPERATION_FAILED;
     unsigned image_rows = ib->image_alloc_height ? ib->image_alloc_height : ib->image_height;
-    if (surf->cpu_ptr && (surf->last_writer == VAREQ_WRITER_CPU || !surf->has_pic)) {
-        struct vareq_image_view source = surface_cpu_view(surf), target = image_buffer_view(ib);
-        return vareq_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
+    if (surf->cpu_ptr && (surf->last_writer == VAV4L2_WRITER_CPU || !surf->has_pic)) {
+        struct vav4l2_image_view source = surface_cpu_view(surf), target = image_buffer_view(ib);
+        return vav4l2_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
     }
-    struct vareq_context *c = vareq_context_for_surface(driver_data, surf->surface_id);
+    struct vav4l2_context *c = vav4l2_context_for_surface(driver_data, surf->surface_id);
     uint32_t src_stride = surf->stride ? surf->stride :
                           ((c && c->cap_stride) ? c->cap_stride : surf->width);
     uint32_t src_alh = surf->aligned_h ? surf->aligned_h :
@@ -394,14 +394,14 @@ VAStatus vareq_surface_read_image_locked(struct vareq_driver_data *driver_data,
      * VAImage.pitches at create time), never a stride recomputed from the
      * blit size — the client reads rows at the reported pitch. */
     dst_stride = ib->pitch ? ib->pitch
-                           : vareq_default_image_stride(dst_fourcc, copy_w);
+                           : vav4l2_default_image_stride(dst_fourcc, copy_w);
 
     /* Lazy memfd: bo-backed surfaces skip the per-frame memfd copy;
      * refill it from the bo now that someone is reading back. */
     if (expbuf_capture_src(surf)) {
         src = expbuf_capture_src(surf);
     } else if (surf->has_pic) {
-        if (vareq_surface_ensure_memfd(surf) < 0) {
+        if (vav4l2_surface_ensure_memfd(surf) < 0) {
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         src = NULL;
@@ -412,10 +412,10 @@ VAStatus vareq_surface_read_image_locked(struct vareq_driver_data *driver_data,
     if (src) {
         /* capture mmap already set */
     } else if (surf->memfd_fd >= 0) {
-        map_size = vareq_capture_plane_size(cap_fcc, src_stride, src_alh);
-        mapped = vareq_surface_map_memfd(surf, map_size);
+        map_size = vav4l2_capture_plane_size(cap_fcc, src_stride, src_alh);
+        mapped = vav4l2_surface_map_memfd(surf, map_size);
         if (!mapped) {
-            fprintf(stderr, "v4l2request: get_image: map memfd failed: %s\n",
+            fprintf(stderr, "v4l2: get_image: map memfd failed: %s\n",
                     strerror(errno));
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
@@ -424,44 +424,44 @@ VAStatus vareq_surface_read_image_locked(struct vareq_driver_data *driver_data,
         src = surf->cpu_ptr;
         src_stride = surf->cpu_stride;
         src_alh = surf->height;
-        struct vareq_image_view source = surface_cpu_view(surf), target = image_buffer_view(ib);
-        return vareq_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
+        struct vav4l2_image_view source = surface_cpu_view(surf), target = image_buffer_view(ib);
+        return vav4l2_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
     } else {
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
     if (cap_fcc == V4L2_PIX_FMT_NV12) {
-        struct vareq_image_view source = {.data = (void *)src, .fourcc = VA_FOURCC_NV12,
+        struct vav4l2_image_view source = {.data = (void *)src, .fourcc = VA_FOURCC_NV12,
             .stride = src_stride, .width = surf->width, .height = surf->height, .alloc_height = src_alh,
-            .size = vareq_capture_plane_size(cap_fcc, src_stride, src_alh)};
-        struct vareq_image_view target = image_buffer_view(ib);
-        return vareq_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
+            .size = vav4l2_capture_plane_size(cap_fcc, src_stride, src_alh)};
+        struct vav4l2_image_view target = image_buffer_view(ib);
+        return vav4l2_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
     }
     if (cap_fcc == V4L2_PIX_FMT_NV16 && (dst_fourcc == VA_FOURCC_422H || dst_fourcc == VA_FOURCC_YV16)) {
-        struct vareq_image_view source = {.data = (void *)src, .fourcc = V4L2_PIX_FMT_NV16,
+        struct vav4l2_image_view source = {.data = (void *)src, .fourcc = V4L2_PIX_FMT_NV16,
             .stride = src_stride, .width = surf->width, .height = surf->height, .alloc_height = src_alh,
-            .size = vareq_capture_plane_size(cap_fcc, src_stride, src_alh)};
-        struct vareq_image_view target = image_buffer_view(ib);
-        return vareq_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
+            .size = vav4l2_capture_plane_size(cap_fcc, src_stride, src_alh)};
+        struct vav4l2_image_view target = image_buffer_view(ib);
+        return vav4l2_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
     }
     if (x || y) {
         /* Packed capture samples cannot be addressed at an arbitrary byte
          * offset. Convert at the original origin, then use the shared image
          * rectangle rules for chroma alignment and allocation pitches. */
-        struct vareq_buffer converted = {.fourcc = dst_fourcc,
+        struct vav4l2_buffer converted = {.fourcc = dst_fourcc,
             .image_width = surf->width, .image_height = surf->height,
             .image_alloc_height = surf->height};
-        converted.pitch = vareq_default_image_stride(dst_fourcc, surf->width);
-        converted.size = vareq_va_image_size(dst_fourcc, converted.pitch, surf->height);
+        converted.pitch = vav4l2_default_image_stride(dst_fourcc, surf->width);
+        converted.size = vav4l2_va_image_size(dst_fourcc, converted.pitch, surf->height);
         if (!converted.pitch || !converted.size)
             return VA_STATUS_ERROR_INVALID_PARAMETER;
         converted.data = malloc(converted.size);
         if (!converted.data) return VA_STATUS_ERROR_ALLOCATION_FAILED;
-        VAStatus status = vareq_surface_read_image_locked(driver_data, surf, &converted,
+        VAStatus status = vav4l2_surface_read_image_locked(driver_data, surf, &converted,
                                                      0, 0, surf->width, surf->height);
         if (status == VA_STATUS_SUCCESS) {
-            struct vareq_image_view source = image_buffer_view(&converted), target = image_buffer_view(ib);
-            status = vareq_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
+            struct vav4l2_image_view source = image_buffer_view(&converted), target = image_buffer_view(ib);
+            status = vav4l2_copy_image_rect(&target, 0, 0, &source, x, y, width, height);
         }
         free(converted.data);
         return status;
@@ -481,24 +481,24 @@ VAStatus vareq_surface_read_image_locked(struct vareq_driver_data *driver_data,
           dst_fourcc == VA_FOURCC_BGRA || dst_fourcc == VA_FOURCC_BGRX) ? 4u : 1u);
     if (copy_w <= 0 || copy_h <= 0 || (uint32_t)copy_h > src_alh || src_row > src_stride ||
         dst_row > dst_stride ||
-        !vareq_va_image_size(dst_fourcc, dst_stride, image_rows) ||
-        vareq_va_image_size(dst_fourcc, dst_stride, image_rows) > ib->size) {
-        fprintf(stderr, "v4l2request: get_image: requested copy exceeds source or destination geometry\n");
+        !vav4l2_va_image_size(dst_fourcc, dst_stride, image_rows) ||
+        vav4l2_va_image_size(dst_fourcc, dst_stride, image_rows) > ib->size) {
+        fprintf(stderr, "v4l2: get_image: requested copy exceeds source or destination geometry\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
     if (dst_fourcc == VA_FOURCC_P010 && cap_fcc == V4L2_PIX_FMT_NV15)
-        vareq_nv15_to_p010(dst, dst_stride, image_rows, src, src_stride, src_alh, copy_w, copy_h);
+        vav4l2_nv15_to_p010(dst, dst_stride, image_rows, src, src_stride, src_alh, copy_w, copy_h);
     else if (dst_fourcc == VA_FOURCC_Y210 && cap_fcc == V4L2_PIX_FMT_NV20)
-        return vareq_nv20_to_y210(dst, dst_stride, src, src_stride, src_alh, copy_w, copy_h) < 0
+        return vav4l2_nv20_to_y210(dst, dst_stride, src, src_stride, src_alh, copy_w, copy_h) < 0
             ? VA_STATUS_ERROR_ALLOCATION_FAILED : VA_STATUS_SUCCESS;
     else if (dst_fourcc == VA_FOURCC_YUY2 && cap_fcc == V4L2_PIX_FMT_NV20)
-        return vareq_nv20_to_yuy2(dst, dst_stride, src, src_stride, src_alh, copy_w, copy_h) < 0
+        return vav4l2_nv20_to_yuy2(dst, dst_stride, src, src_stride, src_alh, copy_w, copy_h) < 0
             ? VA_STATUS_ERROR_ALLOCATION_FAILED : VA_STATUS_SUCCESS;
     else if (dst_fourcc == VA_FOURCC_YUY2 && cap_fcc == V4L2_PIX_FMT_NV16)
-        vareq_nv16_to_yuy2(dst, dst_stride, src, src_stride, src_alh, copy_w, copy_h);
+        vav4l2_nv16_to_yuy2(dst, dst_stride, src, src_stride, src_alh, copy_w, copy_h);
     else {
-        fprintf(stderr, "v4l2request: get_image: no path cap=%.4s -> %.4s\n",
+        fprintf(stderr, "v4l2: get_image: no path cap=%.4s -> %.4s\n",
                 (char *)&cap_fcc, (char *)&dst_fourcc);
         return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     }
@@ -506,35 +506,35 @@ VAStatus vareq_surface_read_image_locked(struct vareq_driver_data *driver_data,
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus vareq_get_image(VADriverContextP ctx, VASurfaceID surface,
+VAStatus vav4l2_get_image(VADriverContextP ctx, VASurfaceID surface,
                  int x, int y, unsigned int width, unsigned int height,
                  VAImageID image_id)
 {
-    struct vareq_driver_data *driver_data = ctx->pDriverData;
-    struct vareq_surface *surf;
-    struct vareq_buffer *ib;
+    struct vav4l2_driver_data *driver_data = ctx->pDriverData;
+    struct vav4l2_surface *surf;
+    struct vav4l2_buffer *ib;
 
-    pthread_mutex_lock(&vareq_api_lock);
-    surf = vareq_surface_by_id(driver_data, surface);
+    pthread_mutex_lock(&vav4l2_api_lock);
+    surf = vav4l2_surface_by_id(driver_data, surface);
     if (!surf) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
     if (surf->status == VASurfaceRendering) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_SURFACE_BUSY;
     }
     if (surf->status == VASurfaceSkipped || (!surf->has_pic && !surf->cpu_ptr)) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
     if (surf->memfd_borrows) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_SURFACE_BUSY;
     }
     if (x < 0 || y < 0 || (unsigned)x > surf->width || (unsigned)y > surf->height ||
         !width || !height || width > surf->width - (unsigned)x || height > surf->height - (unsigned)y) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
@@ -542,20 +542,20 @@ VAStatus vareq_get_image(VADriverContextP ctx, VASurfaceID surface,
     while (ib && ib->buffer_id != image_id)
         ib = ib->next;
     if (!ib || ib->type != VAImageBufferType) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_IMAGE;
     }
     if (width > ib->image_width || height > ib->image_height) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
-    VAStatus status = vareq_surface_read_image_locked(driver_data, surf, ib, x, y, width, height);
-    vareq_decode_trace(vareq_context_for_surface(driver_data, surface), "get-image", (int)status, surface);
-    pthread_mutex_unlock(&vareq_api_lock);
+    VAStatus status = vav4l2_surface_read_image_locked(driver_data, surf, ib, x, y, width, height);
+    vav4l2_decode_trace(vav4l2_context_for_surface(driver_data, surface), "get-image", (int)status, surface);
+    pthread_mutex_unlock(&vav4l2_api_lock);
     return status;
 }
 
-VAStatus vareq_put_image(VADriverContextP ctx,
+VAStatus vav4l2_put_image(VADriverContextP ctx,
                  VASurfaceID surface,
                  VAImageID image,
                  int src_x, int src_y,
@@ -563,34 +563,34 @@ VAStatus vareq_put_image(VADriverContextP ctx,
                  int dest_x, int dest_y,
                  unsigned int dest_width, unsigned int dest_height)
 {
-    struct vareq_driver_data *driver_data = ctx->pDriverData;
-    struct vareq_surface *surf;
-    struct vareq_buffer *ib;
+    struct vav4l2_driver_data *driver_data = ctx->pDriverData;
+    struct vav4l2_surface *surf;
+    struct vav4l2_buffer *ib;
 
-    pthread_mutex_lock(&vareq_api_lock);
-    surf = vareq_surface_by_id(driver_data, surface);
+    pthread_mutex_lock(&vav4l2_api_lock);
+    surf = vav4l2_surface_by_id(driver_data, surface);
     if (!surf) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
     if (surf->status == VASurfaceRendering) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_SURFACE_BUSY;
     }
     ib = driver_data->orphan_buffers;
     while (ib && ib->buffer_id != image)
         ib = ib->next;
     if (!ib) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_IMAGE;
     }
 
     if (ib->type != VAImageBufferType) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_IMAGE;
     }
     if (surf->memfd_borrows) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_SURFACE_BUSY;
     }
     if (src_x < 0 || src_y < 0 || dest_x < 0 || dest_y < 0 || !src_width || !src_height ||
@@ -599,43 +599,43 @@ VAStatus vareq_put_image(VADriverContextP ctx,
         (unsigned)dest_x > surf->width || (unsigned)dest_y > surf->height ||
         dest_width > surf->width - (unsigned)dest_x || dest_height > surf->height - (unsigned)dest_y ||
         dest_width != src_width || dest_height != src_height) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
-    if (vareq_surface_ensure_cpu(surf) < 0) {
-        pthread_mutex_unlock(&vareq_api_lock);
+    if (vav4l2_surface_ensure_cpu(surf) < 0) {
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
-    if ((dest_x || dest_y || dest_width != surf->width || dest_height != surf->height) && vareq_import_refresh(surf) < 0) {
-        pthread_mutex_unlock(&vareq_api_lock);
+    if ((dest_x || dest_y || dest_width != surf->width || dest_height != surf->height) && vav4l2_import_refresh(surf) < 0) {
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    if (surf->has_pic && surf->last_writer != VAREQ_WRITER_CPU &&
+    if (surf->has_pic && surf->last_writer != VAV4L2_WRITER_CPU &&
         (dest_x || dest_y || dest_width != surf->width || dest_height != surf->height)) {
-        struct vareq_buffer backing = {.data = surf->cpu_ptr, .fourcc = surf->format,
+        struct vav4l2_buffer backing = {.data = surf->cpu_ptr, .fourcc = surf->format,
             .pitch = surf->cpu_stride, .size = surf->cpu_size,
             .image_width = surf->width, .image_height = surf->height};
-        VAStatus status = vareq_surface_read_image_locked(driver_data, surf, &backing, 0, 0, surf->width, surf->height);
+        VAStatus status = vav4l2_surface_read_image_locked(driver_data, surf, &backing, 0, 0, surf->width, surf->height);
         if (status != VA_STATUS_SUCCESS) {
-            pthread_mutex_unlock(&vareq_api_lock);
+            pthread_mutex_unlock(&vav4l2_api_lock);
             return status;
         }
     }
-    struct vareq_image_view source = image_buffer_view(ib), target = surface_cpu_view(surf);
-    VAStatus status = vareq_copy_image_rect(&target, dest_x, dest_y, &source, src_x, src_y, src_width, src_height);
+    struct vav4l2_image_view source = image_buffer_view(ib), target = surface_cpu_view(surf);
+    VAStatus status = vav4l2_copy_image_rect(&target, dest_x, dest_y, &source, src_x, src_y, src_width, src_height);
     if (status != VA_STATUS_SUCCESS) {
-        pthread_mutex_unlock(&vareq_api_lock);
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return status;
     }
-    surf->last_writer = VAREQ_WRITER_CPU;
+    surf->last_writer = VAV4L2_WRITER_CPU;
     surf->has_pic = 1;
     surf->status = VASurfaceReady;
     surf->prime_capture_valid = 0;
-    if ((surf->prime && vareq_prime_write(surf) < 0) ||
-        (surf->gbm_bo && vareq_gbm_surface_upload(surf, surf->cpu_ptr, surf->cpu_stride, surf->height) < 0)) {
-        pthread_mutex_unlock(&vareq_api_lock);
+    if ((surf->prime && vav4l2_prime_write(surf) < 0) ||
+        (surf->gbm_bo && vav4l2_gbm_surface_upload(surf, surf->cpu_ptr, surf->cpu_stride, surf->height) < 0)) {
+        pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    pthread_mutex_unlock(&vareq_api_lock);
+    pthread_mutex_unlock(&vav4l2_api_lock);
     return VA_STATUS_SUCCESS;
 }

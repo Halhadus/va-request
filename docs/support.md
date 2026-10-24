@@ -10,7 +10,7 @@ Available operations depend on the running kernel interface, implemented transla
 | HEVC VLD | Main/Main10; slice arrays, fragmented packets, PPS identities, retained DPB and current ST/LT references | Original SPS-selected RPS arrays and sublayer tables are not generally available in standard VA buffers. No 12-bit, range extensions, multilayer or 4:4:4 support is advertised. |
 | VP8 VLD | Frame metadata, probabilities, fragment assembly and reference lifetime | Requires VP8F, required stateless controls and Request API. |
 | MPEG-2 VLD | Simple/Main, multiple slices, fragment assembly and P/B references | Hardware IDCT can differ from FFmpeg software; qualification includes a same-kernel GStreamer reference. |
-| AV1 VLD | Profile0 8-bit; opt-in with `VAREQ_ADVERTISE_AV1=1` | Experimental; disabled by default. Multi-tile, 4K, super-resolution, refresh/reference reconstruction and uncommon features need further qualification. Not part of normal acceptance. |
+| AV1 VLD | Profile0 8-bit; opt-in with `VAV4L2_ADVERTISE_AV1=1` | Experimental; disabled by default. Multi-tile, 4K, super-resolution, refresh/reference reconstruction and uncommon features need further qualification. Not part of normal acceptance. |
 | VP9 VLD | Pending | Kernel inventory may include VP9F/VP90; VA translation is not implemented. |
 | Other image/video encode | Not implemented | An encoder needs its own VA parameter translation, V4L2 negotiation and tests. |
 | JPEG encode | Baseline; NV12/NV21/I420/YV12 source layouts; native quality; staged and eligible direct input | No arbitrary DQT/DHT programming, restart controls, lossless/progressive encode or completed packed-422 source path. |

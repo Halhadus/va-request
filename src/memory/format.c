@@ -14,7 +14,7 @@
 #include <linux/videodev2.h>
 #include <drm_fourcc.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
 struct capture_format { uint32_t v4l2, va, drm, rt; unsigned depth, chroma; };
 static const struct capture_format capture_formats[] = {
@@ -23,30 +23,30 @@ static const struct capture_format capture_formats[] = {
     {V4L2_PIX_FMT_NV16, VA_FOURCC_YUY2, DRM_FORMAT_NV16, VA_RT_FORMAT_YUV422, 8, 2},
     {V4L2_PIX_FMT_NV20, VA_FOURCC_YUY2, DRM_FORMAT_NV20, VA_RT_FORMAT_YUV422_10, 10, 2},
 };
-uint32_t vareq_capture_fourcc_from_rt(unsigned int rt)
+uint32_t vav4l2_capture_fourcc_from_rt(unsigned int rt)
 {
     for (unsigned i = 0; i < sizeof(capture_formats) / sizeof(capture_formats[0]); i++) if (capture_formats[i].rt == rt) return capture_formats[i].v4l2;
     return 0;
 }
-uint32_t vareq_capture_fourcc_from_sps(int minus8, int chroma)
+uint32_t vav4l2_capture_fourcc_from_sps(int minus8, int chroma)
 {
     for (unsigned i = 0; i < sizeof(capture_formats) / sizeof(capture_formats[0]); i++) if ((int)capture_formats[i].depth == minus8 + 8 && (int)capture_formats[i].chroma == chroma) return capture_formats[i].v4l2;
     return 0;
 }
-uint32_t vareq_va_fourcc_for_capture(uint32_t fcc)
+uint32_t vav4l2_va_fourcc_for_capture(uint32_t fcc)
 {
     for (unsigned i = 0; i < sizeof(capture_formats) / sizeof(capture_formats[0]); i++) if (capture_formats[i].v4l2 == fcc) return capture_formats[i].va;
     return 0;
 }
-uint32_t vareq_drm_fourcc_for_capture(uint32_t fcc)
+uint32_t vav4l2_drm_fourcc_for_capture(uint32_t fcc)
 {
     for (unsigned i = 0; i < sizeof(capture_formats) / sizeof(capture_formats[0]); i++) if (capture_formats[i].v4l2 == fcc) return capture_formats[i].drm;
     return 0;
 }
 
-uint32_t vareq_capture_plane_size(uint32_t fourcc, uint32_t stride, uint32_t aligned_h)
+uint32_t vav4l2_capture_plane_size(uint32_t fourcc, uint32_t stride, uint32_t aligned_h)
 {
-    if ((!vareq_drm_fourcc_for_capture(fourcc) && fourcc != V4L2_PIX_FMT_NV61) || !stride || !aligned_h) return 0;
+    if ((!vav4l2_drm_fourcc_for_capture(fourcc) && fourcc != V4L2_PIX_FMT_NV61) || !stride || !aligned_h) return 0;
     uint64_t rows = aligned_h;
     rows += (fourcc == V4L2_PIX_FMT_NV16 || fourcc == V4L2_PIX_FMT_NV61 || fourcc == V4L2_PIX_FMT_NV20)
         ? (uint64_t)aligned_h : ((uint64_t)aligned_h + 1) / 2;
@@ -56,14 +56,14 @@ uint32_t vareq_capture_plane_size(uint32_t fourcc, uint32_t stride, uint32_t ali
 
 /*
  * Shared per-row 10-bit unpack scratch: heap, grows on demand, sized for
- * one Y row + one UV row. Every caller runs under g_vareq_lock
+ * one Y row + one UV row. Every caller runs under g_vav4l2_lock
  * (get_image / put_image / vpp), so one buffer serves all converters and
  * wide frames never hit a silent width clamp. Returns NULL on OOM.
  */
 static uint16_t *g_row_scratch;
 static uint32_t g_row_scratch_samples;
 
-void vareq_format_cleanup(void)
+void vav4l2_format_cleanup(void)
 {
     free(g_row_scratch); g_row_scratch = NULL; g_row_scratch_samples = 0;
 }
@@ -112,7 +112,7 @@ static void unpack_le40_to_p010(const uint8_t *src, uint16_t *dst, int samples)
     }
 }
 
-void vareq_nv15_to_p010(uint8_t *dst, uint32_t dst_stride, uint32_t dst_height,
+void vav4l2_nv15_to_p010(uint8_t *dst, uint32_t dst_stride, uint32_t dst_height,
                          const uint8_t *src, uint32_t src_stride,
                          uint32_t src_aligned_h,
                          int width, int height)
@@ -139,7 +139,7 @@ void vareq_nv15_to_p010(uint8_t *dst, uint32_t dst_stride, uint32_t dst_height,
                             (width + 1) & ~1);
 }
 
-void vareq_copy_nv12(uint8_t *dst, uint32_t dst_stride, uint32_t dst_height,
+void vav4l2_copy_nv12(uint8_t *dst, uint32_t dst_stride, uint32_t dst_height,
                       const uint8_t *src, uint32_t src_stride,
                       uint32_t src_aligned_h,
                       int width, int height)
@@ -162,7 +162,7 @@ void vareq_copy_nv12(uint8_t *dst, uint32_t dst_stride, uint32_t dst_height,
                src_uv + (size_t)y * src_stride, (size_t)((width + 1) & ~1));
 }
 
-void vareq_nv16_to_yuy2(uint8_t *dst, uint32_t dst_stride,
+void vav4l2_nv16_to_yuy2(uint8_t *dst, uint32_t dst_stride,
                          const uint8_t *src, uint32_t src_stride,
                          uint32_t src_aligned_h,
                          int width, int height)
@@ -194,7 +194,7 @@ void vareq_nv16_to_yuy2(uint8_t *dst, uint32_t dst_stride,
     }
 }
 
-int vareq_nv20_to_yuy2(uint8_t *dst, uint32_t dst_stride,
+int vav4l2_nv20_to_yuy2(uint8_t *dst, uint32_t dst_stride,
                          const uint8_t *src, uint32_t src_stride,
                          uint32_t src_aligned_h,
                          int width, int height)
@@ -210,7 +210,7 @@ int vareq_nv20_to_yuy2(uint8_t *dst, uint32_t dst_stride,
     int samples = (width + 1) & ~1;
     y10 = row_scratch_get(samples);
     if (!y10) {
-        fprintf(stderr, "v4l2request: 10-bit row scratch OOM at width %d\n",
+        fprintf(stderr, "v4l2: 10-bit row scratch OOM at width %d\n",
                 width);
         return -1;
     }
@@ -236,7 +236,7 @@ int vareq_nv20_to_yuy2(uint8_t *dst, uint32_t dst_stride,
     return 0;
 }
 
-int vareq_nv20_to_y210(uint8_t *dst, uint32_t dst_stride,
+int vav4l2_nv20_to_y210(uint8_t *dst, uint32_t dst_stride,
                          const uint8_t *src, uint32_t src_stride,
                          uint32_t src_aligned_h, int width, int height)
 {
@@ -252,7 +252,7 @@ int vareq_nv20_to_y210(uint8_t *dst, uint32_t dst_stride,
     int samples = (width + 1) & ~1;
     y10 = row_scratch_get(samples);
     if (!y10) {
-        fprintf(stderr, "v4l2request: 10-bit row scratch OOM at width %d\n",
+        fprintf(stderr, "v4l2: 10-bit row scratch OOM at width %d\n",
                 width);
         return -1;
     }
@@ -279,7 +279,7 @@ int vareq_nv20_to_y210(uint8_t *dst, uint32_t dst_stride,
     return 0;
 }
 
-uint32_t vareq_va_image_size(uint32_t va_fourcc, uint32_t stride, uint32_t height)
+uint32_t vav4l2_va_image_size(uint32_t va_fourcc, uint32_t stride, uint32_t height)
 {
     uint64_t size = (uint64_t)stride * height;
     switch (va_fourcc) {
@@ -318,7 +318,7 @@ static int annexb_missing_prefix(const uint8_t *d, uint32_t sz)
  * `prefix_len`-byte start code (3 or 4, per codec convention). Returns
  * the total byte count (0 when it does not fit dst_cap; a NULL dst only
  * sizes the result, matching the anon-buffer test mode). */
-size_t vareq_annexb_concat(const uint8_t * const *datas, const uint32_t *sizes,
+size_t vav4l2_annexb_concat(const uint8_t * const *datas, const uint32_t *sizes,
                             int n, int prefix_len, uint8_t *dst, size_t dst_cap)
 {
     size_t total = 0, off = 0;
@@ -407,15 +407,15 @@ static VAStatus slice_fragment(struct slice_writer *w, const VASliceParameterBuf
     return status;
 }
 
-static VAStatus packetize_slices(enum vareq_codec codec, struct vareq_buffer **buffers,
+static VAStatus packetize_slices(enum vav4l2_codec codec, struct vav4l2_buffer **buffers,
                                  int n, struct slice_writer *w)
 {
     int pending = -1;
-    size_t param_size = codec == VAREQ_CODEC_H264 ? sizeof(VASliceParameterBufferH264) :
-        codec == VAREQ_CODEC_HEVC ? sizeof(VASliceParameterBufferHEVC) :
-        codec == VAREQ_CODEC_MPEG2 ? sizeof(VASliceParameterBufferMPEG2) : sizeof(VASliceParameterBufferVP8);
+    size_t param_size = codec == VAV4L2_CODEC_H264 ? sizeof(VASliceParameterBufferH264) :
+        codec == VAV4L2_CODEC_HEVC ? sizeof(VASliceParameterBufferHEVC) :
+        codec == VAV4L2_CODEC_MPEG2 ? sizeof(VASliceParameterBufferMPEG2) : sizeof(VASliceParameterBufferVP8);
     for (int i = 0; i < n; i++) {
-        struct vareq_buffer *b = buffers[i];
+        struct vav4l2_buffer *b = buffers[i];
         if (!b) return VA_STATUS_ERROR_INVALID_PARAMETER;
         if (b->type != VASliceParameterBufferType && b->type != VASliceDataBufferType) continue;
         unsigned count = b->allocated_elements ? b->num_elements : (b->num_elements ? b->num_elements : 1);
@@ -429,7 +429,7 @@ static VAStatus packetize_slices(enum vareq_codec codec, struct vareq_buffer **b
         if (pending < 0) return VA_STATUS_ERROR_INVALID_PARAMETER;
         uint32_t data_size = b->size * count;
         for (int j = pending; j < i; j++) {
-            struct vareq_buffer *params = buffers[j];
+            struct vav4l2_buffer *params = buffers[j];
             if (params->type != VASliceParameterBufferType) continue;
             unsigned elements = params->num_elements ? params->num_elements : 1;
             for (unsigned k = 0; k < elements; k++) {
@@ -449,15 +449,15 @@ static VAStatus packetize_slices(enum vareq_codec codec, struct vareq_buffer **b
 /* Parameter arrays preceding each data buffer describe byte ranges in that buffer.
  * Preflight the entire picture before writing: bad ranges, incomplete fragments or
  * insufficient capacity must not leave a partially rewritten OUTPUT bitstream. */
-VAStatus vareq_packetize_slices(enum vareq_codec codec, struct vareq_buffer **buffers,
+VAStatus vav4l2_packetize_slices(enum vav4l2_codec codec, struct vav4l2_buffer **buffers,
                                 int n, uint8_t *dst, size_t dst_cap, size_t *bytes)
 {
     if (!bytes) return VA_STATUS_ERROR_INVALID_PARAMETER;
     *bytes = 0;
-    if ((codec != VAREQ_CODEC_H264 && codec != VAREQ_CODEC_HEVC && codec != VAREQ_CODEC_VP8 && codec != VAREQ_CODEC_MPEG2) || n <= 0 || !buffers)
+    if ((codec != VAV4L2_CODEC_H264 && codec != VAV4L2_CODEC_HEVC && codec != VAV4L2_CODEC_VP8 && codec != VAV4L2_CODEC_MPEG2) || n <= 0 || !buffers)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
-    struct slice_writer w = {.capacity = dst_cap, .prefix_len = codec == VAREQ_CODEC_H264 ? 3 : codec == VAREQ_CODEC_HEVC ? 4 : 0,
-        .single_unit = codec == VAREQ_CODEC_VP8};
+    struct slice_writer w = {.capacity = dst_cap, .prefix_len = codec == VAV4L2_CODEC_H264 ? 3 : codec == VAV4L2_CODEC_HEVC ? 4 : 0,
+        .single_unit = codec == VAV4L2_CODEC_VP8};
     VAStatus status = packetize_slices(codec, buffers, n, &w);
     if (status != VA_STATUS_SUCCESS) return status;
     if (dst) {
@@ -469,7 +469,7 @@ VAStatus vareq_packetize_slices(enum vareq_codec codec, struct vareq_buffer **bu
     return VA_STATUS_SUCCESS;
 }
 
-uint32_t vareq_default_image_stride(uint32_t va_fourcc, int width)
+uint32_t vav4l2_default_image_stride(uint32_t va_fourcc, int width)
 {
     uint64_t stride;
 
@@ -518,7 +518,7 @@ static int image_422_8bit(uint32_t fourcc)
 
 /* Public images plus private NV16/NV61 capture/queue views. CreateImage
  * and surface allocation keep those kernel-only FOURCCs unadvertised. */
-static int image_planes(const struct vareq_image_view *v, uint8_t *planes[3],
+static int image_planes(const struct vav4l2_image_view *v, uint8_t *planes[3],
                         uint32_t pitches[3], unsigned *bpp, unsigned *n)
 {
     uint32_t rows = v->alloc_height ? v->alloc_height : v->height;
@@ -537,7 +537,7 @@ static int image_planes(const struct vareq_image_view *v, uint8_t *planes[3],
     }
     uint64_t row = (uint64_t)v->width * *bpp;
     if (pair || *n == 2) row = (((uint64_t)v->width + 1) & ~UINT64_C(1)) * *bpp;
-    uint32_t size = vareq_va_image_size(v->fourcc, v->stride, rows);
+    uint32_t size = vav4l2_va_image_size(v->fourcc, v->stride, rows);
     if (!v->data || !v->width || !v->height || rows < v->height || !size ||
         row > v->stride || size > v->size)
         return 0;
@@ -553,8 +553,8 @@ static int image_planes(const struct vareq_image_view *v, uint8_t *planes[3],
     return 1;
 }
 
-VAStatus vareq_copy_image_rect(const struct vareq_image_view *dst, unsigned dx, unsigned dy,
-                               const struct vareq_image_view *src, unsigned sx, unsigned sy,
+VAStatus vav4l2_copy_image_rect(const struct vav4l2_image_view *dst, unsigned dx, unsigned dy,
+                               const struct vav4l2_image_view *src, unsigned sx, unsigned sy,
                                unsigned width, unsigned height)
 {
     uint8_t *sp[3], *dp[3];
@@ -578,8 +578,8 @@ VAStatus vareq_copy_image_rect(const struct vareq_image_view *dst, unsigned dx, 
     if (sn > 1 && !planar422 && (((sy | dy) & 1) || ((height & 1) &&
         (sy + height != src->height || dy + height != dst->height))))
         return VA_STATUS_ERROR_INVALID_PARAMETER;
-    uint32_t source_size = vareq_va_image_size(src->fourcc, src->stride, src->alloc_height ? src->alloc_height : src->height);
-    uint32_t target_size = vareq_va_image_size(dst->fourcc, dst->stride, dst->alloc_height ? dst->alloc_height : dst->height);
+    uint32_t source_size = vav4l2_va_image_size(src->fourcc, src->stride, src->alloc_height ? src->alloc_height : src->height);
+    uint32_t target_size = vav4l2_va_image_size(dst->fourcc, dst->stride, dst->alloc_height ? dst->alloc_height : dst->height);
     uintptr_t source_address = (uintptr_t)src->data, target_address = (uintptr_t)dst->data;
     if ((target_address >= source_address && target_address - source_address < source_size) ||
         (source_address > target_address && source_address - target_address < target_size)) {
@@ -588,9 +588,9 @@ VAStatus vareq_copy_image_rect(const struct vareq_image_view *dst, unsigned dx, 
         void *copy = malloc(source_size);
         if (!copy) return VA_STATUS_ERROR_ALLOCATION_FAILED;
         memcpy(copy, src->data, source_size);
-        struct vareq_image_view snapshot = *src;
+        struct vav4l2_image_view snapshot = *src;
         snapshot.data = copy; snapshot.size = source_size;
-        VAStatus st = vareq_copy_image_rect(dst, dx, dy, &snapshot, sx, sy, width, height);
+        VAStatus st = vav4l2_copy_image_rect(dst, dx, dy, &snapshot, sx, sy, width, height);
         free(copy);
         return st;
     }
@@ -632,7 +632,7 @@ VAStatus vareq_copy_image_rect(const struct vareq_image_view *dst, unsigned dx, 
 }
 
 /* Iterate the actual Annex-B NAL units after range/fragment packetization. */
-int vareq_annexb_next(const uint8_t *data, size_t size, size_t *offset, const uint8_t **nal, size_t *length)
+int vav4l2_annexb_next(const uint8_t *data, size_t size, size_t *offset, const uint8_t **nal, size_t *length)
 {
     if (!data || !offset || !nal || !length || size > UINT32_MAX || *offset > size) return -1;
     if (*offset == size) return 0;

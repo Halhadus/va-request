@@ -14,7 +14,7 @@ class ImportRunner(unittest.TestCase):
     def run_case(self, fault=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); build = root / 'build'; build.mkdir(); output = root / 'out'
-            for name in ['v4l2request_drv_video.so', 'hevc_slice_interpose.so', 'prime_surface_interpose.so']:
+            for name in ['v4l2_drv_video.so', 'hevc_slice_interpose.so', 'prime_surface_interpose.so']:
                 (build / name).write_bytes(b'new binary')
             (output / 'run.old').mkdir(parents=True)
             (output / 'run.old/summary.txt').write_text('PASS=30 FAIL=0 COMPLETE=1 EXIT=0 STAGE=done\n')
@@ -22,7 +22,7 @@ class ImportRunner(unittest.TestCase):
             def execute(args, **kw):
                 env = kw.get('env')
                 if args[0] == runner.sys.executable:
-                    current = Path(env['VAREQ_PRIME_TRACE_DIR'])
+                    current = Path(env['VAV4L2_PRIME_TRACE_DIR'])
                     self.assertTrue(env['LD_PRELOAD'].startswith(str(build / 'prime_surface_interpose.so')))
                     packets = current / 'packets'; packets.mkdir()
                     (packets / 'summary.txt').write_text('PASS=58 FAIL=0 COMPLETE=1 EXIT=0 STAGE=done\n')
@@ -31,7 +31,7 @@ class ImportRunner(unittest.TestCase):
                     if fault == 'packet-exit': return subprocess.CompletedProcess(args, 1)
                     if fault == 'incomplete': (packets / 'summary.txt').write_text('PASS=27 FAIL=0 COMPLETE=0 EXIT=0 STAGE=done\n')
                 elif '-hwaccel' in args:
-                    current = Path(env['VAREQ_PRIME_TRACE_DIR'])
+                    current = Path(env['VAV4L2_PRIME_TRACE_DIR'])
                     if fault != 'unhooked': (current / 'prime-h264.tsv').write_text('842094158\t320\t240\t8\t' + ('1' if fault == 'import-error' else '0') + '\n')
                     if fault == 'hardware-exit': return subprocess.CompletedProcess(args, 2)
                     Path(args[-1]).write_text('#dimensions 0: 320x240\n' + ''.join(f'0, {i}, {i}, 1, 115200, {('f' * 32) if fault == 'pixels' and i == 7 else format(i, '032x')}\n' for i in range(8)))

@@ -6,14 +6,14 @@ static void jpeg_close_prime(VADRMPRIMESurfaceDescriptor *d)
     d->num_objects = 0;
 }
 
-static int jpeg_prime(struct vareq_surface *s, VADRMPRIMESurfaceDescriptor *d, unsigned *raw)
+static int jpeg_prime(struct vav4l2_surface *s, VADRMPRIMESurfaceDescriptor *d, unsigned *raw)
 {
     if (!s || !s->has_pic || s->status == VASurfaceSkipped ||
         (s->format != VA_FOURCC_NV12 && s->format != VA_FOURCC_I420 && s->format != VA_FOURCC_YV12)) return 0;
     VAStatus status;
-    if (s->prime) status = vareq_prime_export_backing(s, VA_EXPORT_SURFACE_COMPOSED_LAYERS, d, 0);
-    else if (s->gbm_bo && !s->gbm_dirty && (s->gbm_imported || s->gbm_writable || s->last_writer == VAREQ_WRITER_BO))
-        status = vareq_surface_fill_prime_gbm(s, VA_EXPORT_SURFACE_COMPOSED_LAYERS, d);
+    if (s->prime) status = vav4l2_prime_export_backing(s, VA_EXPORT_SURFACE_COMPOSED_LAYERS, d, 0);
+    else if (s->gbm_bo && !s->gbm_dirty && (s->gbm_imported || s->gbm_writable || s->last_writer == VAV4L2_WRITER_BO))
+        status = vav4l2_surface_fill_prime_gbm(s, VA_EXPORT_SURFACE_COMPOSED_LAYERS, d);
     else return 0;
     if (status != VA_STATUS_SUCCESS) return -1;
     unsigned planes = s->format == VA_FOURCC_NV12 ? 2 : 3;
@@ -37,14 +37,14 @@ static unsigned jpeg_prime_plane(const VADRMPRIMESurfaceDescriptor *d, unsigned 
     return p && d->fourcc == VA_FOURCC_YV12 ? 3 - p : p;
 }
 
-static int jpeg_dma_format(struct vareq_context *ctx, struct v4l2_format *f, const VADRMPRIMESurfaceDescriptor *d, unsigned raw)
+static int jpeg_dma_format(struct vav4l2_context *ctx, struct v4l2_format *f, const VADRMPRIMESurfaceDescriptor *d, unsigned raw)
 {
     *f = (struct v4l2_format){.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE};
     f->fmt.pix_mp.width = d->width; f->fmt.pix_mp.height = d->height;
     f->fmt.pix_mp.pixelformat = raw; f->fmt.pix_mp.field = V4L2_FIELD_NONE;
     f->fmt.pix_mp.num_planes = raw == V4L2_PIX_FMT_NV12 ? 1 : raw == V4L2_PIX_FMT_NV12M ? 2 : 3;
     for (unsigned p = 0; p < f->fmt.pix_mp.num_planes; p++) f->fmt.pix_mp.plane_fmt[p].bytesperline = d->layers[0].pitch[jpeg_prime_plane(d, p)];
-    return vareq_codec_format(ctx, f);
+    return vav4l2_codec_format(ctx, f);
 }
 
 static int jpeg_dma_spans(const struct v4l2_format *f, const VADRMPRIMESurfaceDescriptor *d, unsigned raw)
@@ -64,14 +64,14 @@ static int jpeg_dma_spans(const struct v4l2_format *f, const VADRMPRIMESurfaceDe
     return 1;
 }
 
-static void jpeg_trace(const struct vareq_context *ctx, const char *stage)
+static void jpeg_trace(const struct vav4l2_context *ctx, const char *stage)
 {
-    const char *path = getenv("VAREQ_JPEG_TRACE");
+    const char *path = getenv("VAV4L2_JPEG_TRACE");
     if (!path || !*path) return;
     FILE *file = fopen(path, "a");
     if (!file) { perror("JPEG trace"); return; }
     if (!ftell(file)) fprintf(file, "STAGE\tFORMAT\tWIDTH\tHEIGHT\tPLANES\tOUTPUT_MEMORY\tCAPTURE_MEMORY\n");
-    const struct vareq_m2m_state *q = &ctx->jpeg_q;
+    const struct vav4l2_m2m_state *q = &ctx->jpeg_q;
     fprintf(file, "%s\t%08x\t%u\t%u\t%d\t%u\t%u\n", stage, q->ofmt.fmt.pix_mp.pixelformat,
         q->ofmt.fmt.pix_mp.width, q->ofmt.fmt.pix_mp.height, q->out_planes,
         q->out_memory ? q->out_memory : V4L2_MEMORY_MMAP, q->cap_memory ? q->cap_memory : V4L2_MEMORY_MMAP);

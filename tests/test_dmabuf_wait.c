@@ -4,7 +4,7 @@
 #include <string.h>
 #include <time.h>
 #include <linux/dma-buf.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 static unsigned failures, polls, clocks, calls, interrupts, again, successes, clock_fail;
 static int poll_result, ioctl_error, budgets[8];
 static short readiness, requested;
@@ -42,42 +42,42 @@ static void reset(void)
 }
 int main(void)
 {
-    vareq_set_ioctl_hook(sync_ioctl);
+    vav4l2_set_ioctl_hook(sync_ioctl);
     for (unsigned write = 0; write < 2; write++) {
-        reset(); expect(!vareq_dmabuf_wait(7, write) && requested == (write ? POLLOUT : POLLIN), "read/write reservation events");
+        reset(); expect(!vav4l2_dmabuf_wait(7, write) && requested == (write ? POLLOUT : POLLIN), "read/write reservation events");
     }
-    reset(); poll_result = 0; expect(vareq_dmabuf_wait(7, 0) < 0 && errno == ETIMEDOUT && !calls, "timeout reports ETIMEDOUT without CPU access");
+    reset(); poll_result = 0; expect(vav4l2_dmabuf_wait(7, 0) < 0 && errno == ETIMEDOUT && !calls, "timeout reports ETIMEDOUT without CPU access");
     const short bad[] = {POLLERR, POLLHUP, POLLNVAL, POLLPRI, POLLIN | POLLHUP};
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-        reset(); readiness = bad[i]; expect(vareq_dmabuf_wait(7, 0) < 0 && errno == (bad[i] & POLLNVAL ? EBADF : EIO), "invalid/error/hangup/wrong readiness reports its cause");
+        reset(); readiness = bad[i]; expect(vav4l2_dmabuf_wait(7, 0) < 0 && errno == (bad[i] & POLLNVAL ? EBADF : EIO), "invalid/error/hangup/wrong readiness reports its cause");
     }
-    reset(); poll_result = -1; expect(vareq_dmabuf_wait(7, 0) < 0 && errno == EACCES, "poll syscall errno preserved");
+    reset(); poll_result = -1; expect(vav4l2_dmabuf_wait(7, 0) < 0 && errno == EACCES, "poll syscall errno preserved");
     struct pollfd p = {.fd = 7, .events = POLLIN};
     reset(); interrupts = 3;
-    expect(!vareq_poll_intr(&p, 1, 2000) && polls == 3 && budgets[0] == 2000 && budgets[1] == 1200 && budgets[2] == 400 && !p.revents,
+    expect(!vav4l2_poll_intr(&p, 1, 2000) && polls == 3 && budgets[0] == 2000 && budgets[1] == 1200 && budgets[2] == 400 && !p.revents,
         "signal storm consumes one timeout budget and clears stale readiness");
     reset(); interrupts = 1;
-    expect(vareq_poll_intr(&p, 1, 2000) == 1 && polls == 2 && budgets[1] == 1200, "transient signal keeps only remaining time");
+    expect(vav4l2_poll_intr(&p, 1, 2000) == 1 && polls == 2 && budgets[1] == 1200, "transient signal keeps only remaining time");
     reset(); interrupts = 2;
-    expect(vareq_poll_intr(&p, 1, -1) == 1 && polls == 3 && !clocks && budgets[2] == -1, "explicit infinite wait retains its contract");
-    reset(); clock_fail = 1; expect(vareq_poll_intr(&p, 1, 2000) < 0 && errno == EIO && !polls, "clock failure cannot silently extend wait");
-    reset(); interrupts = 1; clock_fail = 2; expect(vareq_poll_intr(&p, 1, 2000) < 0 && errno == EIO, "retry clock failure propagated");
-    reset(); interrupts = 1; expect(!vareq_poll_intr(&p, 1, 0) && polls == 1, "zero timeout stays nonblocking after EINTR");
+    expect(vav4l2_poll_intr(&p, 1, -1) == 1 && polls == 3 && !clocks && budgets[2] == -1, "explicit infinite wait retains its contract");
+    reset(); clock_fail = 1; expect(vav4l2_poll_intr(&p, 1, 2000) < 0 && errno == EIO && !polls, "clock failure cannot silently extend wait");
+    reset(); interrupts = 1; clock_fail = 2; expect(vav4l2_poll_intr(&p, 1, 2000) < 0 && errno == EIO, "retry clock failure propagated");
+    reset(); interrupts = 1; expect(!vav4l2_poll_intr(&p, 1, 0) && polls == 1, "zero timeout stays nonblocking after EINTR");
     /* END skips reservation polling, so EINTR injection belongs to the ioctl. */
     for (unsigned transient = 0; transient < 2; transient++) {
         reset(); step = 100000000;
         if (transient) interrupts = 2; else again = 2;
-        expect(!vareq_dmabuf_sync(7, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) && calls == 3 && successes == 1 && !polls,
+        expect(!vav4l2_dmabuf_sync(7, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) && calls == 3 && successes == 1 && !polls,
             "transient END EINTR/EAGAIN recovers without a new fence wait");
         reset(); if (transient) interrupts = 100; else again = 100;
-        expect(vareq_dmabuf_sync(7, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) < 0 && errno == ETIMEDOUT && calls == 3 && !polls,
+        expect(vav4l2_dmabuf_sync(7, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) < 0 && errno == ETIMEDOUT && calls == 3 && !polls,
             "permanent END EINTR/EAGAIN stops at the original deadline");
     }
     reset(); ioctl_error = EACCES;
-    expect(vareq_dmabuf_sync(7, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0 && errno == EACCES && polls == 1 && calls == 1,
+    expect(vav4l2_dmabuf_sync(7, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0 && errno == EACCES && polls == 1 && calls == 1,
         "START failure preserves errno after reservation wait");
     reset(); interrupts = 2;
-    expect(!vareq_xioctl(7, VIDIOC_QUERYCAP, NULL) && calls == 3, "ordinary ioctl EINTR retry unchanged");
-    vareq_set_ioctl_hook(NULL);
+    expect(!vav4l2_xioctl(7, VIDIOC_QUERYCAP, NULL) && calls == 3, "ordinary ioctl EINTR retry unchanged");
+    vav4l2_set_ioctl_hook(NULL);
     printf("DMA deadline: %s (21 timeout/fence/retry cases)\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }

@@ -3,7 +3,7 @@
 Select the installed driver in the application's environment:
 
 ```sh
-export LIBVA_DRIVER_NAME=v4l2request
+export LIBVA_DRIVER_NAME=v4l2
 vainfo --display drm --device /dev/dri/renderD128
 ```
 
@@ -28,6 +28,6 @@ ffmpeg -i input.mp4 -pix_fmt nv12 -f framemd5 software.md5
 
 Use P010, YUY2 or Y210 for the corresponding bit depth and chroma. MPEG-2 can have IDCT rounding differences; see [testing](testing.md).
 
-Leave `VAREQ_ADVERTISE_AV1` unset for normal use. AV1 is experimental and VP9 is not implemented. Applications with software fallback can use it for unavailable profiles.
+Leave `VAV4L2_ADVERTISE_AV1` unset for normal use. AV1 is experimental and VP9 is not implemented. Applications with software fallback can use it for unavailable profiles.
 
 Sources: [FFmpeg hardware acceleration](https://ffmpeg.org/ffmpeg.html), [mpv manual](https://mpv.io/manual/stable/), [Firefox performance settings](https://support.mozilla.org/en-US/kb/performance-settings), [Chromium GPU documentation](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/gpu/vaapi.md).

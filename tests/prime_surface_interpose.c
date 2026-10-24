@@ -17,7 +17,7 @@ VAStatus vaCreateSurfaces(VADisplay dpy, unsigned format, unsigned width, unsign
                           unsigned count, VASurfaceAttrib *attrs, unsigned num_attrs)
 {
     create_fn real = (create_fn)dlsym(RTLD_NEXT, "vaCreateSurfaces");
-    const char *directory = getenv("VAREQ_PRIME_TRACE_DIR");
+    const char *directory = getenv("VAV4L2_PRIME_TRACE_DIR");
     if (!directory) return real ? real(dpy, format, width, height, surfaces, count, attrs, num_attrs) : VA_STATUS_ERROR_OPERATION_FAILED;
     unsigned fcc = format == VA_RT_FORMAT_YUV420_10 ? VA_FOURCC_P010 : VA_FOURCC_NV12;
     for (unsigned i = 0; i < num_attrs; i++) if (attrs[i].type == VASurfaceAttribPixelFormat) fcc = attrs[i].value.value.i;
@@ -25,13 +25,13 @@ VAStatus vaCreateSurfaces(VADisplay dpy, unsigned format, unsigned width, unsign
     VADRMPRIMESurfaceDescriptor *descs = NULL; struct gbm_bo **bos = NULL; struct gbm_device *dev = NULL; int render = -1;
     if (!real || !count || count > 256 || !width || !height || (width & 1) || (height & 1) || width > 16384 || height > 16384 ||
         (fcc != VA_FOURCC_NV12 && fcc != VA_FOURCC_P010)) goto done;
-    const char *node = getenv("VAREQ_RENDER_NODE");
+    const char *node = getenv("VAV4L2_RENDER_NODE");
     render = open(node ? node : "/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
     if (render < 0 || !(dev = gbm_create_device(render))) goto done;
     descs = calloc(count, sizeof(*descs)); bos = calloc(count, sizeof(*bos));
     if (descs) for (unsigned i = 0; i < count; i++) descs[i].objects[0].fd = -1;
     if (!descs || !bos) goto done;
-    const char *layout = getenv("VAREQ_PRIME_CANONICAL");
+    const char *layout = getenv("VAV4L2_PRIME_CANONICAL");
     int canonical = layout && !strcmp(layout, "1") && fcc == VA_FOURCC_NV12;
     for (unsigned i = 0; i < count; i++) {
         unsigned bytes = (width * (fcc == VA_FOURCC_P010 ? 2 : 1) + 63) & ~63u;

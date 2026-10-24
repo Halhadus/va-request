@@ -10,7 +10,7 @@
 #include <drm_fourcc.h>
 #include <va/va.h>
 #include <va/va_enc_jpeg.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 static unsigned failures, jobs, syncs, expected_planes, held[3], active, scenario;
 static struct v4l2_format format;
 static void expect(int ok, const char *s) { if (!ok) { fprintf(stderr, "FAIL JPEG DMA %s scenario=%u\n", s, scenario); failures++; } }
@@ -83,7 +83,7 @@ static void run(unsigned fourcc, unsigned planes, unsigned fault)
 {
     scenario = fault; expected_planes = planes; jobs = syncs = active = 0;
     VADRMPRIMESurfaceDescriptor d = {.fourcc = fourcc, .width = 8, .height = 8, .num_objects = planes, .num_layers = 1};
-    struct vareq_prime_layout l; expect(!vareq_prime_layout(fourcc, 8, 8, &l), "layout");
+    struct vav4l2_prime_layout l; expect(!vav4l2_prime_layout(fourcc, 8, 8, &l), "layout");
     d.layers[0].num_planes = l.planes; d.layers[0].drm_format = l.drm_format;
     for (unsigned p = 0; p < planes; p++) {
         d.objects[p].fd = memfd_create("JPEG input", MFD_CLOEXEC); d.objects[p].size = 4096;
@@ -98,21 +98,21 @@ static void run(unsigned fourcc, unsigned planes, unsigned fault)
         d.layers[0].offset[p] = planes == 1 && p ? 64 : 0;
     }
     if (scenario == 11) d.layers[0].offset[0] = 16;
-    struct vareq_surface s = {.width = 8, .height = 8, .format = fourcc, .cpu_stride = 64,
-        .cpu_size = vareq_va_image_size(fourcc, 64, 8), .memfd_fd = -1, .buf_index = -1};
-    vareq_set_ioctl_hook(mock_ioctl);
-    expect(vareq_prime_import(&s, &d) == VA_STATUS_SUCCESS, "import");
+    struct vav4l2_surface s = {.width = 8, .height = 8, .format = fourcc, .cpu_stride = 64,
+        .cpu_size = vav4l2_va_image_size(fourcc, 64, 8), .memfd_fd = -1, .buf_index = -1};
+    vav4l2_set_ioctl_hook(mock_ioctl);
+    expect(vav4l2_prime_import(&s, &d) == VA_STATUS_SUCCESS, "import");
     for (unsigned p = 0; p < planes; p++) close(d.objects[p].fd);
-    struct vareq_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = 64, .num_elements = 1};
+    struct vav4l2_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = 64, .num_elements = 1};
     coded.data = calloc(1, sizeof(VACodedBufferSegment) + 64);
-    struct vareq_context ctx = {.codec = VAREQ_CODEC_JPEG_ENC, .current_surface = &s, .buffers = &coded};
+    struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_JPEG_ENC, .current_surface = &s, .buffers = &coded};
     ctx.v4l2_fd = memfd_create("JPEG coded queue", MFD_CLOEXEC); expect(ctx.v4l2_fd >= 0 && !ftruncate(ctx.v4l2_fd, 8192), "coded-storage");
     VAEncPictureParameterBufferJPEG pic = {.coded_buf = 1, .quality = 50};
-    struct vareq_buffer params = {.type = VAEncPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
-    struct vareq_buffer *buffers[] = {&params};
-    setenv("VAREQ_JPEG_DMABUF", scenario == 13 ? "auto" : "required", 1); active = 1; unsigned before_sync = syncs;
+    struct vav4l2_buffer params = {.type = VAEncPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
+    struct vav4l2_buffer *buffers[] = {&params};
+    setenv("VAV4L2_JPEG_DMABUF", scenario == 13 ? "auto" : "required", 1); active = 1; unsigned before_sync = syncs;
     for (unsigned frame = 0; frame < (fault ? 1u : 3u); frame++) {
-        VAStatus status = vareq_jpeg_encode(&ctx, buffers, 1);
+        VAStatus status = vav4l2_jpeg_encode(&ctx, buffers, 1);
         VACodedBufferSegment *seg = coded.data;
         expect(fault && fault != 13 ? status != VA_STATUS_SUCCESS && !seg->size : status == VA_STATUS_SUCCESS && seg->size == 20, "success-or-transactional-failure");
         if (fault != 13) expect(!s.cpu_ptr && syncs == before_sync, "no-input-staging-or-CPU-cache-access");
@@ -122,9 +122,9 @@ static void run(unsigned fourcc, unsigned planes, unsigned fault)
             expect(flags < 0 && errno == EBADF, "job-export-FDs-released-after-stop");
         }
     }
-    active = 0; scenario = 0; vareq_m2m_teardown(&ctx, &ctx.jpeg_q);
+    active = 0; scenario = 0; vav4l2_m2m_teardown(&ctx, &ctx.jpeg_q);
     if (ctx.v4l2_fd >= 0) close(ctx.v4l2_fd);
-    vareq_prime_destroy(&s); free(s.cpu_ptr); free(coded.data); vareq_set_ioctl_hook(NULL);
+    vav4l2_prime_destroy(&s); free(s.cpu_ptr); free(coded.data); vav4l2_set_ioctl_hook(NULL);
 }
 int main(void)
 {

@@ -199,9 +199,9 @@ static void extended_checks(unsigned fourcc)
     snprintf(tag, sizeof(tag), "dmabuf-extended-compose-%s", f.name); result(tag, compose); pipe.surface_region = pipe.output_region = NULL;
     if (f.rt == VA_RT_FORMAT_RGB32) {
         int alpha = setup && extended_object(&d[0], &f, 45, 1, NULL, 0) && extended_object(&d[1], &f, 113, 1, NULL, 0) && extended_alpha(&d[0], &f, 127);
-        setenv("VAREQ_VPP_DMABUF", "auto", 1);
+        setenv("VAV4L2_VPP_DMABUF", "auto", 1);
         alpha = alpha && extended_submit(ctx, alias, &pipe) == VA_STATUS_ERROR_UNIMPLEMENTED && extended_object(&d[1], &f, 113, 0, NULL, 0);
-        setenv("VAREQ_VPP_DMABUF", "required", 1);
+        setenv("VAV4L2_VPP_DMABUF", "required", 1);
         alpha = alpha && extended_alpha(&d[0], &f, 255) && process(ctx, alias, &pipe) && extended_object(&d[1], &f, 45, 0, NULL, 0);
         snprintf(tag, sizeof(tag), "dmabuf-extended-alpha-%s", f.name); result(tag, alpha);
     }
@@ -242,8 +242,8 @@ int main(int argc, char **argv)
     display = vaGetDisplayDRM(fd);
     if (!display || !status(vaInitialize(display, &major, &minor), "extended initialize")) { close(fd); fclose(results); return 2; }
     const char *vendor = vaQueryVendorString(display);
-    if (!vareq_test_driver_identity(vendor)) { fprintf(stderr, "Unexpected VA driver\n"); vaTerminate(display); close(fd); fclose(results); return 2; }
-    setenv("VAREQ_VPP_DMABUF", "required", 1);
+    if (!vav4l2_test_driver_identity(vendor)) { fprintf(stderr, "Unexpected VA driver\n"); vaTerminate(display); close(fd); fclose(results); return 2; }
+    setenv("VAV4L2_VPP_DMABUF", "required", 1);
     const unsigned formats[] = {VA_FOURCC_YV12, VA_FOURCC_422H, VA_FOURCC_YV16, VA_FOURCC_ARGB, VA_FOURCC_BGRA};
     for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) extended_checks(formats[i]);
     const unsigned pairs[][2] = {{VA_FOURCC_YV12, VA_FOURCC_I420}, {VA_FOURCC_I420, VA_FOURCC_YV12}, {VA_FOURCC_422H, VA_FOURCC_YV16},

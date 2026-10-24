@@ -1,15 +1,15 @@
-Source: va-request
+Source: libva-v4l2
 Section: video
 Priority: optional
 Maintainer: Halhadus <eneshakans45@proton.me>
 Build-Depends: debhelper-compat (= 13), meson (>= 0.63), ninja-build, pkg-config, libva-dev (>= 2.23.0), libdrm-dev, libgbm-dev, linux-libc-dev (>= 6.8), python3
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
-Homepage: https://github.com/Halhadus/va-request
-Vcs-Git: https://github.com/Halhadus/va-request.git
-Vcs-Browser: https://github.com/Halhadus/va-request
+Homepage: https://github.com/Halhadus/va-v4l2
+Vcs-Git: https://github.com/Halhadus/va-v4l2.git
+Vcs-Browser: https://github.com/Halhadus/va-v4l2
 
-Package: libva-v4l2-request
+Package: libva-v4l2
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, libva2 (>= 2.23.0)
 Description: VA-API driver for Linux V4L2

@@ -24,8 +24,8 @@ from pathlib import Path
 hardware = '-hwaccel' in sys.argv
 count = int(os.environ['TEST_FRAMES']) if hardware else 8
 if hardware:
- Path(os.environ['VAREQ_DECODE_TRACE']).write_text('STAGE=capture-empty\\tSTATUS=-1\\tALLOCATED=4\\tFREE=0\\n')
-elif 'VAREQ_DECODE_TRACE' in os.environ: sys.exit(77)
+ Path(os.environ['VAV4L2_DECODE_TRACE']).write_text('STAGE=capture-empty\\tSTATUS=-1\\tALLOCATED=4\\tFREE=0\\n')
+elif 'VAV4L2_DECODE_TRACE' in os.environ: sys.exit(77)
 if count: Path(sys.argv[-1]).write_text(''.join(f'0,{i},{i},1,12441600,{i:032x}\\n' for i in range(count)))
 print('fixture hardware stderr' if hardware else 'fixture software stderr', file=sys.stderr)
 sys.exit(int(os.environ['TEST_EXIT']) if hardware else 0)
@@ -34,7 +34,7 @@ sys.exit(int(os.environ['TEST_EXIT']) if hardware else 0)
                 (output / 'smoke-decode.tsv').write_text('stale-previous-run')
                 for kind in ['hw', 'sw']: (output / f'smoke-{kind}.md5').write_text(''.join(f'0,{i},{i},1,12441600,{i:032x}\n' for i in range(8)))
                 env = dict(os.environ, ROOT=str(Path(__file__).resolve().parents[1]), OUT=str(output), FF=str(ff), DRM='mock-render', TEST_FRAMES=str(count), TEST_EXIT=str(code))
-                env.pop('VAREQ_DECODE_TRACE', None)
+                env.pop('VAV4L2_DECODE_TRACE', None)
                 shell = 'set -uo pipefail\npass=0; fail=0\n' + RECORD + '\ncompare_md5() { python3 "$ROOT/tests/compare_framemd5.py" "$@"; }\n' + PAIR + '\npair_sw "clip with spaces" 8 smoke\ntest "$fail" -eq 0\n'
                 result = subprocess.run(['bash', '-c', shell], env=env, text=True, stdout=subprocess.PIPE)
                 self.assertEqual(result.returncode, 0 if count == 8 and not code else 1, result.stdout)
@@ -77,8 +77,8 @@ sys.exit(int(os.environ['TEST_EXIT']) if hardware else 0)
     def test_forced_matrix_calls_keep_parent_policy_and_enable_both_codecs(self):
         stage = SCRIPT[SCRIPT.index('# Forced internal CAPTURE pool hardware checks;'):SCRIPT.index('# End forced internal CAPTURE pool checks.')]
         with tempfile.TemporaryDirectory() as directory:
-            env = dict(os.environ, OUT=directory, CLIP='clip dir', VAREQ_TEST_CAPTURE_POOL='1', VAREQ_CAPTURE_POOL_DMABUF='auto')
-            shell = 'set -u\npair_sw() { printf "%s|%s|%s|%s\\n" "$VAREQ_CAPTURE_POOL_DMABUF" "$3" "$2" "$6" >> "$OUT/calls"; }\n' + stage + '\nprintf "%s" "$VAREQ_CAPTURE_POOL_DMABUF" > "$OUT/parent"\n'
+            env = dict(os.environ, OUT=directory, CLIP='clip dir', VAV4L2_TEST_CAPTURE_POOL='1', VAV4L2_CAPTURE_POOL_DMABUF='auto')
+            shell = 'set -u\npair_sw() { printf "%s|%s|%s|%s\\n" "$VAV4L2_CAPTURE_POOL_DMABUF" "$3" "$2" "$6" >> "$OUT/calls"; }\n' + stage + '\nprintf "%s" "$VAV4L2_CAPTURE_POOL_DMABUF" > "$OUT/parent"\n'
             result = subprocess.run(['bash', '-c', shell], env=env)
             self.assertEqual(result.returncode, 0)
             self.assertEqual((Path(directory) / 'calls').read_text().splitlines(), ['required|h264-4k-pool|8|1', 'required|hevc-4k-pool|8|1'])

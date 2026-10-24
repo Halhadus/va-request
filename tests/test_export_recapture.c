@@ -20,21 +20,21 @@
 #include <va/va_dec_vp8.h>
 #include <va/va_drmcommon.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
-extern int __real_vareq_open_device(const char *path);
-extern int __real_vareq_open_media_for_device(const char *path);
+extern int __real_vav4l2_open_device(const char *path);
+extern int __real_vav4l2_open_media_for_device(const char *path);
 static int g_context_fd = -1;
 
-int __wrap_vareq_open_device(const char *path)
+int __wrap_vav4l2_open_device(const char *path)
 {
-    return g_context_fd >= 0 ? dup(g_context_fd) : __real_vareq_open_device(path);
+    return g_context_fd >= 0 ? dup(g_context_fd) : __real_vav4l2_open_device(path);
 }
 
-int __wrap_vareq_open_media_for_device(const char *path)
+int __wrap_vav4l2_open_media_for_device(const char *path)
 {
-    return g_context_fd >= 0 ? dup(g_context_fd) : __real_vareq_open_media_for_device(path);
+    return g_context_fd >= 0 ? dup(g_context_fd) : __real_vav4l2_open_media_for_device(path);
 }
 
 static int g_fail;
@@ -74,16 +74,16 @@ static void test_request_control_binding(void)
     const int requests[] = {13, 65537};
 
     g_control_calls = 0;
-    vareq_set_ioctl_hook(mock_request_controls);
+    vav4l2_set_ioctl_hook(mock_request_controls);
     for (unsigned i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
         g_control_request_fd = requests[i];
-        expect_true(vareq_set_request_controls(requests[i], 17, &ctrls) == 0, "controls-bound-to-request");
+        expect_true(vav4l2_set_request_controls(requests[i], 17, &ctrls) == 0, "controls-bound-to-request");
     }
     g_control_request_fd = -1;
-    expect_true(vareq_set_global_controls(17, &ctrls) == 0, "global-controls-clear-request");
+    expect_true(vav4l2_set_global_controls(17, &ctrls) == 0, "global-controls-clear-request");
     expect_true(g_control_calls == 3 && ctrls.controls == &control && control.ptr == &sps,
                 "controls-payload-preserved");
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
 }
 
 static char g_ops[32][24];
@@ -95,7 +95,7 @@ static int g_small_output, g_capture_query_error, g_require_hevc_sps_first;
 static int g_clamp_capture, g_bad_capture_format, g_clamp_get_format;
 static unsigned g_queued_cap, g_queued_out;
 static int g_export_short, g_export_fd = -1;
-static struct vareq_context *g_ctx;
+static struct vav4l2_context *g_ctx;
 
 static void log_op(const char *op)
 {
@@ -135,7 +135,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
             if (g_ctx && g_ctx->driver_data) {
                 for (i = 0; i < g_ctx->num_render_targets; i++) {
                     VASurfaceID id = g_ctx->render_targets[i];
-                    struct vareq_surface *s;
+                    struct vav4l2_surface *s;
 
                     if (id == VA_INVALID_ID || (unsigned)id >= 4096)
                         continue;
@@ -199,7 +199,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
     }
     if (request == VIDIOC_EXPBUF) {
         struct v4l2_exportbuffer *exp = arg;
-        int mfd = memfd_create("vareq-exp", MFD_CLOEXEC);
+        int mfd = memfd_create("vav4l2-exp", MFD_CLOEXEC);
 
         if (mfd < 0)
             return -1;
@@ -266,9 +266,9 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 
 static void test_recapture_small_to_large(void)
 {
-    struct vareq_driver_data dd;
-    struct vareq_context ctx;
-    struct vareq_surface *s1, *s2;
+    struct vav4l2_driver_data dd;
+    struct vav4l2_context ctx;
+    struct vav4l2_surface *s1, *s2;
     VASurfaceID targets[2] = { 1, 2 };
     int i0, i1, i2, i3, nexp;
 
@@ -296,8 +296,8 @@ static void test_recapture_small_to_large(void)
     s2->buf_index = -1;
     s2->memfd_fd = -1;
     s2->cpu_stride = 320;
-    expect_true(vareq_surface_alloc_export_fd(s1) == 0, "recap-s1-memfd");
-    expect_true(vareq_surface_alloc_export_fd(s2) == 0, "recap-s2-memfd");
+    expect_true(vav4l2_surface_alloc_export_fd(s1) == 0, "recap-s1-memfd");
+    expect_true(vav4l2_surface_alloc_export_fd(s2) == 0, "recap-s2-memfd");
 
     dd.surfaces[1] = s1;
     dd.surfaces[2] = s2;
@@ -326,9 +326,9 @@ static void test_recapture_small_to_large(void)
     g_fds_live_at_reqbufs0 = -1;
     g_last_cap_w = 320;
     g_last_cap_h = 240;
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
 
-    expect_true(vareq_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV12) == 0,
+    expect_true(vav4l2_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV12) == 0,
                 "ensure-capture-4k");
     expect_true(g_streamoff >= 2, "streamoff-both-queues");
     expect_true(g_reqbufs0 == 1, "reqbufs0-once");
@@ -362,14 +362,14 @@ static void test_recapture_small_to_large(void)
         close(s2->memfd_fd);
     free(s1);
     free(s2);
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
     g_ctx = NULL;
 }
 
 struct recap_env {
-    struct vareq_driver_data dd;
-    struct vareq_context ctx;
-    struct vareq_surface *surf;
+    struct vav4l2_driver_data dd;
+    struct vav4l2_context ctx;
+    struct vav4l2_surface *surf;
     VASurfaceID targets[1];
     uint8_t outbuf[8192];
     int sp[2];
@@ -400,7 +400,7 @@ static int recap_env_open(struct recap_env *e, int cap_w, int cap_h)
     e->surf->buf_index = -1;
     e->surf->memfd_fd = -1;
     e->surf->cpu_stride = (uint32_t)cap_w;
-    if (vareq_surface_alloc_export_fd(e->surf) < 0)
+    if (vav4l2_surface_alloc_export_fd(e->surf) < 0)
         return -1;
     e->targets[0] = 1;
     e->dd.surfaces[1] = e->surf;
@@ -432,13 +432,13 @@ static int recap_env_open(struct recap_env *e, int cap_w, int cap_h)
     g_fds_live_at_reqbufs0 = -1;
     g_last_cap_w = (uint32_t)cap_w;
     g_last_cap_h = (uint32_t)cap_h;
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
     return 0;
 }
 
 static void recap_env_close(struct recap_env *e)
 {
-    for (int i = 0; i < VAREQ_MAX_CAPTURE_BUFS; i++) {
+    for (int i = 0; i < VAV4L2_MAX_CAPTURE_BUFS; i++) {
         if (e->ctx.capture_buf_ptr[i]) {
             if (e->ctx.capture_buf_anon) free(e->ctx.capture_buf_ptr[i]);
             else munmap(e->ctx.capture_buf_ptr[i], e->ctx.capture_buf_size);
@@ -458,7 +458,7 @@ static void recap_env_close(struct recap_env *e)
         close(e->sp[0]);
     e->ctx.request_fd = -1;
     e->sp[0] = e->sp[1] = -1;
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
     g_ctx = NULL;
 }
 
@@ -487,8 +487,8 @@ static void test_av1_translate_recapture(void)
     struct recap_env e;
     VADecPictureParameterBufferAV1 pic;
     uint8_t tile[64];
-    struct vareq_buffer pic_buf, data_buf;
-    struct vareq_buffer *bufs[2];
+    struct vav4l2_buffer pic_buf, data_buf;
+    struct vav4l2_buffer *bufs[2];
     VAStatus st;
 
     if (recap_env_open(&e, 432, 240) < 0) {
@@ -496,7 +496,7 @@ static void test_av1_translate_recapture(void)
         g_fail++;
         return;
     }
-    e.ctx.codec = VAREQ_CODEC_AV1;
+    e.ctx.codec = VAV4L2_CODEC_AV1;
 
     memset(&pic, 0, sizeof(pic));
     memset(tile, 0xab, sizeof(tile));
@@ -522,7 +522,7 @@ static void test_av1_translate_recapture(void)
     bufs[0] = &pic_buf;
     bufs[1] = &data_buf;
 
-    st = vareq_av1_translate(&e.ctx, bufs, 2);
+    st = vav4l2_av1_translate(&e.ctx, bufs, 2);
     expect_true(st == VA_STATUS_SUCCESS, "av1-translate-status");
     expect_grew_to(&e, 1920, 1080, "av1");
     expect_true(g_last_cap_w == 1920 && g_last_cap_h == 1080,
@@ -534,7 +534,7 @@ static void test_av1_translate_recapture(void)
 
 static void test_ensure_noop_shrink_fmt(void)
 {
-    struct vareq_context ctx;
+    struct vav4l2_context ctx;
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.v4l2_fd = 7;
@@ -548,47 +548,47 @@ static void test_ensure_noop_shrink_fmt(void)
     g_streamoff = g_reqbufs0 = g_reqbufs_n = g_sfmt_cap = 0;
     g_last_cap_w = 1920;
     g_last_cap_h = 1080;
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
 
-    expect_true(vareq_ensure_capture(&ctx, 1280, 720, V4L2_PIX_FMT_NV12) == 0,
+    expect_true(vav4l2_ensure_capture(&ctx, 1280, 720, V4L2_PIX_FMT_NV12) == 0,
                 "shrink-ok");
     expect_true(g_reqbufs0 == 0 && g_streamoff == 0, "shrink-no-recapture");
     expect_true(ctx.cap_width == 1920 && ctx.cap_height == 1080, "shrink-keeps-large");
-    expect_true(vareq_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV12) == 0,
+    expect_true(vav4l2_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV12) == 0,
                 "same-ok");
     expect_true(g_reqbufs0 == 0, "same-no-recapture");
-    expect_true(vareq_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV15) == 0,
+    expect_true(vav4l2_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV15) == 0,
                 "fmt-change-ok");
     expect_true(g_reqbufs0 == 1, "fmt-reqbufs0");
     expect_true(ctx.cap_pixelformat == V4L2_PIX_FMT_NV15, "fmt-nv15");
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
     g_ctx = NULL;
 }
 
 static void test_capture_clamping(void)
 {
-    struct vareq_context ctx = {0};
+    struct vav4l2_context ctx = {0};
     ctx.v4l2_fd = 7;
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
     g_clamp_capture = 1;
     g_reqbufs_n = 0;
-    expect_true(vareq_setup_capture_queue_count(7, 3840, 2160, V4L2_PIX_FMT_NV12, 4) < 0 &&
+    expect_true(vav4l2_setup_capture_queue_count(7, 3840, 2160, V4L2_PIX_FMT_NV12, 4) < 0 &&
                 g_reqbufs_n == 0, "clamped-4k-rejected-before-allocation");
     g_clamp_capture = 0;
     g_bad_capture_format = 1;
-    expect_true(vareq_setup_capture_queue_count(7, 1280, 720, V4L2_PIX_FMT_NV15, 4) < 0,
+    expect_true(vav4l2_setup_capture_queue_count(7, 1280, 720, V4L2_PIX_FMT_NV15, 4) < 0,
                 "capture-format-substitution-rejected");
     g_bad_capture_format = 0;
     g_clamp_get_format = 1;
-    expect_true(vareq_ensure_capture(&ctx, 3840, 2160, V4L2_PIX_FMT_NV12) < 0 &&
+    expect_true(vav4l2_ensure_capture(&ctx, 3840, 2160, V4L2_PIX_FMT_NV12) < 0 &&
                 ctx.n_free_cap == 0, "clamped-get-format-rejected-before-decode");
     g_clamp_get_format = 0;
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
 }
 
 static void test_output_remap_failure(void)
 {
-    struct vareq_context ctx = {0};
+    struct vav4l2_context ctx = {0};
     ctx.v4l2_fd = -1;
     /* A pipe is a real fd that cannot be mmap'd as a coded buffer. */
     int fds[2];
@@ -602,12 +602,12 @@ static void test_output_remap_failure(void)
     ctx.n_free_out = 2;
     ctx.output_plane_len[0] = 8192;
     g_small_output = 1;
-    vareq_set_ioctl_hook(mock_ioctl);
-    expect_true(vareq_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV12) < 0,
+    vav4l2_set_ioctl_hook(mock_ioctl);
+    expect_true(vav4l2_ensure_capture(&ctx, 1920, 1080, V4L2_PIX_FMT_NV12) < 0,
                 "output-remap-failure-is-terminal");
     expect_true(ctx.n_free_out == 0 && ctx.output_plane_len[0] == 0,
                 "failed-output-not-recycled-with-stale-length");
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
     g_small_output = 0;
     close(fds[0]); close(fds[1]);
 }
@@ -618,9 +618,9 @@ static void test_h264_translate_recapture(int fail_pull)
     VAPictureParameterBufferH264 pic;
     uint8_t nal[] = { 0, 0, 0, 1, 0x65, 0xb8, 0x40, 0x80 };
     VASliceParameterBufferH264 slice = {.slice_data_size = sizeof(nal), .slice_type = 2};
-    struct vareq_buffer slice_buf = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
-    struct vareq_buffer pic_buf, data_buf;
-    struct vareq_buffer *bufs[3];
+    struct vav4l2_buffer slice_buf = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
+    struct vav4l2_buffer pic_buf, data_buf;
+    struct vav4l2_buffer *bufs[3];
     int i;
 
     if (recap_env_open(&e, 432, 240) < 0) {
@@ -637,7 +637,7 @@ static void test_h264_translate_recapture(int fail_pull)
     pic.seq_fields.bits.frame_mbs_only_flag = 1;
     pic.pic_fields.bits.reference_pic_flag = 1;
     e.ctx.profile = VAProfileH264High;
-    e.ctx.codec = VAREQ_CODEC_H264;
+    e.ctx.codec = VAV4L2_CODEC_H264;
     memset(&pic_buf, 0, sizeof(pic_buf));
     memset(&data_buf, 0, sizeof(data_buf));
     pic_buf.type = VAPictureParameterBufferType;
@@ -650,7 +650,7 @@ static void test_h264_translate_recapture(int fail_pull)
     bufs[1] = &slice_buf;
     bufs[2] = &data_buf;
     g_capture_query_error = fail_pull;
-    expect_true(vareq_h264_translate(&e.ctx, bufs, 3) ==
+    expect_true(vav4l2_h264_translate(&e.ctx, bufs, 3) ==
                 (fail_pull ? VA_STATUS_ERROR_OPERATION_FAILED : VA_STATUS_SUCCESS),
                 "h264-translate-status");
     expect_true(e.surf->has_pic == !fail_pull, "h264-capture-attached-only-on-success");
@@ -664,9 +664,9 @@ static void test_hevc_translate_recapture(int fail_pull)
     VAPictureParameterBufferHEVC pic;
     uint8_t nal[] = { 0, 0, 0, 1, 0x26, 1, 0xa0, 0 };
     VASliceParameterBufferHEVC slice = {.slice_data_size = sizeof(nal)};
-    struct vareq_buffer slice_buf = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
-    struct vareq_buffer pic_buf, data_buf;
-    struct vareq_buffer *bufs[3];
+    struct vav4l2_buffer slice_buf = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
+    struct vav4l2_buffer pic_buf, data_buf;
+    struct vav4l2_buffer *bufs[3];
     int i;
 
     if (recap_env_open(&e, 432, 240) < 0) {
@@ -681,7 +681,7 @@ static void test_hevc_translate_recapture(int fail_pull)
     pic.pic_width_in_luma_samples = 1920;
     pic.pic_height_in_luma_samples = 1080;
     pic.pic_fields.bits.chroma_format_idc = 1;
-    e.ctx.codec = VAREQ_CODEC_HEVC;
+    e.ctx.codec = VAV4L2_CODEC_HEVC;
     memset(&pic_buf, 0, sizeof(pic_buf));
     memset(&data_buf, 0, sizeof(data_buf));
     pic_buf.type = VAPictureParameterBufferType;
@@ -694,7 +694,7 @@ static void test_hevc_translate_recapture(int fail_pull)
     bufs[1] = &slice_buf;
     bufs[2] = &data_buf;
     g_capture_query_error = fail_pull;
-    expect_true(vareq_hevc_translate(&e.ctx, bufs, 3) ==
+    expect_true(vav4l2_hevc_translate(&e.ctx, bufs, 3) ==
                 (fail_pull ? VA_STATUS_ERROR_OPERATION_FAILED : VA_STATUS_SUCCESS),
                 "hevc-translate-status");
     expect_true(e.surf->has_pic == !fail_pull, "hevc-capture-attached-only-on-success");
@@ -708,8 +708,8 @@ static void test_vp8_translate_recapture(void)
     VAPictureParameterBufferVP8 pic;
     VASliceParameterBufferVP8 slice;
     uint8_t data[64];
-    struct vareq_buffer pic_buf, sl_buf, data_buf;
-    struct vareq_buffer *bufs[3];
+    struct vav4l2_buffer pic_buf, sl_buf, data_buf;
+    struct vav4l2_buffer *bufs[3];
 
     if (recap_env_open(&e, 320, 240) < 0) {
         fprintf(stderr, "FAIL recap_env vp8\n");
@@ -729,7 +729,7 @@ static void test_vp8_translate_recapture(void)
     slice.num_of_partitions = 2;
     slice.partition_size[0] = 8;
     slice.partition_size[1] = 8;
-    e.ctx.codec = VAREQ_CODEC_VP8;
+    e.ctx.codec = VAV4L2_CODEC_VP8;
     memset(&pic_buf, 0, sizeof(pic_buf));
     memset(&sl_buf, 0, sizeof(sl_buf));
     memset(&data_buf, 0, sizeof(data_buf));
@@ -745,7 +745,7 @@ static void test_vp8_translate_recapture(void)
     bufs[0] = &pic_buf;
     bufs[1] = &sl_buf;
     bufs[2] = &data_buf;
-    expect_true(vareq_vp8_translate(&e.ctx, bufs, 3) == VA_STATUS_SUCCESS,
+    expect_true(vav4l2_vp8_translate(&e.ctx, bufs, 3) == VA_STATUS_SUCCESS,
                 "vp8-translate-status");
     expect_grew_to(&e, 1280, 720, "vp8");
     recap_env_close(&e);
@@ -756,10 +756,10 @@ static void test_mpeg2_translate_recapture(void)
     struct recap_env e;
     VAPictureParameterBufferMPEG2 pic;
     uint8_t nal[] = { 0, 0, 1, 0x00, 0x00 };
-    struct vareq_buffer pic_buf, data_buf;
+    struct vav4l2_buffer pic_buf, data_buf;
     VASliceParameterBufferMPEG2 slice = {.slice_data_size = sizeof(nal)};
-    struct vareq_buffer params = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
-    struct vareq_buffer *bufs[3];
+    struct vav4l2_buffer params = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
+    struct vav4l2_buffer *bufs[3];
 
     if (recap_env_open(&e, 720, 480) < 0) {
         fprintf(stderr, "FAIL recap_env mpeg2\n");
@@ -774,7 +774,7 @@ static void test_mpeg2_translate_recapture(void)
     pic.picture_coding_type = 1;
     pic.picture_coding_extension.bits.picture_structure = 3;
     pic.picture_coding_extension.bits.progressive_frame = 1;
-    e.ctx.codec = VAREQ_CODEC_MPEG2;
+    e.ctx.codec = VAV4L2_CODEC_MPEG2;
     e.ctx.profile = VAProfileMPEG2Main;
     memset(&pic_buf, 0, sizeof(pic_buf));
     memset(&data_buf, 0, sizeof(data_buf));
@@ -786,7 +786,7 @@ static void test_mpeg2_translate_recapture(void)
     data_buf.size = sizeof(nal);
     bufs[0] = &pic_buf;
     bufs[1] = &params; bufs[2] = &data_buf;
-    expect_true(vareq_mpeg2_translate(&e.ctx, bufs, 3) == VA_STATUS_SUCCESS,
+    expect_true(vav4l2_mpeg2_translate(&e.ctx, bufs, 3) == VA_STATUS_SUCCESS,
                 "mpeg2-translate-status");
     expect_grew_to(&e, 1920, 1080, "mpeg2");
     recap_env_close(&e);
@@ -796,32 +796,32 @@ static void test_hevc_first_picture_order(void)
 {
     struct VADriverVTable table = {0};
     struct VADriverContext driver = {.vtable = &table};
-    struct vareq_surface surface = {.surface_id = 1, .width = 1920, .height = 1088,
+    struct vav4l2_surface surface = {.surface_id = 1, .width = 1920, .height = 1088,
         .format = VA_FOURCC_NV12, .buf_index = -1, .memfd_fd = -1};
     VASurfaceID target = 1;
     VAContextID id = VA_INVALID_ID;
     VAPictureParameterBufferHEVC pic = {.pic_width_in_luma_samples = 1920, .pic_height_in_luma_samples = 1088};
     pic.slice_parsing_fields.bits.IdrPicFlag = pic.slice_parsing_fields.bits.RapPicFlag = 1;
     uint8_t nal[] = {0, 0, 0, 1, 0x26, 1, 0xa0, 0};
-    struct vareq_buffer picture = {.type = VAPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
-    struct vareq_buffer data = {.type = VASliceDataBufferType, .data = nal, .size = sizeof(nal)};
+    struct vav4l2_buffer picture = {.type = VAPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
+    struct vav4l2_buffer data = {.type = VASliceDataBufferType, .data = nal, .size = sizeof(nal)};
     VASliceParameterBufferHEVC slice = {.slice_data_size = sizeof(nal)};
-    struct vareq_buffer params = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
-    struct vareq_buffer *buffers[] = {&picture, &params, &data};
+    struct vav4l2_buffer params = {.type = VASliceParameterBufferType, .data = &slice, .size = sizeof(slice)};
+    struct vav4l2_buffer *buffers[] = {&picture, &params, &data};
 
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     if (__vaDriverInit_1_20(&driver) != VA_STATUS_SUCCESS) {
         expect_true(0, "hevc-startup-driver");
         return;
     }
-    struct vareq_driver_data *dd = driver.pDriverData;
-    struct vareq_config *config = calloc(1, sizeof(*config));
+    struct vav4l2_driver_data *dd = driver.pDriverData;
+    struct vav4l2_config *config = calloc(1, sizeof(*config));
     if (!config) {
         expect_true(0, "hevc-startup-config");
         table.vaTerminate(&driver);
         return;
     }
-    *config = (struct vareq_config){.config_id = 1, .codec = VAREQ_CODEC_HEVC,
+    *config = (struct vav4l2_config){.config_id = 1, .codec = VAV4L2_CODEC_HEVC,
         .profile = VAProfileHEVCMain, .rt_format = VA_RT_FORMAT_YUV420,
         .entrypoint = VAEntrypointVLD, .device_path = "mock-hevc"};
     dd->configs = config;
@@ -834,7 +834,7 @@ static void test_hevc_first_picture_order(void)
     g_nops = g_reqbufs_n = g_sfmt_cap = 0;
     g_capture_query_error = 0;
     g_require_hevc_sps_first = 1;
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
     VAStatus status = table.vaCreateContext(&driver, 1, 1920, 1088, 0, &target, 1, &id);
     expect_true(status == VA_STATUS_SUCCESS, "hevc-startup-context");
     if (status == VA_STATUS_SUCCESS) {
@@ -845,7 +845,7 @@ static void test_hevc_first_picture_order(void)
         g_ctx->current_surface = &surface;
         pic.pic_fields.bits.chroma_format_idc = 1;
         for (int i = 0; i < 15; i++) pic.ReferenceFrames[i].flags = VA_PICTURE_HEVC_INVALID;
-        expect_true(vareq_hevc_translate(g_ctx, buffers, 3) == VA_STATUS_SUCCESS, "hevc-first-picture-sps-accepted");
+        expect_true(vav4l2_hevc_translate(g_ctx, buffers, 3) == VA_STATUS_SUCCESS, "hevc-first-picture-sps-accepted");
         expect_true(op_index("HEVC_SPS") >= 0 && op_index("HEVC_SPS") < op_index("S_FMT_CAP") &&
                     op_index("S_FMT_CAP") < op_index("REQBUFSN") && op_index("REQBUFSN") < op_index("STREAMON"),
                     "hevc-sps-before-capture-before-streamon");
@@ -854,7 +854,7 @@ static void test_hevc_first_picture_order(void)
     }
 out:
     g_require_hevc_sps_first = 0;
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
     if (g_context_fd >= 0) close(g_context_fd);
     g_context_fd = -1;
     if (surface.memfd_fd >= 0) close(surface.memfd_fd);
@@ -864,21 +864,21 @@ out:
 
 static void test_translate_missing_params(void)
 {
-    struct vareq_context ctx;
-    struct vareq_buffer *none[1] = { NULL };
+    struct vav4l2_context ctx;
+    struct vav4l2_buffer *none[1] = { NULL };
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.v4l2_fd = -1;
     ctx.request_fd = -1;
-    expect_true(vareq_h264_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
+    expect_true(vav4l2_h264_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
                 "h264-missing-pic");
-    expect_true(vareq_hevc_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
+    expect_true(vav4l2_hevc_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
                 "hevc-missing-pic");
-    expect_true(vareq_av1_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
+    expect_true(vav4l2_av1_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
                 "av1-missing-pic");
-    expect_true(vareq_vp8_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
+    expect_true(vav4l2_vp8_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
                 "vp8-missing-pic");
-    expect_true(vareq_mpeg2_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
+    expect_true(vav4l2_mpeg2_translate(&ctx, none, 0) == VA_STATUS_ERROR_INVALID_PARAMETER,
                 "mpeg2-missing-pic");
 }
 
@@ -888,12 +888,12 @@ static void test_export_fd_ownership(void)
     struct VADriverContext driver = {.vtable = &table};
     VADRMPRIMESurfaceDescriptor first = {0}, second = {0};
     VASurfaceID sid;
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     if (__vaDriverInit_1_20(&driver) != VA_STATUS_SUCCESS) { g_fail++; return; }
-    struct vareq_driver_data *dd = driver.pDriverData;
-    struct vareq_context *c = calloc(1, sizeof(*c));
+    struct vav4l2_driver_data *dd = driver.pDriverData;
+    struct vav4l2_context *c = calloc(1, sizeof(*c));
     if (!c) { g_fail++; table.vaTerminate(&driver); return; }
-    c->context_id = 1; c->entrypoint = VAEntrypointVLD; c->codec = VAREQ_CODEC_H264;
+    c->context_id = 1; c->entrypoint = VAEntrypointVLD; c->codec = VAV4L2_CODEC_H264;
     c->v4l2_fd = open("/dev/null", O_RDWR | O_CLOEXEC); c->media_fd = c->request_fd = -1;
     c->driver_data = dd; c->width = c->cap_width = c->cap_stride = 16;
     c->height = c->cap_height = 16; c->cap_pixelformat = V4L2_PIX_FMT_NV12;
@@ -901,7 +901,7 @@ static void test_export_fd_ownership(void)
     g_last_cap_w = g_last_cap_h = 16;
     expect_true(table.vaCreateSurfaces(&driver, 16, 16, VA_RT_FORMAT_YUV420, 1, &sid) == VA_STATUS_SUCCESS,
                 "export-fd-surface");
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
     expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME, 0, &first) ==
                 VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE, "legacy-export-layout-rejected");
     expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &first) == VA_STATUS_SUCCESS,
@@ -922,15 +922,15 @@ static void test_export_fd_ownership(void)
                 "surface-destroy-keeps-client-fd-and-recycles-unlisted-slot");
     close(first.objects[0].fd); close(second.objects[0].fd);
     table.vaDestroyContext(&driver, 1);
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_set_ioctl_hook(NULL);
     table.vaTerminate(&driver);
 }
 
 int main(void)
 {
     /* This fixture checks native MMAP teardown counts;pool fallback has its own suite. */
-    setenv("VAREQ_CAPTURE_POOL_DMABUF", "0", 1);
-    setenv("VAREQ_EXPBUF_EXPORT", "1", 1); /* Mock capture/EXPBUF fds are not GBM objects. */
+    setenv("VAV4L2_CAPTURE_POOL_DMABUF", "0", 1);
+    setenv("VAV4L2_EXPBUF_EXPORT", "1", 1); /* Mock capture/EXPBUF fds are not GBM objects. */
     test_export_fd_ownership();
     test_request_control_binding();
     test_recapture_small_to_large();

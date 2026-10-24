@@ -9,7 +9,7 @@
 #include <sys/mman.h>
 #include <linux/dma-buf.h>
 #include <drm_fourcc.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 static unsigned failures, jobs, syncs, active_sync, maps, image_size, expected_raw;
 static int fault, capture_fd, last_output, last_capture, processing;
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL extended DMA %s fault=%d\n", tag, fault); failures++; } }
@@ -74,13 +74,13 @@ static void exercise(uint32_t format, unsigned scenario)
     int packed = format == VA_FOURCC_RGB565 || format == VA_FOURCC_RGBX;
     unsigned width = format == VA_FOURCC_422H || format == VA_FOURCC_YV16 ? 128 : 64;
     unsigned pitch = width * (format == VA_FOURCC_RGB565 ? 2 : rgb || packed ? 4 : 1), alpha = format == VA_FOURCC_ARGB ? 0 : 3;
-    image_size = vareq_va_image_size(format, pitch, width);
+    image_size = vav4l2_va_image_size(format, pitch, width);
     expected_raw = format == VA_FOURCC_RGB565 ? V4L2_PIX_FMT_RGB565 : format == VA_FOURCC_RGBX ? V4L2_PIX_FMT_RGBX32 :
         rgb ? format == VA_FOURCC_ARGB ? V4L2_PIX_FMT_ARGB32 : format == VA_FOURCC_RGBA ? V4L2_PIX_FMT_RGBA32 : V4L2_PIX_FMT_ABGR32 :
         format == VA_FOURCC_YV12 ? V4L2_PIX_FMT_YUV420 : V4L2_PIX_FMT_YUV422P;
-    struct vareq_prime_layout l; expect(!vareq_prime_layout(format, width, width, &l), "public format layout");
+    struct vav4l2_prime_layout l; expect(!vav4l2_prime_layout(format, width, width, &l), "public format layout");
     int owner[2] = {memfd_create("extended-source", MFD_CLOEXEC), memfd_create("extended-target", MFD_CLOEXEC)};
-    struct vareq_surface s[2]; memset(s, 0, sizeof(s));
+    struct vav4l2_surface s[2]; memset(s, 0, sizeof(s));
     unsigned char *pixels = malloc(image_size); expect(pixels != NULL, "source fixture allocation"); if (!pixels) exit(2);
     memset(pixels, 0x31, image_size);
     if (rgb) for (unsigned i = alpha; i < image_size; i += 4) pixels[i] = 255;
@@ -101,26 +101,26 @@ static void exercise(uint32_t format, unsigned scenario)
         if ((format == VA_FOURCC_YV12 || format == VA_FOURCC_YV16) && scenario != 8) {
             unsigned first = d.layers[0].offset[1]; d.layers[0].offset[1] = d.layers[0].offset[2]; d.layers[0].offset[2] = first;
         }
-        s[i] = (struct vareq_surface){.surface_id = i + 1, .width = width, .height = width, .format = format,
+        s[i] = (struct vav4l2_surface){.surface_id = i + 1, .width = width, .height = width, .format = format,
             .memfd_fd = -1, .import_fd = -1, .gbm_external_fd = -1, .buf_index = -1, .cpu_stride = pitch, .cpu_size = image_size};
-        expect(vareq_prime_import(&s[i], &d) == VA_STATUS_SUCCESS, "retained public descriptor import");
+        expect(vav4l2_prime_import(&s[i], &d) == VA_STATUS_SUCCESS, "retained public descriptor import");
     }
     free(pixels);
     if (rgb && scenario == 7) { unsigned char zero = 0; expect(pwrite(owner[1], &zero, 1, alpha) == 1, "nonopaque destination outside input contract"); }
-    struct vareq_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = 1};
+    struct vav4l2_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = 1};
     dd.surfaces[1] = &s[0]; dd.surfaces[2] = &s[1];
-    struct vareq_vpp_device *dev = &dd.vpp_devices[0]; strcpy(dev->path, "extended-node"); strcpy(dev->identity.card, "rga2");
+    struct vav4l2_vpp_device *dev = &dd.vpp_devices[0]; strcpy(dev->path, "extended-node"); strcpy(dev->identity.card, "rga2");
     const uint32_t raw[] = {V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_YUV422P, V4L2_PIX_FMT_NV16, V4L2_PIX_FMT_NV61, V4L2_PIX_FMT_ARGB32, V4L2_PIX_FMT_ABGR32, V4L2_PIX_FMT_RGBA32, V4L2_PIX_FMT_RGBX32, V4L2_PIX_FMT_RGB565};
     dev->num_input = dev->num_output = sizeof(raw) / sizeof(raw[0]); memcpy(dev->input, raw, sizeof(raw)); memcpy(dev->output, raw, sizeof(raw));
-    struct vareq_context ctx = {.codec = VAREQ_CODEC_VPP, .driver_data = &dd, .current_surface = &s[1],
+    struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_VPP, .driver_data = &dd, .current_surface = &s[1],
         .device_path = strdup(dev->path), .v4l2_fd = memfd_create("extended-node", MFD_CLOEXEC)};
     VARectangle region = {12, 12, 40, 40}; int partial = scenario == 3 || scenario == 6 || scenario == 7;
     VAProcPipelineParameterBuffer pipe = {.surface = 1, .surface_region = partial ? &region : NULL, .output_region = partial ? &region : NULL};
-    struct vareq_buffer parameter = {.type = VAProcPipelineParameterBufferType, .size = sizeof(pipe), .data = &pipe};
-    struct vareq_buffer *buffers[] = {&parameter};
+    struct vav4l2_buffer parameter = {.type = VAProcPipelineParameterBufferType, .size = sizeof(pipe), .data = &pipe};
+    struct vav4l2_buffer *buffers[] = {&parameter};
     jobs = syncs = active_sync = maps = 0; last_output = last_capture = -1; fault = scenario; processing = 1;
-    setenv("VAREQ_VPP_DMABUF", scenario == 2 ? "auto" : "required", 1);
-    VAStatus st = vareq_vpp_run(&ctx, buffers, 1);
+    setenv("VAV4L2_VPP_DMABUF", scenario == 2 ? "auto" : "required", 1);
+    VAStatus st = vav4l2_vpp_run(&ctx, buffers, 1);
     int success = scenario == 0 || scenario == 3 || scenario == 7;
     expect((st == VA_STATUS_SUCCESS) == success, "success or truthful rejection");
     if (scenario == 2) expect(st == VA_STATUS_ERROR_UNIMPLEMENTED, "nonopaque auto retains existing API rejection");
@@ -130,27 +130,27 @@ static void exercise(uint32_t format, unsigned scenario)
         expect(!s[0].cpu_ptr && !s[1].cpu_ptr && syncs == (rgb ? 2u : 0u), "copy-free processing with RGB read-only validation");
         expect(fcntl(last_output, F_GETFD) < 0 && fcntl(last_capture, F_GETFD) < 0, "temporary queue descriptor ownership");
         if (packed) {
-            int read = vareq_prime_read(&s[1]); expect(!read, "packed-RGB-public-readback");
+            int read = vav4l2_prime_read(&s[1]); expect(!read, "packed-RGB-public-readback");
             if (!read) for (unsigned i = 0; i < image_size; i++) expect(((unsigned char *)s[1].cpu_ptr)[i] == 0x31, "packed-RGB-visible-bytes-preserved");
         }
         if (!partial && !rgb && !packed) {
-            int read = vareq_prime_read(&s[1]); expect(!read, "logical public CPU readback");
+            int read = vav4l2_prime_read(&s[1]); expect(!read, "logical public CPU readback");
             unsigned first = pitch * width, second = first + pitch * l.rows[1] / 2;
             expect(!read && ((unsigned char *)s[1].cpu_ptr)[first] == (format == VA_FOURCC_422H ? 0x44 : 0xd2) &&
                 ((unsigned char *)s[1].cpu_ptr)[second] == (format == VA_FOURCC_422H ? 0xd2 : 0x44), "logical chroma order independent of storage order");
         }
     }
-    fault = 0; vareq_m2m_teardown(&ctx, &ctx.vpp_q); if (ctx.v4l2_fd >= 0) close(ctx.v4l2_fd); free(ctx.device_path);
-    for (unsigned i = 0; i < 2; i++) { expect(fcntl(owner[i], F_GETFD) >= 0, "client retains owner FD"); vareq_prime_destroy(&s[i]); free(s[i].cpu_ptr); close(owner[i]); }
+    fault = 0; vav4l2_m2m_teardown(&ctx, &ctx.vpp_q); if (ctx.v4l2_fd >= 0) close(ctx.v4l2_fd); free(ctx.device_path);
+    for (unsigned i = 0; i < 2; i++) { expect(fcntl(owner[i], F_GETFD) >= 0, "client retains owner FD"); vav4l2_prime_destroy(&s[i]); free(s[i].cpu_ptr); close(owner[i]); }
 }
 int main(void)
 {
-    unsetenv("VAREQ_VPP_TRACE"); unsetenv("VAREQ_DMABUF_TRACE"); unsetenv("VAREQ_VPP_DMABUF_SESSION");
-    vareq_set_ioctl_hook(mock_ioctl);
+    unsetenv("VAV4L2_VPP_TRACE"); unsetenv("VAV4L2_DMABUF_TRACE"); unsetenv("VAV4L2_VPP_DMABUF_SESSION");
+    vav4l2_set_ioctl_hook(mock_ioctl);
     exercise(VA_FOURCC_RGB565, 0); exercise(VA_FOURCC_RGBX, 0);
     exercise(VA_FOURCC_YV12, 0); exercise(VA_FOURCC_422H, 0); exercise(VA_FOURCC_YV16, 0);
     exercise(VA_FOURCC_YV12, 8); exercise(VA_FOURCC_YV16, 8);
     for (unsigned i = 0; i < 8; i++) { exercise(VA_FOURCC_ARGB, i); exercise(VA_FOURCC_BGRA, i); exercise(VA_FOURCC_RGBA, i); }
-    vareq_set_ioctl_hook(NULL); unsetenv("VAREQ_VPP_DMABUF");
+    vav4l2_set_ioctl_hook(NULL); unsetenv("VAV4L2_VPP_DMABUF");
     printf("extended DMA: %s (31 format/alpha/ownership cases)\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }

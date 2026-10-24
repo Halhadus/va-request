@@ -14,7 +14,7 @@
 #include <unistd.h>
 #include <gbm.h>
 #include <drm_fourcc.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
 enum { PROBE_FRAMES = 8 };
 static const struct { const char *name; uint32_t raw; } probe_formats[] = {
@@ -136,11 +136,11 @@ static int probe_cpu(struct probe_storage *s, uint32_t raw, unsigned width, unsi
     void *map = s->map;
     uint64_t flags = write ? DMA_BUF_SYNC_WRITE : DMA_BUF_SYNC_READ;
     if (s->memory == V4L2_MEMORY_DMABUF) {
-        if (vareq_dmabuf_sync(s->fd, flags | DMA_BUF_SYNC_START) < 0) return -1;
+        if (vav4l2_dmabuf_sync(s->fd, flags | DMA_BUF_SYNC_START) < 0) return -1;
         map = mmap(NULL, s->size, PROT_READ | (write ? PROT_WRITE : 0), MAP_SHARED, s->fd, 0);
         if (map == MAP_FAILED) {
             int error = errno;
-            (void)vareq_dmabuf_sync(s->fd, flags | DMA_BUF_SYNC_END);
+            (void)vav4l2_dmabuf_sync(s->fd, flags | DMA_BUF_SYNC_END);
             errno = error; return -1;
         }
     }
@@ -156,7 +156,7 @@ static int probe_cpu(struct probe_storage *s, uint32_t raw, unsigned width, unsi
     int error = errno;
     if (s->memory == V4L2_MEMORY_DMABUF) {
         if (munmap(map, s->size) < 0) { ret = -1; error = errno; }
-        if (vareq_dmabuf_sync(s->fd, flags | DMA_BUF_SYNC_END) < 0) { ret = -1; error = errno; }
+        if (vav4l2_dmabuf_sync(s->fd, flags | DMA_BUF_SYNC_END) < 0) { ret = -1; error = errno; }
     }
     errno = error; return ret;
 }
@@ -193,11 +193,11 @@ static struct probe_result probe_case(const char *node, int rga2, unsigned width
             if (s[i].map == MAP_FAILED) { s[i].map = NULL; goto done; }
         } else {
             r.stage = "allocate-DMA";
-            s[i].fd = exporter ? exported[i] : vareq_alloc_shared_storage(r.pitch[i], r.size[i] / r.pitch[i]);
+            s[i].fd = exporter ? exported[i] : vav4l2_alloc_shared_storage(r.pitch[i], r.size[i] / r.pitch[i]);
             if (exporter) exported[i] = -1;
             if (s[i].fd < 0) goto done;
             r.stage = "DMA-span";
-            if (vareq_export_fd_validate(s[i].fd, r.size[i], &s[i].size) < 0) goto done;
+            if (vav4l2_export_fd_validate(s[i].fd, r.size[i], &s[i].size) < 0) goto done;
             long page = sysconf(_SC_PAGESIZE);
             if (page <= 0) goto invalid;
             /* Never overrun RGA2's image-sized internal MMU page table. */
@@ -220,7 +220,7 @@ static struct probe_result probe_case(const char *node, int rga2, unsigned width
         r.stage = "source-fill"; if (probe_cpu(&s[0], raw, width, pattern, 1, &r) < 0) goto done;
         r.stage = "target-poison"; if (probe_cpu(&s[1], raw, width, 113, 1, &r) < 0) goto done;
         r.stage = "reservation-wait";
-        for (unsigned i = 0; i < 2; i++) if (s[i].memory == V4L2_MEMORY_DMABUF && vareq_dmabuf_wait(s[i].fd, i) < 0) goto done;
+        for (unsigned i = 0; i < 2; i++) if (s[i].memory == V4L2_MEMORY_DMABUF && vav4l2_dmabuf_wait(s[i].fd, i) < 0) goto done;
         if (stream_first && probe_stream(fd, &r) < 0) goto done;
         for (int i = 1; i >= 0; i--) {
             struct v4l2_plane p = {.length = s[i].size, .bytesused = i ? 0 : r.size[i]};
@@ -231,7 +231,7 @@ static struct probe_result probe_case(const char *node, int rga2, unsigned width
         }
         if (probe_stream(fd, &r) < 0) goto done;
         struct pollfd pfd = {.fd = fd, .events = POLLIN}; r.stage = "poll";
-        int polled = vareq_poll_intr(&pfd, 1, 2000);
+        int polled = vav4l2_poll_intr(&pfd, 1, 2000);
         if (polled <= 0 || !(pfd.revents & POLLIN) || pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) { errno = ETIMEDOUT; goto done; }
         for (int i = 1; i >= 0; i--) {
             struct v4l2_plane p = {0};
@@ -240,7 +240,7 @@ static struct probe_result probe_case(const char *node, int rga2, unsigned width
             if (!i) {
                 /* OUTPUT readiness is distinct from CAPTURE readiness. */
                 pfd.events = POLLOUT; pfd.revents = 0;
-                if (vareq_poll_intr(&pfd, 1, 2000) <= 0 || !(pfd.revents & POLLOUT) ||
+                if (vav4l2_poll_intr(&pfd, 1, 2000) <= 0 || !(pfd.revents & POLLOUT) ||
                     pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) { errno = ETIMEDOUT; goto done; }
             }
             if (probe_ioctl(fd, VIDIOC_DQBUF, &b) < 0) goto done;
@@ -320,7 +320,7 @@ int main(int argc, char **argv)
         }
     }
     if (render >= 0) close(render);
-    vareq_allocator_cleanup();
+    vav4l2_allocator_cleanup();
     if (fclose(out)) { perror("close probe results"); return 2; }
     printf("TRANSPORT_PROBE PASS=%u FAIL=%u SKIP=%u NODES=%u COMPLETE=1 EXIT=%u\n", pass, fail, skip, nodes, fail ? 1 : nodes ? 0 : 77);
     return fail ? 1 : nodes ? 0 : 77;

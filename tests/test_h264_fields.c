@@ -4,7 +4,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 extern VAStatus __vaDriverInit_1_20(VADriverContextP);
 static int failures, controls, submits, pulls, fail_submit, fail_pull, no_hold;
 static uint8_t expected[256], output[256], remapped[256];
@@ -12,7 +12,7 @@ static size_t expected_size, first_size;
 static uint64_t expected_timestamp;
 static struct v4l2_ctrl_h264_decode_params submitted_params;
 static struct v4l2_ctrl_h264_decode_params first_params;
-static struct vareq_context *remap;
+static struct vav4l2_context *remap;
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL fields %s\n", tag); failures++; } }
 static int ioctl_hook(int fd, unsigned long request, void *arg)
 {
@@ -30,21 +30,21 @@ static int ioctl_hook(int fd, unsigned long request, void *arg)
     }
     return 0;
 }
-int __wrap_vareq_ensure_capture(struct vareq_context *c, int width, int height, uint32_t fourcc)
+int __wrap_vav4l2_ensure_capture(struct vav4l2_context *c, int width, int height, uint32_t fourcc)
 {
     expect(width == 16 && height == 32 && fourcc == V4L2_PIX_FMT_NV12, "paired-capture-keeps-full-frame-geometry");
     if (remap == c) { c->output_buf_ptr[0] = remapped; remap = NULL; }
     return 0;
 }
-int __wrap_vareq_decode_submit(struct vareq_context *c, int index, uint32_t bytes, uint64_t timestamp)
+int __wrap_vav4l2_decode_submit(struct vav4l2_context *c, int index, uint32_t bytes, uint64_t timestamp)
 {
     submits++;
     expect(timestamp == expected_timestamp && bytes == expected_size && !memcmp(c->output_buf_ptr[index], expected, bytes),
         "one-output-has-both-owned-fields-and-first-timestamp");
-    if (fail_submit) { vareq_decode_reset(c); return fail_submit; }
-    vareq_out_pool_push(c, index); return 0;
+    if (fail_submit) { vav4l2_decode_reset(c); return fail_submit; }
+    vav4l2_out_pool_push(c, index); return 0;
 }
-int __wrap_vareq_decode_submit_field(struct vareq_context *c, int index, uint32_t bytes, uint64_t timestamp, int capture, int hold)
+int __wrap_vav4l2_decode_submit_field(struct vav4l2_context *c, int index, uint32_t bytes, uint64_t timestamp, int capture, int hold)
 {
     submits++;
     size_t offset = hold ? 0 : first_size, length = hold ? first_size : expected_size - first_size;
@@ -52,14 +52,14 @@ int __wrap_vareq_decode_submit_field(struct vareq_context *c, int index, uint32_
         "each-request-has-its-own-owned-field-and-shared-timestamp");
     expect(hold ? capture == -1 : capture == 1, "second-request-reuses-held-capture");
     if (hold) first_params = submitted_params;
-    if (fail_submit) { vareq_decode_reset(c); return fail_submit; }
-    vareq_out_pool_push(c, index); return 1;
+    if (fail_submit) { vav4l2_decode_reset(c); return fail_submit; }
+    vav4l2_out_pool_push(c, index); return 1;
 }
-int __wrap_vareq_surface_pull_capture(struct vareq_context *c, struct vareq_surface *s, int index)
+int __wrap_vav4l2_surface_pull_capture(struct vav4l2_context *c, struct vav4l2_surface *s, int index)
 {
     pulls++;
     if (fail_pull) return -1;
-    s->has_pic = 1; s->capture_ctx = c; s->buf_index = index; s->last_writer = VAREQ_WRITER_MEMFD;
+    s->has_pic = 1; s->capture_ctx = c; s->buf_index = index; s->last_writer = VAV4L2_WRITER_MEMFD;
     return 0;
 }
 struct writer { uint8_t bytes[64]; unsigned bits; };
@@ -78,17 +78,17 @@ static size_t nal(uint8_t *out, unsigned bottom, unsigned frame, int fault)
     memcpy(out, (uint8_t[]){0, 0, 1, fault == 5 ? 0x01 : fault == 6 ? 0x65 : 0x41}, 4);
     memcpy(out + 4, w.bytes, (w.bits + 7) / 8); return 4 + (w.bits + 7) / 8;
 }
-static struct vareq_context *context(struct vareq_driver_data *dd)
+static struct vav4l2_context *context(struct vav4l2_driver_data *dd)
 {
-    struct vareq_context *c = calloc(1, sizeof(*c)); if (!c) exit(1);
-    c->context_id = ++dd->next_context_id; c->driver_data = dd; c->codec = VAREQ_CODEC_H264;
+    struct vav4l2_context *c = calloc(1, sizeof(*c)); if (!c) exit(1);
+    c->context_id = ++dd->next_context_id; c->driver_data = dd; c->codec = VAV4L2_CODEC_H264;
     c->profile = VAProfileH264Main; c->rt_format = VA_RT_FORMAT_YUV420;
     c->v4l2_fd = open("/dev/null", O_RDONLY); c->request_fd = open("/dev/null", O_RDONLY); c->media_fd = -1;
     c->output_bufs_allocd = c->n_free_out = 1; c->output_buf_ptr[0] = output; c->output_buf_size = sizeof(output);
     c->capture_bufs_allocd = 2; c->n_free_cap = 1; c->free_cap_bufs[0] = 1; c->streamed = 1;
     c->next = dd->contexts; dd->contexts = c; return c;
 }
-static VAStatus field(struct VADriverContext *driver, struct vareq_context *c, VASurfaceID surface,
+static VAStatus field(struct VADriverContext *driver, struct vav4l2_context *c, VASurfaceID surface,
     unsigned bottom, unsigned frame, int self, int corrupt)
 {
     if (c->request_fd < 0) c->request_fd = open("/dev/null", O_RDONLY);
@@ -122,7 +122,7 @@ static VAStatus field(struct VADriverContext *driver, struct vareq_context *c, V
         expect(!driver->vtable->vaDestroyBuffer(driver, ids[i]), "client-can-destroy-all-first-field-buffers");
     return status;
 }
-static void pending_api(struct VADriverContext *d, struct vareq_context *c, VASurfaceID sid)
+static void pending_api(struct VADriverContext *d, struct vav4l2_context *c, VASurfaceID sid)
 {
     struct VADriverVTable *v = d->vtable; VASurfaceStatus status;
     expect(v->vaQuerySurfaceStatus(d, sid, &status) == VA_STATUS_SUCCESS && status == VASurfaceRendering,
@@ -139,26 +139,26 @@ static void pending_api(struct VADriverContext *d, struct vareq_context *c, VASu
     VADRMPRIMESurfaceDescriptor descriptor;
     expect(v->vaExportSurfaceHandle(d, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VA_EXPORT_SURFACE_READ_ONLY, &descriptor) == VA_STATUS_ERROR_SURFACE_BUSY,
         "pending-field-cannot-export-a-completed-frame");
-    struct vareq_context *other = context(d->pDriverData);
-    enum vareq_codec codecs[] = {VAREQ_CODEC_H264, VAREQ_CODEC_VPP, VAREQ_CODEC_JPEG_ENC};
+    struct vav4l2_context *other = context(d->pDriverData);
+    enum vav4l2_codec codecs[] = {VAV4L2_CODEC_H264, VAV4L2_CODEC_VPP, VAV4L2_CODEC_JPEG_ENC};
     for (unsigned i = 0; i < sizeof(codecs) / sizeof(codecs[0]); i++) {
         other->codec = codecs[i];
         expect(v->vaBeginPicture(d, other->context_id, sid) == VA_STATUS_ERROR_SURFACE_BUSY && !other->current_surface,
             "pending-field-ownership-excludes-decoder-VPP-and-JPEG-contexts");
     }
     expect(!v->vaDestroyContext(d, other->context_id), "foreign-fixture-cleanup");
-    expect(vareq_h264_field_pending(c, sid), "rejected-operations-keep-the-first-field");
+    expect(vav4l2_h264_field_pending(c, sid), "rejected-operations-keep-the-first-field");
     expect(v->vaBeginPicture(d, c->context_id, VA_INVALID_SURFACE) == VA_STATUS_ERROR_INVALID_SURFACE &&
-        vareq_h264_field_pending(c, sid), "invalid-new-target-does-not-discard-a-valid-first-field");
+        vav4l2_h264_field_pending(c, sid), "invalid-new-target-does-not-discard-a-valid-first-field");
 }
 int main(void)
 {
     struct VADriverVTable v = {0}; struct VADriverContext driver = {.vtable = &v};
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1); setenv("VAREQ_EXPBUF_EXPORT", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1); setenv("VAV4L2_EXPBUF_EXPORT", "1", 1);
     if (__vaDriverInit_1_20(&driver)) return 1;
-    struct vareq_driver_data *dd = driver.pDriverData; struct vareq_context *c = context(dd);
+    struct vav4l2_driver_data *dd = driver.pDriverData; struct vav4l2_context *c = context(dd);
     VASurfaceID surfaces[2]; if (v.vaCreateSurfaces(&driver, 16, 32, VA_RT_FORMAT_YUV420, 2, surfaces)) return 1;
-    vareq_set_ioctl_hook(ioctl_hook);
+    vav4l2_set_ioctl_hook(ioctl_hook);
     for (unsigned bottom = 0; bottom < 2; bottom++) {
         controls = submits = pulls = 0; expected_size = 0;
         expect(field(&driver, c, surfaces[0], bottom, 1, 0, 0) == VA_STATUS_SUCCESS && !controls && !submits && !pulls,
@@ -196,13 +196,13 @@ int main(void)
         "new-target-cancels-an-unpaired-field");
     expect(v.vaEndPicture(&driver, c->context_id) != VA_STATUS_SUCCESS, "empty-new-picture-is-an-error");
     expected_size = 0; expect(!field(&driver, c, surfaces[0], 0, 4, 0, 0), "reset-first-stage");
-    vareq_decode_reset(c);
+    vav4l2_decode_reset(c);
     expect(!c->h264_field && dd->surfaces[surfaces[0]]->status == VASurfaceSkipped, "queue-reset-discards-the-unsubmitted-field");
     expected_size = 0; expect(!field(&driver, c, surfaces[0], 0, 5, 0, 0), "surface-destroy-first-stage");
     expect(!v.vaDestroySurfaces(&driver, surfaces, 1) && !c->h264_field, "surface-destruction-cancels-owned-field-by-id");
     expected_size = 0; expect(!field(&driver, c, surfaces[1], 0, 6, 0, 0), "context-destroy-first-stage");
     expect(!v.vaDestroyContext(&driver, c->context_id) && dd->surfaces[surfaces[1]]->status == VASurfaceSkipped,
         "context-destruction-releases-the-field-and-invalidates-incomplete-content");
-    vareq_set_ioctl_hook(NULL); v.vaDestroySurfaces(&driver, surfaces + 1, 1); v.vaTerminate(&driver);
+    vav4l2_set_ioctl_hook(NULL); v.vaDestroySurfaces(&driver, surfaces + 1, 1); v.vaTerminate(&driver);
     return failures != 0;
 }

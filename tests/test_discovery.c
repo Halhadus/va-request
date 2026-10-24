@@ -33,8 +33,8 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
             if (fmt->index) { errno = EINVAL; return -1; }
             fmt->pixelformat = fmt->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ? V4L2_PIX_FMT_JPEG : jpeg_selected[fd] ? jpeg_input : V4L2_PIX_FMT_RGB565; return 0;
         }
-        if (fmt->index >= VAREQ_MAX_FORMATS) { errno = EINVAL; return -1; }
-        fmt->pixelformat = !fmt->index ? V4L2_PIX_FMT_RGB565 : fmt->index == VAREQ_MAX_FORMATS - 1 ? V4L2_PIX_FMT_RGBX32 : v4l2_fourcc('Z', 'Z', fmt->index, 'X'); return 0;
+        if (fmt->index >= VAV4L2_MAX_FORMATS) { errno = EINVAL; return -1; }
+        fmt->pixelformat = !fmt->index ? V4L2_PIX_FMT_RGB565 : fmt->index == VAV4L2_MAX_FORMATS - 1 ? V4L2_PIX_FMT_RGBX32 : v4l2_fourcc('Z', 'Z', fmt->index, 'X'); return 0;
     }
     if (raw_inventory && request == VIDIOC_TRY_FMT) return 0;
     if (raw_inventory == 2 && request == VIDIOC_G_FMT) {
@@ -122,20 +122,20 @@ static void test_media_interface(void)
     struct stat node; assert(stat("/dev/null", &node) == 0);
     video_major = major(node.st_rdev); video_minor = minor(node.st_rdev);
     media_owner = __real_open("/dev/null", O_RDWR | O_CLOEXEC); assert(media_owner >= 0);
-    char result[64]; assert(vareq_find_media_path("/dev/null", result, sizeof(result)) == 0 && !strcmp(result, "/dev/media4"));
-    assert(vareq_find_media_path("/dev/null", result, 2) == -1 && !result[0]); close(media_owner);
+    char result[64]; assert(vav4l2_find_media_path("/dev/null", result, sizeof(result)) == 0 && !strcmp(result, "/dev/media4"));
+    assert(vav4l2_find_media_path("/dev/null", result, 2) == -1 && !result[0]); close(media_owner);
 }
 
 static void test_full_format_inventory(void)
 {
     media_owner = __real_open("/dev/null", O_RDWR | O_CLOEXEC); assert(media_owner >= 0); raw_inventory = 1;
-    struct vareq_driver_data *driver = calloc(1, sizeof(*driver)); assert(driver);
-    vareq_scan_vpp_devices(driver); assert(driver->num_vpp_devices == 3);
+    struct vav4l2_driver_data *driver = calloc(1, sizeof(*driver)); assert(driver);
+    vav4l2_scan_vpp_devices(driver); assert(driver->num_vpp_devices == 3);
     for (unsigned i = 0; i < driver->num_vpp_devices; i++) {
-        struct vareq_vpp_device *node = &driver->vpp_devices[i];
-        assert(node->num_input == VAREQ_MAX_FORMATS && node->num_output == VAREQ_MAX_FORMATS);
-        assert(node->input[VAREQ_MAX_FORMATS - 1] == V4L2_PIX_FMT_RGBX32 && node->output[VAREQ_MAX_FORMATS - 1] == V4L2_PIX_FMT_RGBX32);
-        assert(vareq_vpp_device_score(node, V4L2_PIX_FMT_RGBX32, V4L2_PIX_FMT_RGB565, 0, 0, 0, 0, 0) >= 0);
+        struct vav4l2_vpp_device *node = &driver->vpp_devices[i];
+        assert(node->num_input == VAV4L2_MAX_FORMATS && node->num_output == VAV4L2_MAX_FORMATS);
+        assert(node->input[VAV4L2_MAX_FORMATS - 1] == V4L2_PIX_FMT_RGBX32 && node->output[VAV4L2_MAX_FORMATS - 1] == V4L2_PIX_FMT_RGBX32);
+        assert(vav4l2_vpp_device_score(node, V4L2_PIX_FMT_RGBX32, V4L2_PIX_FMT_RGB565, 0, 0, 0, 0, 0) >= 0);
     }
     free(driver); raw_inventory = 0; close(media_owner);
 }
@@ -143,19 +143,19 @@ static void test_full_format_inventory(void)
 static void test_jpeg_discovery(void)
 {
     media_owner = __real_open("/dev/null", O_RDWR | O_CLOEXEC); assert(media_owner >= 0);
-    raw_inventory = 2; setenv("VAREQ_PROBE_NOCACHE", "1", 1);
+    raw_inventory = 2; setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     const uint32_t formats[] = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12M, V4L2_PIX_FMT_YUV420M, V4L2_PIX_FMT_YUYV};
     char paths[7][64];
     for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
         jpeg_input = formats[i];
-        assert(vareq_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], 64) == 0);
+        assert(vav4l2_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], 64) == 0);
         assert(i == 3 ? !paths[5][0] : !strcmp(paths[5], "/dev/video2"));
     }
     jpeg_input = V4L2_PIX_FMT_NV12;
     for (unsigned fault = 0; fault < 4; fault++) {
         missing = fault == 0 ? V4L2_CID_JPEG_COMPRESSION_QUALITY : 0;
         disabled = fault == 1; readonly = fault == 2; jpeg_reject = fault == 3;
-        assert(vareq_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], 64) == 0 && !paths[5][0]);
+        assert(vav4l2_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], 64) == 0 && !paths[5][0]);
     }
     missing = disabled = readonly = jpeg_reject = raw_inventory = 0; close(media_owner);
 }
@@ -163,27 +163,27 @@ static void test_jpeg_discovery(void)
 int main(void)
 {
     test_media_interface();
-    char paths[4][64]; assert(vareq_list_video_nodes(paths, 4) == 3);
+    char paths[4][64]; assert(vav4l2_list_video_nodes(paths, 4) == 3);
     assert(!strcmp(paths[0], "/dev/video2") && !strcmp(paths[1], "/dev/video127") && !strcmp(paths[2], "/dev/video2048"));
-    assert(vareq_list_video_nodes(paths, 2) == -1 && errno == EOVERFLOW);
+    assert(vav4l2_list_video_nodes(paths, 2) == -1 && errno == EOVERFLOW);
     struct v4l2_capability cap = {.capabilities = V4L2_CAP_DEVICE_CAPS | V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING};
-    assert(!vareq_node_is_m2m(&cap)); cap.device_caps = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING; assert(vareq_node_is_m2m(&cap));
-    cap.device_caps = V4L2_CAP_VIDEO_M2M_MPLANE; assert(!vareq_node_is_m2m(&cap));
-    assert(vareq_codec_controls_usable(42, VAREQ_CODEC_H264));
-    missing = V4L2_CID_STATELESS_H264_PPS; assert(!vareq_codec_controls_usable(42, VAREQ_CODEC_H264)); missing = 0;
-    disabled = 1; assert(!vareq_codec_controls_usable(42, VAREQ_CODEC_HEVC)); disabled = 0;
-    missing = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS; assert(vareq_codec_controls_usable(42, VAREQ_CODEC_HEVC));
+    assert(!vav4l2_node_is_m2m(&cap)); cap.device_caps = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING; assert(vav4l2_node_is_m2m(&cap));
+    cap.device_caps = V4L2_CAP_VIDEO_M2M_MPLANE; assert(!vav4l2_node_is_m2m(&cap));
+    assert(vav4l2_codec_controls_usable(42, VAV4L2_CODEC_H264));
+    missing = V4L2_CID_STATELESS_H264_PPS; assert(!vav4l2_codec_controls_usable(42, VAV4L2_CODEC_H264)); missing = 0;
+    disabled = 1; assert(!vav4l2_codec_controls_usable(42, VAV4L2_CODEC_HEVC)); disabled = 0;
+    missing = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS; assert(vav4l2_codec_controls_usable(42, VAV4L2_CODEC_HEVC));
     const uint32_t hevc_required[] = {V4L2_CID_STATELESS_HEVC_SPS, V4L2_CID_STATELESS_HEVC_PPS, V4L2_CID_STATELESS_HEVC_SCALING_MATRIX, V4L2_CID_STATELESS_HEVC_DECODE_PARAMS};
-    for (unsigned i = 0; i < sizeof(hevc_required) / sizeof(hevc_required[0]); i++) { missing = hevc_required[i]; assert(!vareq_codec_controls_usable(42, VAREQ_CODEC_HEVC)); }
+    for (unsigned i = 0; i < sizeof(hevc_required) / sizeof(hevc_required[0]); i++) { missing = hevc_required[i]; assert(!vav4l2_codec_controls_usable(42, VAV4L2_CODEC_HEVC)); }
     missing = 0;
-    fail_menu = 1; assert(!vareq_codec_controls_usable(42, VAREQ_CODEC_H264)); fail_menu = 0;
-    calls = 0; assert(!vareq_codec_controls_usable(-1, VAREQ_CODEC_H264) && !calls);
-    assert(!vareq_codec_controls_usable(42, (enum vareq_codec)999));
-    uint32_t fmt = 0; assert(vareq_codec_coded_fourcc(VAREQ_CODEC_HEVC, &fmt) == 0 && fmt == V4L2_PIX_FMT_HEVC_SLICE);
-    assert(!vareq_capture_fourcc_from_rt(VA_RT_FORMAT_RGB32));
-    assert(!vareq_capture_fourcc_from_sps(4, 1) && !vareq_capture_fourcc_from_sps(0, 3));
-    assert(!vareq_va_fourcc_for_capture(v4l2_fourcc('N','E','W','!')) && !vareq_drm_fourcc_for_capture(0));
-    assert(!vareq_capture_plane_size(0, 128, 128));
+    fail_menu = 1; assert(!vav4l2_codec_controls_usable(42, VAV4L2_CODEC_H264)); fail_menu = 0;
+    calls = 0; assert(!vav4l2_codec_controls_usable(-1, VAV4L2_CODEC_H264) && !calls);
+    assert(!vav4l2_codec_controls_usable(42, (enum vav4l2_codec)999));
+    uint32_t fmt = 0; assert(vav4l2_codec_coded_fourcc(VAV4L2_CODEC_HEVC, &fmt) == 0 && fmt == V4L2_PIX_FMT_HEVC_SLICE);
+    assert(!vav4l2_capture_fourcc_from_rt(VA_RT_FORMAT_RGB32));
+    assert(!vav4l2_capture_fourcc_from_sps(4, 1) && !vav4l2_capture_fourcc_from_sps(0, 3));
+    assert(!vav4l2_va_fourcc_for_capture(v4l2_fourcc('N','E','W','!')) && !vav4l2_drm_fourcc_for_capture(0));
+    assert(!vav4l2_capture_plane_size(0, 128, 128));
     test_full_format_inventory();
     test_jpeg_discovery();
     puts("discovery: capabilities, removed controls, high node indices and unknown formats passed"); return 0;

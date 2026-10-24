@@ -12,7 +12,7 @@ __pycache__/
 /debian/files
 /debian/*.substvars
 /debian/*.debhelper
-/debian/libva-v4l2-request/
+/debian/libva-*/
 /obj-*/
 *.deb
 *.ddeb

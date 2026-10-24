@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 void *__real_realloc(void *p, size_t size);
 static int failures, fail_scratch;
@@ -79,12 +79,12 @@ static void readback(VADriverContextP ctx, unsigned cap, unsigned rt, unsigned f
                 if (cap == V4L2_PIX_FMT_NV16) row[x] = sample(p, x, y) >> 2;
                 else pack(row, x, sample(p, x, y));
             }
-    struct vareq_surface *s = ((struct vareq_driver_data *)ctx->pDriverData)->surfaces[sid];
+    struct vav4l2_surface *s = ((struct vav4l2_driver_data *)ctx->pDriverData)->surfaces[sid];
     s->has_pic = 1; s->buf_index = 0; s->cap_view = capture; s->cap_fourcc = cap;
-    s->stride = stride; s->aligned_h = aligned_h; s->last_writer = VAREQ_WRITER_MEMFD;
-    unsigned capture_size = vareq_capture_plane_size(cap, stride, aligned_h);
-    if (vareq_surface_grow_memfd(s, capture_size) < 0) { expect(0, "capture-memfd-allocation"); return; }
-    void *backing = vareq_surface_map_memfd(s, capture_size);
+    s->stride = stride; s->aligned_h = aligned_h; s->last_writer = VAV4L2_WRITER_MEMFD;
+    unsigned capture_size = vav4l2_capture_plane_size(cap, stride, aligned_h);
+    if (vav4l2_surface_grow_memfd(s, capture_size) < 0) { expect(0, "capture-memfd-allocation"); return; }
+    void *backing = vav4l2_surface_map_memfd(s, capture_size);
     if (!backing) { expect(0, "capture-memfd-map"); return; }
     memcpy(backing, capture, capture_size);
     ctx->vtable->vaMapBuffer(ctx, image.buf, (void **)&pixels);
@@ -92,7 +92,7 @@ static void readback(VADriverContextP ctx, unsigned cap, unsigned rt, unsigned f
     uint8_t *expected = malloc(image.data_size);
     if (!expected) { expect(0, "oracle-allocation"); goto done; }
     for (unsigned fallback = 0; fallback < 2; fallback++) {
-        setenv("VAREQ_EXPBUF_EXPORT", fallback ? "0" : "1", 1);
+        setenv("VAV4L2_EXPBUF_EXPORT", fallback ? "0" : "1", 1);
         memset(pixels, 0xa5, image.data_size);
         oracle(&image, expected, 0, 0, 7, 5);
         expect(ctx->vtable->vaGetImage(ctx, sid, 0, 0, 7, 5, image.image_id) == VA_STATUS_SUCCESS &&
@@ -114,7 +114,7 @@ static void readback(VADriverContextP ctx, unsigned cap, unsigned rt, unsigned f
             expect(ctx->vtable->vaGetImage(ctx, sid, 2, 1, 4, 2, crop.image_id) == VA_STATUS_ERROR_INVALID_PARAMETER &&
                    !memcmp(cropped, expected, crop.data_size), "420-crop-rejects-odd-row-origin");
         if (cap == V4L2_PIX_FMT_NV20) {
-            vareq_format_cleanup(); fail_scratch = 1;
+            vav4l2_format_cleanup(); fail_scratch = 1;
             expect(ctx->vtable->vaGetImage(ctx, sid, 0, 0, 4, 2, crop.image_id) == VA_STATUS_ERROR_ALLOCATION_FAILED &&
                    !memcmp(cropped, expected, crop.data_size), "scratch-oom-is-an-error-without-partial-output");
             expect(ctx->vtable->vaGetImage(ctx, sid, 2, 2, 4, 2, crop.image_id) == VA_STATUS_ERROR_ALLOCATION_FAILED &&
@@ -132,7 +132,7 @@ int main(void)
 {
     struct VADriverVTable v = {0};
     struct VADriverContext ctx = {.vtable = &v};
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     if (__vaDriverInit_1_20(&ctx)) return 1;
     readback(&ctx, V4L2_PIX_FMT_NV15, VA_RT_FORMAT_YUV420_10, VA_FOURCC_P010);
     readback(&ctx, V4L2_PIX_FMT_NV16, VA_RT_FORMAT_YUV422, VA_FOURCC_YUY2);

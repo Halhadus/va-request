@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 #include "driver_identity.h"
 
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
@@ -21,13 +21,13 @@ static void metadata(VADisplay display, VAContextID context, VABufferID id,
     expect(vaBufferInfo(display, context, id, &type, &size, &count) == VA_STATUS_SUCCESS &&
            type == want_type && size == want_size && count == want_count, "real-libva-reports-current-element-metadata");
 }
-static void adapter_dispatch(VADisplay display, struct vareq_driver_data *dd, int h264)
+static void adapter_dispatch(VADisplay display, struct vav4l2_driver_data *dd, int h264)
 {
-    struct vareq_context *context = calloc(1, sizeof(*context));
+    struct vav4l2_context *context = calloc(1, sizeof(*context));
     expect(context != NULL, "adapter-context-fixture");
     if (!context) return;
-    struct vareq_surface surface = {.width = 8, .height = 8, .status = VASurfaceRendering};
-    context->context_id = ++dd->next_context_id; context->driver_data = dd; context->codec = h264 ? VAREQ_CODEC_H264 : VAREQ_CODEC_HEVC;
+    struct vav4l2_surface surface = {.width = 8, .height = 8, .status = VASurfaceRendering};
+    context->context_id = ++dd->next_context_id; context->driver_data = dd; context->codec = h264 ? VAV4L2_CODEC_H264 : VAV4L2_CODEC_HEVC;
     context->v4l2_fd = context->media_fd = context->request_fd = -1; context->current_surface = &surface;
     context->next = dd->contexts; dd->contexts = context;
     VAPictureParameterBufferHEVC pic = {0}; uint8_t payload[] = {0x26, 1, 0xaa, 0xbb};
@@ -53,14 +53,14 @@ int main(int argc, char **argv)
 {
     struct VADriverVTable v = {0}; struct VADriverContext driver = {.vtable = &v};
     struct VADisplayContext display = {.vadpy_magic = VA_DISPLAY_MAGIC, .pDriverContext = &driver};
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     if (__vaDriverInit_1_20(&driver)) return 1;
-    expect(vareq_test_driver_identity(driver.str_vendor), "acceptance-client-recognizes-current-driver");
-    expect(!vareq_test_driver_identity(NULL) && !vareq_test_driver_identity("another-driver") && !vareq_test_driver_identity("other va-request 0.1.0"), "acceptance-client-rejects-unrelated-drivers");
+    expect(vav4l2_test_driver_identity(driver.str_vendor), "acceptance-client-recognizes-current-driver");
+    expect(!vav4l2_test_driver_identity(NULL) && !vav4l2_test_driver_identity("another-driver") && !vav4l2_test_driver_identity("other libva-v4l2 0.1.0"), "acceptance-client-rejects-unrelated-drivers");
     expect(v.vaBufferInfo != NULL, "buffer-info-callback-is-registered");
     if (!v.vaBufferInfo) { v.vaTerminate(&driver); return 1; }
-    struct vareq_driver_data *dd = driver.pDriverData;
-    struct vareq_context *context = calloc(1, sizeof(*context));
+    struct vav4l2_driver_data *dd = driver.pDriverData;
+    struct vav4l2_context *context = calloc(1, sizeof(*context));
     expect(context != NULL, "context-fixture");
     if (!context) { v.vaTerminate(&driver); return 1; }
     context->context_id = ++dd->next_context_id; context->driver_data = dd;
@@ -109,7 +109,7 @@ int main(int argc, char **argv)
     }
     VASurfaceID sid;
     if (vaCreateSurfaces(&display, VA_RT_FORMAT_YUV420, 8, 8, &sid, 1, NULL, 0) == VA_STATUS_SUCCESS) {
-        expect(vareq_surface_ensure_cpu(dd->surfaces[sid]) == 0, "derived-image-cpu-fixture");
+        expect(vav4l2_surface_ensure_cpu(dd->surfaces[sid]) == 0, "derived-image-cpu-fixture");
         VAStatus derived = vaDeriveImage(&display, sid, &image);
         expect(derived == VA_STATUS_SUCCESS, "derived-image-buffer-fixture");
         if (derived == VA_STATUS_SUCCESS) {

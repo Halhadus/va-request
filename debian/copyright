@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: va-request
+Upstream-Name: libva-v4l2
 Upstream-Contact: Halhadus <eneshakans45@proton.me>
-Source: https://github.com/Halhadus/va-request
+Source: https://github.com/Halhadus/va-v4l2
 Comment: Reorganized successor to pty819/vaapi-v4l2-bridge.
  The predecessor README and Meson project declare LGPL-2.1-or-later;
  its frontend's existing MIT notice is preserved separately.

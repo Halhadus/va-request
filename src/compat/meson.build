@@ -5,7 +5,7 @@ subdir('rockchip-hantro')
 compat_declarations = ''
 compat_entries = ''
 foreach symbol : compat_symbols
-  compat_declarations += 'extern const struct vareq_compat_module ' + symbol + ';\n'
+  compat_declarations += 'extern const struct vav4l2_compat_module ' + symbol + ';\n'
   compat_entries += '    &' + symbol + ',\n'
 endforeach
 compat_config = configuration_data()

@@ -23,7 +23,7 @@ concurrency:
 jobs:
   hardware:
     name: Hardware report
-    runs-on: [self-hosted, linux, va-request-hardware]
+    runs-on: [self-hosted, linux, libva-v4l2-hardware]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -39,6 +39,6 @@ jobs:
         if: always()
         with:
           name: hardware-report-${{ github.run_id }}
-          path: verify/va-request-run-*.tar.gz
+          path: verify/libva-v4l2-run-*.tar.gz
           if-no-files-found: error
           retention-days: 30

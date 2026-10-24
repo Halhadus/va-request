@@ -8,7 +8,7 @@
 #include <sys/stat.h>
 #include <linux/dma-buf.h>
 #include <drm_fourcc.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 static int failures, starts, ends, active, fail_start, fail_end, poll_failure, poll_calls, sync_again;
 static int stale_import_map, fail_cpu_map;
@@ -67,7 +67,7 @@ static VAStatus create(VADriverContextP d, VADRMPRIMESurfaceDescriptor *desc, un
     return d->vtable->vaCreateSurfaces2(d, rt(desc->fourcc), desc->width, desc->height, sid, n, a, 3);
 }
 static unsigned char value(unsigned plane, unsigned row, unsigned x, unsigned frame) { return 13 + plane * 67 + row * 11 + x * 3 + frame * 17; }
-static void pattern(const VADRMPRIMESurfaceDescriptor *d, const struct vareq_prime_layout *l, unsigned frame)
+static void pattern(const VADRMPRIMESurfaceDescriptor *d, const struct vav4l2_prime_layout *l, unsigned frame)
 {
     unsigned char pixels[4096]; memset(pixels, 0xcb, sizeof(pixels));
     for (unsigned o = 0; o < d->num_objects; o++) {
@@ -81,7 +81,7 @@ static void pattern(const VADRMPRIMESurfaceDescriptor *d, const struct vareq_pri
         expect(pwrite(d->objects[o].fd, pixels, sizeof(pixels), 0) == sizeof(pixels), "fixture-write");
     }
 }
-static int matches(const VAImage *im, const void *pixels, const struct vareq_prime_layout *l, unsigned frame)
+static int matches(const VAImage *im, const void *pixels, const struct vav4l2_prime_layout *l, unsigned frame)
 {
     for (unsigned i = 0; i < l->planes; i++) for (unsigned y = 0; y < l->rows[i]; y++) for (unsigned x = 0; x < l->row[i]; x++)
         if (((const unsigned char *)pixels)[im->offsets[i] + y * im->pitches[i] + x] != value(i, y, x, frame)) return 0;
@@ -89,8 +89,8 @@ static int matches(const VAImage *im, const void *pixels, const struct vareq_pri
 }
 static void one_format(VADriverContextP driver, uint32_t f, unsigned variant)
 {
-    struct VADriverVTable *v = driver->vtable; struct vareq_driver_data *dd = driver->pDriverData;
-    struct vareq_prime_layout l; expect(vareq_prime_layout(f, 4, 4, &l) == 0, "format-layout");
+    struct VADriverVTable *v = driver->vtable; struct vav4l2_driver_data *dd = driver->pDriverData;
+    struct vav4l2_prime_layout l; expect(vav4l2_prime_layout(f, 4, 4, &l) == 0, "format-layout");
     VADRMPRIMESurfaceDescriptor d = {.fourcc = f, .width = 4, .height = 4, .num_objects = variant & 4 ? 1 : variant & 1 ? l.planes : 1,
         .num_layers = variant & 2 ? l.planes : 1};
     for (unsigned i = 0; i < d.num_objects; i++) {
@@ -116,7 +116,7 @@ static void one_format(VADriverContextP driver, uint32_t f, unsigned variant)
     pattern(&d, &l, 0); VASurfaceID sid = VA_INVALID_ID;
     expect(create(driver, &d, 1, &sid) == VA_STATUS_SUCCESS && sid != VA_INVALID_ID, "all-formats-composed-separate-multi-object-import");
     if (sid == VA_INVALID_ID) goto close_fds;
-    struct vareq_surface *s = dd->surfaces[sid];
+    struct vav4l2_surface *s = dd->surfaces[sid];
     expect(s->prime && !s->gbm_bo, "general-linear-import-does-not-require-gbm-format-support");
     VAImage im; VAImageFormat fmt = {.fourcc = f}; void *pixels;
     if (v->vaCreateImage(driver, &fmt, 4, 4, &im) || v->vaMapBuffer(driver, im.buf, &pixels)) { expect(0, "image-create-map"); goto destroy; }
@@ -191,21 +191,21 @@ static void one_format(VADriverContextP driver, uint32_t f, unsigned variant)
         uint32_t cf = f == VA_FOURCC_NV12 ? V4L2_PIX_FMT_NV12 : f == VA_FOURCC_P010 ? V4L2_PIX_FMT_NV15 :
             f == VA_FOURCC_YUY2 ? V4L2_PIX_FMT_NV16 : V4L2_PIX_FMT_NV20;
         unsigned stride = cf == V4L2_PIX_FMT_NV15 || cf == V4L2_PIX_FMT_NV20 ? 5 : 4;
-        unsigned size = vareq_capture_plane_size(cf, stride, 4);
-        struct vareq_context decode = {.driver_data = dd, .v4l2_fd = d.objects[0].fd, .capture_bufs_allocd = 1,
+        unsigned size = vav4l2_capture_plane_size(cf, stride, 4);
+        struct vav4l2_context decode = {.driver_data = dd, .v4l2_fd = d.objects[0].fd, .capture_bufs_allocd = 1,
             .capture_buf_ptr = {capture}, .capture_buf_size = size, .cap_sizeimage = size, .cap_stride = stride,
             .cap_width = 4, .cap_height = 4, .cap_pixelformat = cf};
-        expect(vareq_surface_pull_capture(&decode, s, 0) == 0 && s->prime_capture_valid,
+        expect(vav4l2_surface_pull_capture(&decode, s, 0) == 0 && s->prime_capture_valid,
             "native-capture-writes-imported-nv12-p010-yuy2-y210-storage");
         expect(v->vaGetImage(driver, sid, 0, 0, 4, 4, im.image_id) == VA_STATUS_SUCCESS &&
-            vareq_validate_reference(&decode, sid) == VA_STATUS_SUCCESS, "import-readback-keeps-native-dpb-reference-valid");
+            vav4l2_validate_reference(&decode, sid) == VA_STATUS_SUCCESS, "import-readback-keeps-native-dpb-reference-valid");
         expect(((unsigned char *)pixels)[0] == (f == VA_FOURCC_P010 || f == VA_FOURCC_Y210 ? 0x40 : 0x55),
             "capture-conversion-has-independent-first-sample-byte-oracle");
         fail_end = 1;
-        expect(vareq_surface_pull_capture(&decode, s, 0) < 0 && !s->prime_capture_valid && !active,
+        expect(vav4l2_surface_pull_capture(&decode, s, 0) < 0 && !s->prime_capture_valid && !active,
             "decoder-writeback-error-is-not-a-successful-imported-frame");
         expect(v->vaPutImage(driver, sid, im.image_id, 0, 0, 4, 4, 0, 0, 4, 4) == VA_STATUS_SUCCESS &&
-            vareq_validate_reference(&decode, sid) != VA_STATUS_SUCCESS, "cpu-write-invalidates-native-decoder-reference");
+            vav4l2_validate_reference(&decode, sid) != VA_STATUS_SUCCESS, "cpu-write-invalidates-native-decoder-reference");
         s->buf_index = -1; s->cap_view = NULL; s->capture_ctx = NULL;
     }
     poll_failure = 1;
@@ -245,13 +245,13 @@ static void one_format(VADriverContextP driver, uint32_t f, unsigned variant)
     VADRMPRIMESurfaceDescriptor pair[] = {d, d}; pair[1].objects[0].fd = -1; VASurfaceID untouched[] = {1234, 1235};
     expect(create(driver, pair, 2, untouched) != VA_STATUS_SUCCESS && untouched[0] == 1234 && untouched[1] == 1235, "multi-surface-rollback-does-not-publish-earlier-surface");
     for (unsigned i = 0; i < d.num_objects; i++) { close(d.objects[i].fd); d.objects[i].fd = -1; }
-    expect(vareq_prime_read(s) == 0, "surface-survives-closing-every-client-fd");
+    expect(vav4l2_prime_read(s) == 0, "surface-survives-closing-every-client-fd");
 destroy:
     v->vaDestroySurfaces(driver, &sid, 1);
 close_fds:
     for (unsigned i = 0; i < d.num_objects; i++) if (d.objects[i].fd >= 0) close(d.objects[i].fd);
 }
-static int mapping_matches(const struct vareq_surface *surface, const unsigned char *pixels)
+static int mapping_matches(const struct vav4l2_surface *surface, const unsigned char *pixels)
 {
     for (unsigned y = 0; y < 4; y++) if (memcmp((unsigned char *)surface->cpu_ptr + y * surface->cpu_stride, pixels + y * 16, 16)) return 0;
     return 1;
@@ -262,21 +262,21 @@ static void external_mapping_checks(void)
     if (owner < 0 || ftruncate(owner, 4096)) { expect(0, "prime-mapping-fixture"); if (owner >= 0) close(owner); return; }
     unsigned char pixels[64]; memset(pixels, 0x19, sizeof(pixels));
     expect(pwrite(owner, pixels, sizeof(pixels), 0) == sizeof(pixels), "prime-initial-bytes");
-    struct vareq_surface surface = {.width = 4, .height = 4, .format = VA_FOURCC_BGRX, .memfd_fd = -1, .cpu_stride = 64, .cpu_size = 256};
+    struct vav4l2_surface surface = {.width = 4, .height = 4, .format = VA_FOURCC_BGRX, .memfd_fd = -1, .cpu_stride = 64, .cpu_size = 256};
     VADRMPRIMESurfaceDescriptor d = {.fourcc = VA_FOURCC_BGRX, .width = 4, .height = 4, .num_objects = 1, .num_layers = 1};
     d.objects[0].fd = owner; d.objects[0].size = 4096; d.layers[0].drm_format = DRM_FORMAT_XRGB8888;
     d.layers[0].num_planes = 1; d.layers[0].pitch[0] = 16;
-    vareq_set_ioctl_hook(sync_ioctl); stale_import_map = 1;
-    expect(vareq_prime_import(&surface, &d) == VA_STATUS_SUCCESS && !stale_import_map, "prime-import-probes-mappable-storage");
+    vav4l2_set_ioctl_hook(sync_ioctl); stale_import_map = 1;
+    expect(vav4l2_prime_import(&surface, &d) == VA_STATUS_SUCCESS && !stale_import_map, "prime-import-probes-mappable-storage");
     memset(pixels, 0x42, sizeof(pixels)); expect(pwrite(owner, pixels, sizeof(pixels), 0) == sizeof(pixels), "external-device-publishes-new-generation");
-    vareq_prime_device_written(&surface, 1);
-    expect(vareq_prime_read(&surface) == 0 && mapping_matches(&surface, pixels) && !active,
+    vav4l2_prime_device_written(&surface, 1);
+    expect(vav4l2_prime_read(&surface) == 0 && mapping_matches(&surface, pixels) && !active,
         "prime-read-maps-current-storage-after-device-ownership-not-import-snapshot");
     fail_cpu_map = 1;
-    expect(vareq_prime_read(&surface) < 0 && !active, "prime-map-failure-still-ends-cpu-access");
+    expect(vav4l2_prime_read(&surface) < 0 && !active, "prime-map-failure-still-ends-cpu-access");
     fail_cpu_map = 0;
-    expect(vareq_prime_read(&surface) == 0 && mapping_matches(&surface, pixels), "prime-map-failure-can-retry-with-current-bytes");
-    vareq_prime_destroy(&surface); free(surface.cpu_ptr); close(owner); vareq_set_ioctl_hook(NULL);
+    expect(vav4l2_prime_read(&surface) == 0 && mapping_matches(&surface, pixels), "prime-map-failure-can-retry-with-current-bytes");
+    vav4l2_prime_destroy(&surface); free(surface.cpu_ptr); close(owner); vav4l2_set_ioctl_hook(NULL);
 }
 static void modifier_checks(VADriverContextP driver)
 {
@@ -304,27 +304,27 @@ static void modifier_checks(VADriverContextP driver)
 int main(void)
 {
     external_mapping_checks();
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     struct VADriverVTable v = {0}; struct VADriverContext driver = {.vtable = &v};
     if (__vaDriverInit_1_20(&driver)) return 1;
     uint32_t formats[] = {VA_FOURCC_NV12, VA_FOURCC_NV21, VA_FOURCC_I420, VA_FOURCC_YV12, VA_FOURCC_P010,
         VA_FOURCC_YUY2, VA_FOURCC_UYVY, VA_FOURCC_VYUY, VA_FOURCC_YVYU, VA_FOURCC_422H, VA_FOURCC_YV16,
         VA_FOURCC_Y210, VA_FOURCC_ARGB, VA_FOURCC_BGRA, VA_FOURCC_BGRX, VA_FOURCC_RGB565, VA_FOURCC_RGBA, VA_FOURCC_RGBX};
     modifier_checks(&driver);
-    vareq_set_ioctl_hook(sync_ioctl);
+    vav4l2_set_ioctl_hook(sync_ioctl);
     for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
-        struct vareq_prime_layout l; expect(!vareq_prime_layout(formats[i], 4, 4, &l), "fixture-plane-count");
+        struct vav4l2_prime_layout l; expect(!vav4l2_prime_layout(formats[i], 4, 4, &l), "fixture-plane-count");
         for (unsigned variant = 0; variant < (l.planes > 1 ? 8u : 4u); variant++) one_format(&driver, formats[i], variant);
     }
     expect(active == 0 && starts > 0 && ends > 0 && poll_calls > 0, "sync-and-fence-fixtures-were-exercised");
     int retry_fd = memfd_create("sync-retry", MFD_CLOEXEC);
     sync_again = 2;
-    expect(vareq_dmabuf_sync(retry_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) == 0 && !sync_again &&
-        vareq_dmabuf_sync(retry_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) == 0, "transient-cache-sync-eagain-is-retried");
+    expect(vav4l2_dmabuf_sync(retry_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) == 0 && !sync_again &&
+        vav4l2_dmabuf_sync(retry_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) == 0, "transient-cache-sync-eagain-is-retried");
     sync_again = -1;
-    expect(vareq_dmabuf_sync(retry_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0 && errno == ETIMEDOUT,
+    expect(vav4l2_dmabuf_sync(retry_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0 && errno == ETIMEDOUT,
         "permanent-cache-sync-eagain-has-a-deadline");
     sync_again = 0; close(retry_fd);
-    v.vaTerminate(&driver); vareq_set_ioctl_hook(NULL);
+    v.vaTerminate(&driver); vav4l2_set_ioctl_hook(NULL);
     printf("prime_layouts: %s\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }

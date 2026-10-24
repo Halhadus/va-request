@@ -461,8 +461,8 @@ static void dmabuf_exporter_info(const VADRMPRIMESurfaceDescriptor *d, const cha
 static void dmabuf_direct_checks(void)
 {
     const unsigned formats[] = {0, 1, 2, 5, 6, 7, 8, 14};
-    const char *old = getenv("VAREQ_VPP_DMABUF"); char *saved = old ? strdup(old) : NULL;
-    setenv("VAREQ_VPP_DMABUF", "required", 1);
+    const char *old = getenv("VAV4L2_VPP_DMABUF"); char *saved = old ? strdup(old) : NULL;
+    setenv("VAV4L2_VPP_DMABUF", "required", 1);
     for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
         const struct dmabuf_format *f = &dmabuf_formats[formats[i]];
         unsigned size = dmabuf_dimension(f);
@@ -544,13 +544,13 @@ static void dmabuf_direct_checks(void)
         if (im.image_id != VA_INVALID_ID) vaDestroyImage(display, im.image_id);
         dmabuf_close(&d[0]); dmabuf_close(&d[1]);
     }
-    if (saved) { setenv("VAREQ_VPP_DMABUF", saved, 1); free(saved); } else unsetenv("VAREQ_VPP_DMABUF");
+    if (saved) { setenv("VAV4L2_VPP_DMABUF", saved, 1); free(saved); } else unsetenv("VAV4L2_VPP_DMABUF");
 }
 static void dmabuf_multiplanar_checks(int render_fd)
 {
     struct gbm_device *dev = gbm_create_device(render_fd);
-    const char *old = getenv("VAREQ_VPP_DMABUF"); char *saved = old ? strdup(old) : NULL;
-    setenv("VAREQ_VPP_DMABUF", "required", 1);
+    const char *old = getenv("VAV4L2_VPP_DMABUF"); char *saved = old ? strdup(old) : NULL;
+    setenv("VAV4L2_VPP_DMABUF", "required", 1);
     for (unsigned n = 0; n < 2; n++) {
         struct dmabuf_format f = dmabuf_formats[n]; f.chroma_rows = 64;
         VADRMPRIMESurfaceDescriptor d[2] = {{0}}, retained[2] = {{0}};
@@ -594,7 +594,7 @@ static void dmabuf_multiplanar_checks(int render_fd)
         for (unsigned i = 0; i < 2; i++) { if (sid[i] != VA_INVALID_ID) vaDestroySurfaces(display, &sid[i], 1); dmabuf_close(&retained[i]); }
         if (im.image_id != VA_INVALID_ID) vaDestroyImage(display, im.image_id);
     }
-    if (saved) { setenv("VAREQ_VPP_DMABUF", saved, 1); free(saved); } else unsetenv("VAREQ_VPP_DMABUF");
+    if (saved) { setenv("VAV4L2_VPP_DMABUF", saved, 1); free(saved); } else unsetenv("VAV4L2_VPP_DMABUF");
     if (dev) gbm_device_destroy(dev);
 }
 static void save_image_failure(const VAImage *img, const void *pixels)
@@ -1078,7 +1078,7 @@ int main(int argc, char **argv)
     display = vaGetDisplayDRM(fd);
     if (!display || !status(vaInitialize(display, &major, &minor), "vaInitialize")) { close(fd); fclose(results); return 2; }
     const char *vendor = vaQueryVendorString(display);
-    if (!vareq_test_driver_identity(vendor)) {
+    if (!vav4l2_test_driver_identity(vendor)) {
         fprintf(stderr, "Unexpected VA driver: %s\n", vendor ? vendor : "unknown");
         vaTerminate(display); close(fd); fclose(results); return 2;
     }

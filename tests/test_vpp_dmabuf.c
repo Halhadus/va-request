@@ -8,10 +8,10 @@
 #include <sys/mman.h>
 #include <linux/dma-buf.h>
 #include <drm_fourcc.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 static int failures, fault, qcount, syncs, releases, dma_output, dma_capture, mmap_output, mmap_capture, poll_count, format_calls, stream_on, stream_off, selections, allocation_calls;
 static int out_fd = -1, cap_fd = -1, cap_fds[2] = {-1, -1};
-static struct vareq_context *current;
+static struct vav4l2_context *current;
 static int native_fd = -1, native_error, native_exports;
 static void expect(int value, const char *tag) { if (!value) { fprintf(stderr, "FAIL %s fault=%d\n", tag, fault); failures++; } }
 int __wrap_poll(struct pollfd *p, nfds_t n, int timeout)
@@ -72,7 +72,7 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
     if (req == VIDIOC_QBUF) {
         struct v4l2_buffer *b = arg;
         int capture = b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        if (b->memory == V4L2_MEMORY_DMABUF && (current->vpp_behaviors & VAREQ_COMPAT_STREAM_BEFORE_QUEUE))
+        if (b->memory == V4L2_MEMORY_DMABUF && (current->vpp_behaviors & VAV4L2_COMPAT_STREAM_BEFORE_QUEUE))
             expect(current->vpp_q.streaming == 3, "rga2-cold-and-restarted-streams-are-armed-before-qbuf");
         qcount++;
         if (!strcmp(current->device_path, "mock-dma") && ((fault == 19 && capture) || (fault == 20 && !capture))) { errno = EINVAL; return -1; }
@@ -118,9 +118,9 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
     }
     return 0;
 }
-static void imported(struct vareq_surface *s, int fd, int uv_fd)
+static void imported(struct vav4l2_surface *s, int fd, int uv_fd)
 {
-    *s = (struct vareq_surface){.width = 4, .height = 4, .format = VA_FOURCC_NV12,
+    *s = (struct vav4l2_surface){.width = 4, .height = 4, .format = VA_FOURCC_NV12,
         .memfd_fd = -1, .buf_index = -1, .import_fd = -1, .gbm_external_fd = -1, .cpu_stride = 8, .cpu_size = 48};
     VADRMPRIMESurfaceDescriptor d = {.fourcc = VA_FOURCC_NV12, .width = 4, .height = 4, .num_objects = 1, .num_layers = 1};
     d.objects[0].fd = fd; d.objects[0].size = fault == 21 || fault == 23 ? 8192 : 4096;
@@ -130,17 +130,17 @@ static void imported(struct vareq_surface *s, int fd, int uv_fd)
         d.num_objects = 2; d.objects[1] = d.objects[0]; d.objects[1].fd = uv_fd;
         d.layers[0].object_index[1] = 1; d.layers[0].offset[1] = 0;
     }
-    expect(vareq_prime_import(s, &d) == VA_STATUS_SUCCESS, "import-canonical-linear-fd");
+    expect(vav4l2_prime_import(s, &d) == VA_STATUS_SUCCESS, "import-canonical-linear-fd");
 }
 static unsigned region_mode;
-static VAStatus run(struct vareq_context *ctx)
+static VAStatus run(struct vav4l2_context *ctx)
 {
     VARectangle region = {0, 0, 2, 2};
     VAProcPipelineParameterBuffer pipe = {.surface = 1, .surface_region = region_mode ? &region : NULL,
         .output_region = region_mode ? &region : NULL};
-    struct vareq_buffer parameter = {.type = VAProcPipelineParameterBufferType, .size = sizeof(pipe), .data = &pipe};
-    struct vareq_buffer *buffers[] = {&parameter}; current = ctx;
-    return vareq_vpp_run(ctx, buffers, 1);
+    struct vav4l2_buffer parameter = {.type = VAProcPipelineParameterBufferType, .size = sizeof(pipe), .data = &pipe};
+    struct vav4l2_buffer *buffers[] = {&parameter}; current = ctx;
+    return vav4l2_vpp_run(ctx, buffers, 1);
 }
 static void native_capture_checks(int *owners, const char *alternative)
 {
@@ -149,8 +149,8 @@ static void native_capture_checks(int *owners, const char *alternative)
     const char *names[] = {"native", "padded", "cpu", "empty", "detached", "format", "owner", "inactive", "short-object",
         "sizeimage", "unsupported-export", "export-error", "internal", "extra-storage", "importer-retry", "writable"};
     for (unsigned scenario = VALID; scenario <= WRITABLE; scenario++) {
-        struct vareq_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = scenario == RETRY_IMPORTER ? 2 : 1};
-        dd.vpp_devices[0] = (struct vareq_vpp_device){.identity = {.driver = "rockchip-rga", .card = "rga3"},
+        struct vav4l2_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = scenario == RETRY_IMPORTER ? 2 : 1};
+        dd.vpp_devices[0] = (struct vav4l2_vpp_device){.identity = {.driver = "rockchip-rga", .card = "rga3"},
             .input = {V4L2_PIX_FMT_NV12}, .output = {V4L2_PIX_FMT_NV12}, .num_input = 1, .num_output = 1};
         strcpy(dd.vpp_devices[0].path, "mock-dma"); dd.vpp_devices[1] = dd.vpp_devices[0]; strcpy(dd.vpp_devices[1].path, alternative);
         if (scenario == RETRY_IMPORTER) strcpy(dd.vpp_devices[0].identity.card, "rga2");
@@ -158,17 +158,17 @@ static void native_capture_checks(int *owners, const char *alternative)
         expect(!ftruncate(owners[0], length) && !ftruncate(owners[1], 4096), "native-object-fixture");
         unsigned char pixels[48], got[48]; memset(pixels, 0x59, sizeof(pixels)); memset(got, 0xa5, sizeof(got));
         expect(pwrite(owners[0], pixels, length < 48 ? length : 48, 0) > 0 && pwrite(owners[1], got, sizeof(got), 0) == sizeof(got), "native-pixel-fixture");
-        struct vareq_context decoder = {.v4l2_fd = owners[0], .capture_bufs_allocd = 1, .cap_sizeimage = scenario == SHORT_SIZEIMAGE ? 8192 : 48};
-        struct vareq_surface src = {.surface_id = 1, .width = 4, .height = 4, .format = VA_FOURCC_NV12, .memfd_fd = -1,
+        struct vav4l2_context decoder = {.v4l2_fd = owners[0], .capture_bufs_allocd = 1, .cap_sizeimage = scenario == SHORT_SIZEIMAGE ? 8192 : 48};
+        struct vav4l2_surface src = {.surface_id = 1, .width = 4, .height = 4, .format = VA_FOURCC_NV12, .memfd_fd = -1,
             .buf_index = 0, .stride = 8, .aligned_h = scenario == PADDED ? 6 : 4, .capture_ctx = scenario == NO_CONTEXT ? NULL : &decoder,
             .cap_fourcc = scenario == WRONG_FORMAT ? V4L2_PIX_FMT_NV15 : V4L2_PIX_FMT_NV12, .has_pic = scenario != NO_PICTURE,
-            .last_writer = scenario == CPU ? VAREQ_WRITER_CPU : VAREQ_WRITER_MEMFD, .gbm_writable = scenario == WRITABLE};
+            .last_writer = scenario == CPU ? VAV4L2_WRITER_CPU : VAV4L2_WRITER_MEMFD, .gbm_writable = scenario == WRITABLE};
         if (scenario == WRONG_OWNER || scenario == INACTIVE || scenario == INTERNAL) {
             decoder.capture_internal = 1; decoder.capture_dma[0].active = scenario != INACTIVE; decoder.capture_dma[0].fd = owners[0];
             decoder.capture_dma[0].owner = scenario == WRONG_OWNER ? VA_INVALID_ID : src.surface_id;
         }
-        struct vareq_surface dst; fault = 0; imported(&dst, owners[1], -1); dd.surfaces[1] = &src;
-        struct vareq_context ctx = {.codec = VAREQ_CODEC_VPP, .driver_data = &dd, .device_path = strdup("mock-dma"),
+        struct vav4l2_surface dst; fault = 0; imported(&dst, owners[1], -1); dd.surfaces[1] = &src;
+        struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_VPP, .driver_data = &dd, .device_path = strdup("mock-dma"),
             .current_surface = &dst, .v4l2_fd = memfd_create("native-vpp", MFD_CLOEXEC)};
         expect(ctx.v4l2_fd >= 0 && !ftruncate(ctx.v4l2_fd, 8192), "native-node-fixture");
         native_fd = owners[0]; native_error = scenario == NO_EXPORT ? EINVAL : scenario == EXPORT_ERROR ? EIO : 0;
@@ -181,14 +181,14 @@ static void native_capture_checks(int *owners, const char *alternative)
         if (success) expect(fcntl(out_fd, F_GETFD) < 0 && fcntl(cap_fd, F_GETFD) < 0, "native-temporary-fds-closed-after-completion");
         if (scenario == INTERNAL) expect(!native_exports && decoder.capture_dma[0].active && decoder.capture_dma[0].owner == src.surface_id, "native-internal-export-borrows-the-live-pool");
         if (scenario == RETRY_IMPORTER) expect(!strcmp(ctx.device_path, alternative), "native-extra-pages-retry-an-eligible-importer");
-        vareq_m2m_teardown(&ctx, &ctx.vpp_q); close(ctx.v4l2_fd); free(ctx.device_path); vareq_prime_destroy(&dst); free(dst.cpu_ptr);
+        vav4l2_m2m_teardown(&ctx, &ctx.vpp_q); close(ctx.v4l2_fd); free(ctx.device_path); vav4l2_prime_destroy(&dst); free(dst.cpu_ptr);
     }
     native_fd = -1; native_error = 0;
 }
 
 int main(void)
 {
-    struct vareq_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = 1};
+    struct vav4l2_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = 1};
     dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = 2;
     dd.vpp_devices[0].input[1] = dd.vpp_devices[0].output[1] = V4L2_PIX_FMT_NV12M;
     dd.vpp_devices[0].input[0] = dd.vpp_devices[0].output[0] = V4L2_PIX_FMT_NV12;
@@ -196,8 +196,8 @@ int main(void)
     int owners[] = {memfd_create("dma-input", MFD_CLOEXEC), memfd_create("dma-output", MFD_CLOEXEC), memfd_create("dma-input-uv", MFD_CLOEXEC), memfd_create("dma-output-uv", MFD_CLOEXEC)};
     if (owners[0] < 0 || owners[1] < 0 || ftruncate(owners[0], 4096) || ftruncate(owners[1], 4096)) return 1;
     if (owners[2] < 0 || owners[3] < 0 || ftruncate(owners[2], 4096) || ftruncate(owners[3], 4096)) return 1;
-    vareq_set_ioctl_hook(mock_ioctl);
-    setenv("VAREQ_VPP_DMABUF", "required", 1);
+    vav4l2_set_ioctl_hook(mock_ioctl);
+    setenv("VAV4L2_VPP_DMABUF", "required", 1);
     char alternative[] = "vpp-dma-alternative.XXXXXX"; int alternative_fd = mkstemp(alternative);
     if (alternative_fd < 0 || ftruncate(alternative_fd, 8192)) return 1;
     dd.vpp_devices[1] = dd.vpp_devices[0]; strcpy(dd.vpp_devices[1].path, alternative);
@@ -209,22 +209,22 @@ int main(void)
                !ftruncate(owners[1], scenario == 21 || scenario == 23 ? 8192 : 4096), "object-span-fixture");
         fault = 0; qcount = syncs = poll_count = format_calls = 0;
         stream_on = stream_off = selections = allocation_calls = region_mode = 0;
-        unsetenv("VAREQ_VPP_DMABUF_SESSION");
-        if (scenario == 26) setenv("VAREQ_VPP_DMABUF_SESSION", "reconfigure", 1);
+        unsetenv("VAV4L2_VPP_DMABUF_SESSION");
+        if (scenario == 26) setenv("VAV4L2_VPP_DMABUF_SESSION", "reconfigure", 1);
         if (scenario == 27) {
-            setenv("VAREQ_VPP_DMABUF_SESSION", "isolated", 1);
+            setenv("VAV4L2_VPP_DMABUF_SESSION", "isolated", 1);
             strcpy(dd.vpp_devices[0].path, alternative);
         }
         if (scenario == 21 || scenario == 23) fault = scenario;
-        struct vareq_surface src, dst;
+        struct vav4l2_surface src, dst;
         imported(&src, owners[0], scenario == 18 || scenario == 22 ? owners[2] : -1); imported(&dst, scenario == 15 ? owners[0] : owners[1], scenario == 18 || scenario == 22 ? owners[3] : -1);
         dd.surfaces[1] = &src;
-        struct vareq_context ctx = {.codec = VAREQ_CODEC_VPP, .driver_data = &dd,
+        struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_VPP, .driver_data = &dd,
             .device_path = strdup(dd.vpp_devices[0].path), .current_surface = &dst, .v4l2_fd = memfd_create("mock-node", MFD_CLOEXEC)};
         if (ctx.v4l2_fd < 0 || ftruncate(ctx.v4l2_fd, 8192)) return 1;
         current = &ctx; syncs = 0; fault = scenario < 15 || scenario >= 19 ? scenario : 0;
-        if (scenario == 16) { unsetenv("VAREQ_VPP_DMABUF"); fault = 1; }
-        if (scenario == 17) setenv("VAREQ_VPP_DMABUF", "0", 1);
+        if (scenario == 16) { unsetenv("VAV4L2_VPP_DMABUF"); fault = 1; }
+        if (scenario == 17) setenv("VAV4L2_VPP_DMABUF", "0", 1);
         unsigned char data[48], got[48]; memset(data, 0x3c, sizeof(data));
         expect(pwrite(owners[0], data, sizeof(data), 0) == sizeof(data), "write-external-producer");
         if (scenario == 18 || scenario == 22) expect(pwrite(owners[2], data, 16, 0) == 16, "write-external-chroma-producer");
@@ -233,7 +233,7 @@ int main(void)
         if (scenario == 0 || scenario == 24) {
             expect(!src.cpu_ptr && !dst.cpu_ptr && !syncs && poll_count >= 3, "device-dma-never-enters-cpu-cache-access-or-pixel-copy");
             expect(ctx.vpp_q.out_memory == V4L2_MEMORY_DMABUF && ctx.vpp_q.cap_memory == V4L2_MEMORY_DMABUF &&
-                dst.last_writer == VAREQ_WRITER_BO, "successful-queue-transport-is-explicit");
+                dst.last_writer == VAV4L2_WRITER_BO, "successful-queue-transport-is-explicit");
             expect(fcntl(out_fd, F_GETFD) < 0 && fcntl(cap_fd, F_GETFD) < 0, "completed-job-closes-temporary-owned-fds");
             for (unsigned frame = 0; frame < 128; frame++) {
                 memset(data, frame, sizeof(data));
@@ -243,16 +243,16 @@ int main(void)
             if (scenario == 24) expect(stream_on == 2 && !stream_off && ctx.vpp_q.streaming == 3 && allocation_calls == 2,
                 "rga2-repeated-jobs-retain-active-stream-and-dequeued-objects");
             expect(!src.cpu_ptr && !dst.cpu_ptr && !syncs && format_calls == 2, "reused-dma-jobs-keep-queue-attachments-and-remain-copy-free");
-            expect(vareq_prime_read(&dst) == 0 && ((unsigned char *)dst.cpu_ptr)[0] == 127, "first-cpu-reader-refreshes-device-result");
+            expect(vav4l2_prime_read(&dst) == 0 && ((unsigned char *)dst.cpu_ptr)[0] == 127, "first-cpu-reader-refreshes-device-result");
             dd.surfaces[1] = &dst; ctx.current_surface = &src; memset(data, 0x73, sizeof(data));
             expect(pwrite(owners[1], data, sizeof(data), 0) == sizeof(data) && run(&ctx) == VA_STATUS_SUCCESS &&
                 pread(owners[0], got, sizeof(got), 0) == sizeof(got) && !memcmp(data, got, sizeof(data)) && format_calls == 2,
                 "warm-queue-rebinds-different-source-and-target-objects-without-stale-fds");
             dd.surfaces[1] = &src; ctx.current_surface = &dst;
-            setenv("VAREQ_VPP_DMABUF", "0", 1);
+            setenv("VAV4L2_VPP_DMABUF", "0", 1);
             expect(run(&ctx) == VA_STATUS_SUCCESS && mmap_output && mmap_capture, "warm-dma-to-mmap-transition-reconfigures-memory-type");
         } else if (scenario <= 3 || scenario == 15) expect(!qcount, "fallback-and-alias-rejection-happen-before-queueing");
-        else if (scenario >= 5 && scenario <= 14) expect(vareq_prime_read(&dst) < 0, "incomplete-device-write-cannot-expose-old-cpu-pixels");
+        else if (scenario >= 5 && scenario <= 14) expect(vav4l2_prime_read(&dst) < 0, "incomplete-device-write-cannot-expose-old-cpu-pixels");
         if (scenario == 25) {
             region_mode = 1;
             expect(run(&ctx) == VA_STATUS_SUCCESS && selections == 2 && ctx.vpp_q.streaming == 3,
@@ -262,7 +262,7 @@ int main(void)
                 "rga2-partial-to-full-reset-happens-before-requeue");
             fault = 14;
             region_mode = 1;
-            expect(run(&ctx) != VA_STATUS_SUCCESS && ctx.v4l2_fd < 0 && vareq_prime_read(&dst) == 0,
+            expect(run(&ctx) != VA_STATUS_SUCCESS && ctx.v4l2_fd < 0 && vav4l2_prime_read(&dst) == 0,
                 "pre-submit-selection-stop-failure-closes-active-device-without-invalidating-completed-pixels");
             fault = 0; region_mode = 0;
         }
@@ -272,19 +272,19 @@ int main(void)
         }
         if (scenario >= 28 && scenario <= 30) {
             if (scenario == 28) {
-                vareq_prime_destroy(&src); vareq_prime_destroy(&dst);
+                vav4l2_prime_destroy(&src); vav4l2_prime_destroy(&dst);
                 expect(!ftruncate(owners[0], 8192) && !ftruncate(owners[1], 8192), "warm-object-growth-fixture");
                 fault = 21; imported(&src, owners[0], -1); imported(&dst, owners[1], -1);
             } else fault = scenario == 29 ? 20 : 8;
             VAStatus st = run(&ctx);
             expect((st == VA_STATUS_SUCCESS) == (scenario != 30), "persistent-session-does-not-replay-a-started-failed-job");
-            if (scenario == 30) expect(!strcmp(ctx.device_path, "mock-dma") && qcount == 4 && vareq_prime_read(&dst) < 0,
+            if (scenario == 30) expect(!strcmp(ctx.device_path, "mock-dma") && qcount == 4 && vav4l2_prime_read(&dst) < 0,
                 "started-dma-completion-failure-invalidates-target-without-backend-retry");
             else expect(!strcmp(ctx.device_path, alternative) && qcount == (scenario == 28 ? 4 : 6) && !src.cpu_ptr && !dst.cpu_ptr,
                 "idle-active-stream-can-retry-span-or-qbuf-rejection-after-cancelling-unstarted-job");
             fault = 0;
         }
-        if (scenario >= 31) expect(!qcount && dst.has_pic && vareq_prime_read(&dst) == 0,
+        if (scenario >= 31) expect(!qcount && dst.has_pic && vav4l2_prime_read(&dst) == 0,
             "rga2-cold-streamon-failure-submits-no-buffer-and-preserves-previous-content");
         if (scenario >= 19 && scenario <= 22) expect(!strcmp(ctx.device_path, alternative) && !src.cpu_ptr && !dst.cpu_ptr &&
             ctx.vpp_q.out_memory == V4L2_MEMORY_DMABUF, "allocator-rejection-retries-another-node-after-cancelling-unstarted-queues");
@@ -296,18 +296,18 @@ int main(void)
             pread(owners[3], got, 16, 0) == 16 && !memcmp(data, got, 16) && !src.cpu_ptr && !dst.cpu_ptr,
             "two-discontiguous-dma-objects-use-native-two-plane-queues");
         fault = 0;
-        vareq_m2m_teardown(&ctx, &ctx.vpp_q);
+        vav4l2_m2m_teardown(&ctx, &ctx.vpp_q);
         if (ctx.v4l2_fd >= 0) close(ctx.v4l2_fd);
         free(ctx.device_path);
-        vareq_prime_destroy(&src); vareq_prime_destroy(&dst); free(src.cpu_ptr); free(dst.cpu_ptr);
-        setenv("VAREQ_VPP_DMABUF", "required", 1);
+        vav4l2_prime_destroy(&src); vav4l2_prime_destroy(&dst); free(src.cpu_ptr); free(dst.cpu_ptr);
+        setenv("VAV4L2_VPP_DMABUF", "required", 1);
     }
     expect(dma_output > 0 && dma_capture > 0 && releases > 0, "queue-teardown-uses-negotiated-memory-type");
     expect(fcntl(owners[0], F_GETFD) >= 0 && fcntl(owners[1], F_GETFD) >= 0, "driver-never-closes-client-object-owners");
-    unsetenv("VAREQ_VPP_DMABUF_SESSION");
+    unsetenv("VAV4L2_VPP_DMABUF_SESSION");
     native_capture_checks(owners, alternative);
     close(alternative_fd); unlink(alternative);
     for (unsigned i = 0; i < 4; i++) close(owners[i]);
-    vareq_set_ioctl_hook(NULL); unsetenv("VAREQ_VPP_DMABUF");
+    vav4l2_set_ioctl_hook(NULL); unsetenv("VAV4L2_VPP_DMABUF");
     printf("vpp-dmabuf: %s\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }

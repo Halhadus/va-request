@@ -7,7 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
 static int failures, storage = -1, opens, fail_open, fail_write, trace_cloexec, last_fd = -1;
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL decode trace %s\n", tag); failures++; } }
@@ -28,22 +28,22 @@ static int fault_ioctl(int fd, unsigned long request, void *arg) { (void)fd; (vo
 int main(void)
 {
     storage = memfd_create("decode trace", MFD_CLOEXEC); if (storage < 0) return 1;
-    struct vareq_surface surface = {.surface_id = 7, .buf_index = -1};
-    struct vareq_context ctx = {.context_id = 3, .codec = VAREQ_CODEC_HEVC, .current_surface = &surface,
+    struct vav4l2_surface surface = {.surface_id = 7, .buf_index = -1};
+    struct vav4l2_context ctx = {.context_id = 3, .codec = VAV4L2_CODEC_HEVC, .current_surface = &surface,
         .v4l2_fd = 17, .request_fd = 18, .width = 3840, .height = 2160, .frame_count = 5,
         .output_bufs_allocd = 1, .output_buf_size = 64, .capture_bufs_allocd = 4};
-    unsetenv("VAREQ_DECODE_TRACE"); errno = EBUSY;
-    vareq_decode_trace(&ctx, "disabled", -1, 0); expect(!opens && errno == EBUSY, "disabled-no-open-and-errno");
-    setenv("VAREQ_DECODE_TRACE", "decode-trace-fixture", 1);
-    expect(vareq_decode_submit(&ctx, 0, 8, 1000) == -1 && ctx.n_free_out == 1 && !ctx.n_free_cap, "empty-pool-stays-failed-with-output-recovered");
-    vareq_set_ioctl_hook(fault_ioctl);
-    errno = 0; expect(vareq_ioctl_once(17, VIDIOC_QBUF, NULL) == -1 && errno == EIO, "ioctl-error-preserved");
-    fail_open = 1; errno = 0; expect(vareq_ioctl_once(17, VIDIOC_QBUF, NULL) == -1 && errno == EIO, "trace-open-failure-cannot-replace-ioctl-errno");
+    unsetenv("VAV4L2_DECODE_TRACE"); errno = EBUSY;
+    vav4l2_decode_trace(&ctx, "disabled", -1, 0); expect(!opens && errno == EBUSY, "disabled-no-open-and-errno");
+    setenv("VAV4L2_DECODE_TRACE", "decode-trace-fixture", 1);
+    expect(vav4l2_decode_submit(&ctx, 0, 8, 1000) == -1 && ctx.n_free_out == 1 && !ctx.n_free_cap, "empty-pool-stays-failed-with-output-recovered");
+    vav4l2_set_ioctl_hook(fault_ioctl);
+    errno = 0; expect(vav4l2_ioctl_once(17, VIDIOC_QBUF, NULL) == -1 && errno == EIO, "ioctl-error-preserved");
+    fail_open = 1; errno = 0; expect(vav4l2_ioctl_once(17, VIDIOC_QBUF, NULL) == -1 && errno == EIO, "trace-open-failure-cannot-replace-ioctl-errno");
     fail_open = 0; expect(trace_cloexec, "trace-FD-CLOEXEC");
-    fail_write = 1; errno = 0; expect(vareq_ioctl_once(17, VIDIOC_QBUF, NULL) == -1 && errno == EIO, "trace-write-failure-cannot-replace-ioctl-errno");
+    fail_write = 1; errno = 0; expect(vav4l2_ioctl_once(17, VIDIOC_QBUF, NULL) == -1 && errno == EIO, "trace-write-failure-cannot-replace-ioctl-errno");
     fail_write = 0; expect(fcntl(last_fd, F_GETFD) < 0 && errno == EBADF, "trace-FD-closes-after-write-failure");
     char log[8192]; ssize_t n = pread(storage, log, sizeof(log) - 1, 0); expect(n > 0, "trace-has-evidence");
     if (n > 0) { log[n] = 0; expect(strstr(log, "STAGE=capture-empty") && strstr(log, "ALLOCATED=4\tFREE=0") && strstr(log, "WIDTH=3840\tHEIGHT=2160") && strstr(log, "FRAME=5\tSURFACE=7"), "queue-context-is-recorded"); expect(strstr(log, "STAGE=ioctl") && strstr(log, "STATUS=-1") && strstr(log, "ERRNO=5"), "raw-ioctl-error-is-recorded"); }
-    vareq_set_ioctl_hook(NULL); unsetenv("VAREQ_DECODE_TRACE"); close(storage);
+    vav4l2_set_ioctl_hook(NULL); unsetenv("VAV4L2_DECODE_TRACE"); close(storage);
     printf("decode trace:%s\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }

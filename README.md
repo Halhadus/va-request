@@ -1,6 +1,6 @@
-# va-request
+# libva-v4l2
 
-va-request bridges VA-API and Linux V4L2 for hardware decoding, encoding, video processing and DMA-BUF sharing. Decoding uses the Request API; encoding and processing use V4L2 memory-to-memory interfaces. Available operations are discovered at runtime.
+libva-v4l2 bridges VA-API and Linux V4L2 for hardware decoding, encoding, video processing and DMA-BUF sharing. Decoding uses the Request API; encoding and processing use V4L2 memory-to-memory interfaces. Available operations are discovered at runtime.
 
 See the [support matrix](docs/support.md) for codecs, formats and limitations, and the [hardware reports](docs/hardware/README.md) for results on tested devices.
 
@@ -18,7 +18,7 @@ sudo meson install -C build
 Select the driver in the application environment:
 
 ```sh
-export LIBVA_DRIVER_NAME=v4l2request
+export LIBVA_DRIVER_NAME=v4l2
 vainfo --display drm --device /dev/dri/renderD128
 ```
 

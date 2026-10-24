@@ -6,7 +6,7 @@ The shared implementation handles standard submission modes, start codes, pixel 
 
 ## Interface
 
-The source interface is declared in `src/compat/compat.h`. A `vareq_compat_module` has a unique name, an API version, a pure identity matcher and optional codec, processing and storage callbacks. Matching receives NUL-terminated `driver`, `card` and `bus_info` strings plus the reported version. Use the narrowest reliable identity for the measured behavior. A version number alone does not establish behavior on a kernel with backports.
+The source interface is declared in `src/compat/compat.h`. A `vav4l2_compat_module` has a unique name, an API version, a pure identity matcher and optional codec, processing and storage callbacks. Matching receives NUL-terminated `driver`, `card` and `bus_info` strings plus the reported version. Use the narrowest reliable identity for the measured behavior. A version number alone does not establish behavior on a kernel with backports.
 
 | Entry | Contract |
 | --- | --- |
@@ -30,7 +30,7 @@ The shared storage allocator tries eligible providers by descending score, retai
 
 Decoder discovery checks the standard coded format, required controls and Request API before applying module preference. Encoder discovery checks the coded CAPTURE and raw OUTPUT contract first. A restriction can remove an affected candidate or VA profile; it cannot advertise an absent kernel capability. Cached selections are checked against current module restrictions.
 
-A codec context resolves modules from its opened node's identity. Its source API version is `VAREQ_COMPAT_API_VERSION` (currently 2). Each matching module has separate context state; there is no process-wide device-state override. A failed setup calls finish for that module and all earlier setups. The shared backend owns the video/media/request FDs, queue lifetime and buffer mappings.
+A codec context resolves modules from its opened node's identity. Its source API version is `VAV4L2_COMPAT_API_VERSION` (currently 2). Each matching module has separate context state; there is no process-wide device-state override. A failed setup calls finish for that module and all earlier setups. The shared backend owns the video/media/request FDs, queue lifetime and buffer mappings.
 
 Format callbacks run for compressed OUTPUT, native/direct CAPTURE and staged/direct JPEG input and output negotiation. Standard kernel-returned format, geometry and buffer checks still apply. A callback cannot turn an unsupported format into another advertised layout. Controls pass through the same preparation path for H.264, HEVC, AV1, VP8, MPEG-2 and JPEG. Single controls retain S_CTRL submission; batches retain their global or request-scoped S_EXT_CTRLS submission.
 
@@ -41,16 +41,16 @@ Source modules handle measured implementation exceptions. Additional standard co
 ## Add a source module
 
 1. Add a directory below `src/compat/` containing the module source and `meson.build`.
-2. Define one or more `const struct vareq_compat_module` descriptors using `VAREQ_COMPAT_API_VERSION`.
+2. Define one or more `const struct vav4l2_compat_module` descriptors using `VAV4L2_COMPAT_API_VERSION`.
 3. Append the source and descriptor symbols to `compat_sources` and `compat_symbols` in that directory's `meson.build`.
 4. Add its `subdir()` entry to `src/compat/meson.build` before registry declarations and entries are generated.
 5. Add regressions for matching, unaffected devices, codec/profile rejection, context state, format/control preparation, affected jobs, allocation failure and cleanup. Record hardware evidence in a device report.
 
-For example, a module exporting `vareq_compat_example` uses:
+For example, a module exporting `vav4l2_compat_example` uses:
 
 ```meson
 compat_sources += files('module.c')
-compat_symbols += ['vareq_compat_example']
+compat_symbols += ['vav4l2_compat_example']
 ```
 
 Meson generates registry declarations and entries. A source module consists of its directory, registration change and tests. Installed standalone `.so` modules are not supported; the source API is internal and its version must match the driver being built.

@@ -84,7 +84,7 @@ def compare_pixels(actual, reference, codec):
 
 
 def run_hardware(run, output, build, render_node, extended=True):
-    env = dict(os.environ, LIBVA_DRIVER_NAME="v4l2request", LIBVA_DRIVERS_PATH=str(build), VAREQ_RENDER_NODE=render_node)
+    env = dict(os.environ, LIBVA_DRIVER_NAME="v4l2", LIBVA_DRIVERS_PATH=str(build), VAV4L2_RENDER_NODE=render_node)
     cases = []
     client = build / "va_capabilities"
     if not client.is_file():
@@ -129,7 +129,7 @@ def run_hardware(run, output, build, render_node, extended=True):
             else: selected.append(group)
         (output / "acceptance-plan.json").write_text(json.dumps({"groups": plan, "selected": selected, "requirements": ACCEPTANCE_REQUIREMENTS}, indent=2) + "\n")
         if selected:
-            env.update(VAREQ_BUILD_DIR=str(build), VAREQ_REPORT_FILE=str(output / "hardware.tar.gz"), VAREQ_RENDER_NODE=render_node)
+            env.update(VAV4L2_BUILD_DIR=str(build), VAV4L2_REPORT_FILE=str(output / "hardware.tar.gz"), VAV4L2_RENDER_NODE=render_node)
             acceptance = run("acceptance", ["bash", "tests/run_dmabuf_completion.sh", *selected], env)
             if (output / "hardware.tar.gz").is_file():
                 acceptance["cases"] = acceptance_cases(output / "hardware.tar.gz")
@@ -148,7 +148,7 @@ def run_processing(run, output, env, capabilities):
         if not shutil.which("ffmpeg"): cases.append(skip(name, "ffmpeg is not installed")); continue
         actual = output / (name + "-pixels.yuv")
         target = output / "jpeg.mkv" if name == "jpeg" else actual
-        command = ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-vaapi_device", env["VAREQ_RENDER_NODE"], "-f", "lavfi", "-i",
+        command = ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-vaapi_device", env["VAV4L2_RENDER_NODE"], "-f", "lavfi", "-i",
             f"testsrc2=size={WIDTH}x{HEIGHT}:rate=25", "-frames:v", str(FRAMES), "-vf", filters, "-c:v", encoder]
         if name == "vpp": command.extend(["-f", "rawvideo"])
         result = run(name, [*command, "-y", str(target)], env)

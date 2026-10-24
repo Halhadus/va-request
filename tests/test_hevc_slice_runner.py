@@ -21,7 +21,7 @@ class HEVCSliceRunner(unittest.TestCase):
             root = Path(directory); build = root / 'build'; output = root / 'report'
             build.mkdir(); output.mkdir(); old = output / 'run.old'; old.mkdir()
             (old / 'summary.txt').write_text('PASS=10 FAIL=0 COMPLETE=1 EXIT=0\n')
-            for name in ('hevc_slice_interpose.so', 'v4l2request_drv_video.so'):
+            for name in ('hevc_slice_interpose.so', 'v4l2_drv_video.so'):
                 (build / name).write_bytes(b'fixture-binary')
             calls = []
 
@@ -39,7 +39,7 @@ class HEVCSliceRunner(unittest.TestCase):
                 paff = path.name.startswith('h264-paff-')
                 width, height = (128, 96) if paff else (320, 240)
                 size = width * height * 3 // (1 if depth == 10 else 2)
-                env = kwargs['env']; mode = env.get('VAREQ_HEVC_PACKET_MODE')
+                env = kwargs['env']; mode = env.get('VAV4L2_HEVC_PACKET_MODE')
                 if args[args.index('-f') + 1] == 'rawvideo':
                     if fault == 'paff-diagnostic-exit' and '-hwaccel' in args: return subprocess.CompletedProcess(args, 9)
                     data = bytearray(size * 8)
@@ -59,17 +59,17 @@ class HEVCSliceRunner(unittest.TestCase):
                             for stage in ['h264-field-hold', 'end-picture', 'h264-field-pair', 'submit', 'submit', 'end-picture']:
                                 if fault == 'missing-hold' and stage == 'h264-field-hold': continue
                                 rows.append(f'STAGE={stage}\tFRAME={i}\tSURFACE={i}\tSTATUS=0')
-                        Path(env['VAREQ_DECODE_TRACE']).write_text('\n'.join(rows) + '\n')
+                        Path(env['VAV4L2_DECODE_TRACE']).write_text('\n'.join(rows) + '\n')
                     if '-pps15-' in path.name:
-                        Path(env['VAREQ_DECODE_TRACE']).write_text(('STAGE=hevc-header\tSTATUS=0\tARG=' + ('0' if fault == 'pps-id' else '15') + '\n') * 8)
-                    self.assertEqual(env['LIBVA_DRIVER_NAME'], 'v4l2request')
+                        Path(env['VAV4L2_DECODE_TRACE']).write_text(('STAGE=hevc-header\tSTATUS=0\tARG=' + ('0' if fault == 'pps-id' else '15') + '\n') * 8)
+                    self.assertEqual(env['LIBVA_DRIVER_NAME'], 'v4l2')
                     self.assertEqual(env['LIBVA_DRIVERS_PATH'], str(build))
-                    self.assertEqual(Path(env['VAREQ_DECODE_TRACE']).name, path.name.replace('-hw.md5', '-decode.tsv'))
-                    self.assertEqual(Path(env['VAREQ_STORAGE_TRACE']).name, path.name.replace('-hw.md5', '-storage.tsv'))
+                    self.assertEqual(Path(env['VAV4L2_DECODE_TRACE']).name, path.name.replace('-hw.md5', '-decode.tsv'))
+                    self.assertEqual(Path(env['VAV4L2_STORAGE_TRACE']).name, path.name.replace('-hw.md5', '-storage.tsv'))
                     self.assertTrue(env['LD_PRELOAD'].startswith(str(build / 'hevc_slice_interpose.so') + ':'))
                     if fault == 'missing-trace':
                         return subprocess.CompletedProcess(args, 0)
-                    with Path(env['VAREQ_HEVC_PACKET_LOG']).open('w') as stream:
+                    with Path(env['VAV4L2_HEVC_PACKET_LOG']).open('w') as stream:
                         writer = csv.writer(stream, delimiter='\t'); writer.writerow(runner.FIELDS)
                         for i in range(16 if paff else 8):
                             actual_mode = 'whole' if fault == 'mode' and mode == 'array' else mode
@@ -77,17 +77,17 @@ class HEVCSliceRunner(unittest.TestCase):
                             picture = 0 if fault == 'duplicate' and i == 7 else i
                             slices = 15 if path.name.startswith('mpeg2-') else 2 if '-slices-' in path.name else 1
                             writer.writerow([actual_mode, picture, slices, slices if mode in ('whole', 'offset') else slices * 3,
-                                0, vendor, env.get('VAREQ_EXPBUF_EXPORT', 'default')])
+                                0, vendor, env.get('VAV4L2_EXPBUF_EXPORT', 'default')])
                     if fault == 'exit' and mode == 'fragments':
                         return subprocess.CompletedProcess(args, 8)
                 return subprocess.CompletedProcess(args, 0)
 
             environment = dict(os.environ, LD_PRELOAD='existing-test-hook', LIBVA_DRIVER_NAME='stale-driver', LIBVA_DRIVERS_PATH='stale-build')
-            environment.pop('VAREQ_HEVC_PACKET_MODE', None); environment.pop('VAREQ_HEVC_PACKET_LOG', None)
+            environment.pop('VAV4L2_HEVC_PACKET_MODE', None); environment.pop('VAV4L2_HEVC_PACKET_LOG', None)
             if export is None:
-                environment.pop('VAREQ_EXPBUF_EXPORT', None)
+                environment.pop('VAV4L2_EXPBUF_EXPORT', None)
             else:
-                environment['VAREQ_EXPBUF_EXPORT'] = export
+                environment['VAV4L2_EXPBUF_EXPORT'] = export
             with patch.dict(os.environ, environment, clear=True), patch.object(runner.subprocess, 'run', side_effect=execute), patch.object(runner, 'rewrite_pps_id'), patch.object(runner, 'load_paff_fixture', return_value=b'fixture-paff'):
                 status = runner.run_checks(root, build, output, 'fixture-ffmpeg', 'fixture-render')
             summary = (output / 'summary.txt').read_text()
@@ -143,7 +143,7 @@ class HEVCSliceRunner(unittest.TestCase):
     def test_expbuf_disabled_environment_reaches_hardware_children(self):
         status, _, _, _, calls = self.run_case(export='0')
         self.assertEqual(status, 0)
-        self.assertTrue(all(env['VAREQ_EXPBUF_EXPORT'] == '0' for _, env in calls))
+        self.assertTrue(all(env['VAV4L2_EXPBUF_EXPORT'] == '0' for _, env in calls))
 
     def test_missing_adapter_evidence_cannot_pass_with_exact_pixels(self):
         status, summary, failure, _, _ = self.run_case('missing-trace')

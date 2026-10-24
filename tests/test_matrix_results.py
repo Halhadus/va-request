@@ -140,14 +140,14 @@ class MatrixPacketization(unittest.TestCase):
                 (root / 'tests/hevc_slice_checks.py').write_text('''import os, sys
 from pathlib import Path
 assert sys.argv[1:] == [os.environ['BUILD'], os.environ['OUT'] + '/hevc-slices', 'matrix-ffmpeg', 'matrix-render']
-assert os.environ.get('VAREQ_EXPBUF_EXPORT', 'default') == os.environ['TEST_EXPORT']
+assert os.environ.get('VAV4L2_EXPBUF_EXPORT', 'default') == os.environ['TEST_EXPORT']
 Path(os.environ['OUT'], 'worker-called').touch()
 sys.exit(int(os.environ['TEST_WORKER_EXIT']))
 ''')
                 env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'], ROOT=str(root), BUILD=str(build),
                     OUT=str(output), FF='matrix-ffmpeg', DRM='matrix-render', TEST_EXPORT=export, TEST_WORKER_EXIT=str(worker_exit))
-                env.pop('VAREQ_EXPBUF_EXPORT', None)
-                if export != 'default': env['VAREQ_EXPBUF_EXPORT'] = export
+                env.pop('VAV4L2_EXPBUF_EXPORT', None)
+                if export != 'default': env['VAV4L2_EXPBUF_EXPORT'] = export
                 shell = 'set -uo pipefail\npass=0; fail=0\n' + RECORD + '\nmust() { "$@" || { record_result FAIL "$stage:command"; exit 1; }; }\n' + HEVC_STAGE + '\ntest "$fail" -eq 0\n'
                 result = subprocess.run(['bash', '-c', shell], env=env, text=True, stdout=subprocess.PIPE)
                 success = build_exit == 0 and worker_exit == 0

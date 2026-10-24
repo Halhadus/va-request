@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "internal.h"
 
-VAStatus vareq_put_surface(VADriverContextP ctx,
+VAStatus vav4l2_put_surface(VADriverContextP ctx,
                    VASurfaceID surface,
                    void *draw,
                    short src_x, short src_y,
@@ -20,7 +20,7 @@ VAStatus vareq_put_surface(VADriverContextP ctx,
 
 /* Unsupported entrypoints still need the exact libva callback prototype.
  * Casting one generic function into unrelated signatures is undefined C. */
-VAStatus vareq_set_image_palette(
+VAStatus vav4l2_set_image_palette(
     VADriverContextP ctx,
     VAImageID image,
     unsigned char *palette)
@@ -31,7 +31,7 @@ VAStatus vareq_set_image_palette(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_query_subpicture_formats(
+VAStatus vav4l2_query_subpicture_formats(
     VADriverContextP ctx,
     VAImageFormat *format_list,
     unsigned int *flags,
@@ -44,7 +44,7 @@ VAStatus vareq_query_subpicture_formats(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_create_subpicture(
+VAStatus vav4l2_create_subpicture(
     VADriverContextP ctx,
     VAImageID image,
     VASubpictureID *subpicture)
@@ -55,7 +55,7 @@ VAStatus vareq_create_subpicture(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_destroy_subpicture(
+VAStatus vav4l2_destroy_subpicture(
     VADriverContextP ctx,
     VASubpictureID subpicture)
 {
@@ -64,7 +64,7 @@ VAStatus vareq_destroy_subpicture(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_set_subpicture_image(
+VAStatus vav4l2_set_subpicture_image(
     VADriverContextP ctx,
     VASubpictureID subpicture,
     VAImageID image)
@@ -75,7 +75,7 @@ VAStatus vareq_set_subpicture_image(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_set_subpicture_chromakey(
+VAStatus vav4l2_set_subpicture_chromakey(
     VADriverContextP ctx,
     VASubpictureID subpicture,
     unsigned int chromakey_min,
@@ -90,7 +90,7 @@ VAStatus vareq_set_subpicture_chromakey(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_set_subpicture_alpha(
+VAStatus vav4l2_set_subpicture_alpha(
     VADriverContextP ctx,
     VASubpictureID subpicture,
     float global_alpha)
@@ -101,7 +101,7 @@ VAStatus vareq_set_subpicture_alpha(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_associate_subpicture(
+VAStatus vav4l2_associate_subpicture(
     VADriverContextP ctx,
     VASubpictureID subpicture,
     VASurfaceID *target_surfaces,
@@ -132,7 +132,7 @@ VAStatus vareq_associate_subpicture(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_deassociate_subpicture(
+VAStatus vav4l2_deassociate_subpicture(
     VADriverContextP ctx,
     VASubpictureID subpicture,
     VASurfaceID *target_surfaces,
@@ -145,7 +145,7 @@ VAStatus vareq_deassociate_subpicture(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_query_display_attributes(
+VAStatus vav4l2_query_display_attributes(
     VADriverContextP ctx,
     VADisplayAttribute *attr_list,
     int *num_attributes)
@@ -156,7 +156,7 @@ VAStatus vareq_query_display_attributes(
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-VAStatus vareq_display_attributes(
+VAStatus vav4l2_display_attributes(
     VADriverContextP ctx,
     VADisplayAttribute *attr_list,
     int num_attributes)

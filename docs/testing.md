@@ -63,7 +63,7 @@ meson test -C build --suite unit --print-errorlogs
 | `testlog.json`, `testlog.txt`, `testlog.junit.xml` | Meson's individual test diagnostics |
 | `hardware.tar.gz` | Extended-profile pixel results, traces, generated images and layout diagnostics, when applicable |
 
-The JSON format is defined by [report.schema.json](../tools/report.schema.json), with identifier `va-request.test-report/v1`. Source identity includes the commit, tracked tree, dirty state and driver SHA256 when available. Source archives without `.git` have null Git fields. Shared Meson logs omit the inherited environment dump; their JSON environment retains only driver, libva and test instrumentation settings. Test output and failure diagnostics remain included.
+The JSON format is defined by [report.schema.json](../tools/report.schema.json), with identifier `libva-v4l2.test-report/v1`. Source identity includes the commit, tracked tree, dirty state and driver SHA256 when available. Source archives without `.git` have null Git fields. Shared Meson logs omit the inherited environment dump; their JSON environment retains only driver, libva and test instrumentation settings. Test output and failure diagnostics remain included.
 
 `complete=false` indicates an interrupted run. A nonzero exit code indicates failure even if a report was created. SKIP records unavailable coverage. Successful diagnostic retries retain earlier failures in the report.
 

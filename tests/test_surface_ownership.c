@@ -4,7 +4,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 static int failures, ioctls;
@@ -18,9 +18,9 @@ static int count_ioctl(int fd, unsigned long request, void *arg)
     ioctls++;
     return -1;
 }
-static struct vareq_context *context(struct vareq_driver_data *dd, enum vareq_codec codec)
+static struct vav4l2_context *context(struct vav4l2_driver_data *dd, enum vav4l2_codec codec)
 {
-    struct vareq_context *c = calloc(1, sizeof(*c));
+    struct vav4l2_context *c = calloc(1, sizeof(*c));
     if (!c) exit(1);
     c->context_id = ++dd->next_context_id;
     c->driver_data = dd; c->codec = codec;
@@ -33,21 +33,21 @@ static int run(int expbuf)
 {
     struct VADriverVTable v = {0};
     struct VADriverContext ctx = {.vtable = &v};
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
-    setenv("VAREQ_EXPBUF_EXPORT", expbuf ? "1" : "0", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_EXPBUF_EXPORT", expbuf ? "1" : "0", 1);
     if (__vaDriverInit_1_20(&ctx) != VA_STATUS_SUCCESS) return 1;
-    struct vareq_driver_data *dd = ctx.pDriverData;
-    struct vareq_context *a = context(dd, VAREQ_CODEC_H264);
-    struct vareq_context *b = context(dd, VAREQ_CODEC_HEVC);
-    struct vareq_context *jpeg = context(dd, VAREQ_CODEC_JPEG_ENC);
+    struct vav4l2_driver_data *dd = ctx.pDriverData;
+    struct vav4l2_context *a = context(dd, VAV4L2_CODEC_H264);
+    struct vav4l2_context *b = context(dd, VAV4L2_CODEC_HEVC);
+    struct vav4l2_context *jpeg = context(dd, VAV4L2_CODEC_JPEG_ENC);
     VASurfaceID sid;
     if (v.vaCreateSurfaces(&ctx, 4, 4, VA_RT_FORMAT_YUV420, 1, &sid) != VA_STATUS_SUCCESS) return 1;
-    struct vareq_surface *s = dd->surfaces[sid];
+    struct vav4l2_surface *s = dd->surfaces[sid];
     unsigned char pixels[24] = {0};
     s->buf_index = 1; s->cap_view = pixels; s->capture_ctx = a;
     s->has_pic = 1; s->cap_fourcc = V4L2_PIX_FMT_NV12;
     s->stride = s->aligned_h = 4; s->timestamp = 7654321;
-    s->last_writer = VAREQ_WRITER_MEMFD;
+    s->last_writer = VAV4L2_WRITER_MEMFD;
     a->n_free_cap = 1; a->free_cap_bufs[0] = 0;
     b->n_free_cap = 1; b->free_cap_bufs[0] = 0;
     expect(v.vaBeginPicture(&ctx, jpeg->context_id, sid) == VA_STATUS_SUCCESS,
@@ -74,35 +74,35 @@ static int run(int expbuf)
     b->current_surface = NULL;
     if (expbuf) {
         VADRMPRIMESurfaceDescriptor desc = {0};
-        s->last_writer = VAREQ_WRITER_CPU;
+        s->last_writer = VAV4L2_WRITER_CPU;
         b->v4l2_fd = 97;
-        setenv("VAREQ_RENDER_NODE", "/vareq-test-no-render-node", 1);
-        vareq_set_ioctl_hook(count_ioctl);
+        setenv("VAV4L2_RENDER_NODE", "/vav4l2-test-no-render-node", 1);
+        vav4l2_set_ioctl_hook(count_ioctl);
         expect(v.vaExportSurfaceHandle(&ctx, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &desc) !=
                VA_STATUS_SUCCESS && ioctls == 0, "cpu-upload-never-exports-old-capture");
-        vareq_set_ioctl_hook(NULL);
+        vav4l2_set_ioctl_hook(NULL);
         b->v4l2_fd = -1;
-        s->last_writer = VAREQ_WRITER_MEMFD;
+        s->last_writer = VAV4L2_WRITER_MEMFD;
     }
     if (expbuf) {
         /* Submit helper must independently reject a foreign queue index. */
         a->v4l2_fd = 99; a->request_fd = 98;
         a->output_bufs_allocd = 1; a->output_buf_size = 64;
         a->current_surface = s;
-        vareq_set_ioctl_hook(count_ioctl);
-        expect(vareq_decode_submit(a, 0, 8, 1000) == -1 && ioctls == 0 &&
+        vav4l2_set_ioctl_hook(count_ioctl);
+        expect(vav4l2_decode_submit(a, 0, 8, 1000) == -1 && ioctls == 0 &&
                a->n_free_out == 1 && a->free_out_bufs[0] == 0,
                "foreign-capture-never-reaches-qbuf");
-        vareq_set_ioctl_hook(NULL);
+        vav4l2_set_ioctl_hook(NULL);
         a->v4l2_fd = a->request_fd = -1; a->current_surface = NULL;
     }
     s->buf_index = 1; s->cap_view = pixels; s->capture_ctx = b;
     s->status = VASurfaceReady;
-    expect(vareq_surface_ensure_cpu(s) == 0, "upload-backing");
+    expect(vav4l2_surface_ensure_cpu(s) == 0, "upload-backing");
     if (s->cpu_ptr) memset(s->cpu_ptr, 0x6c, s->cpu_size);
-    s->last_writer = VAREQ_WRITER_CPU;
+    s->last_writer = VAV4L2_WRITER_CPU;
     expect(v.vaDestroyContext(&ctx, b->context_id) == VA_STATUS_SUCCESS &&
-           s->last_writer == VAREQ_WRITER_CPU && s->status == VASurfaceReady &&
+           s->last_writer == VAV4L2_WRITER_CPU && s->status == VASurfaceReady &&
            s->cpu_ptr && ((unsigned char *)s->cpu_ptr)[0] == 0x6c &&
            s->buf_index == -1 && !s->capture_ctx && !s->cap_view,
            "teardown-keeps-newer-upload-instead-of-old-capture");

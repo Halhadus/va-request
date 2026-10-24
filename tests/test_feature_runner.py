@@ -17,7 +17,7 @@ class FeatureRunner(unittest.TestCase):
             shutil.copy(Path(__file__).with_name("run_feature_checks.sh"), root / "tests/run_feature_checks.sh")
             shutil.copy(Path(__file__).with_name("feature_source.py"), root / "tests/feature_source.py")
             shutil.copy(Path(__file__).with_name("compare_framemd5.py"), root / "tests/compare_framemd5.py")
-            if not missing_driver: (root / "builddir/v4l2request_drv_video.so").write_bytes(b"current driver")
+            if not missing_driver: (root / "builddir/v4l2_drv_video.so").write_bytes(b"current driver")
             shutil.copy(Path(__file__).with_name("check_dmabuf_trace.py"), root / "tests/check_dmabuf_trace.py")
             client = root / "builddir/va_feature_client"
             client.write_text('''#!/usr/bin/env python3
@@ -31,7 +31,7 @@ with open(sys.argv[2], "w") as f:
         for prefix in ["dmabuf-direct-stress-", "dmabuf-cold-stress-"]: f.write("PASS\\t" + prefix + name + "\\n")
     for name in ["NV12", "NV21"]: f.write("PASS\\tdmabuf-multiplanar-stress-" + name + "\\n")
     f.write("COMPLETE\\t1\\n")
-with open(os.environ["VAREQ_VPP_TRACE"], "w") as f:
+with open(os.environ["VAV4L2_VPP_TRACE"], "w") as f:
     f.write("STATUS\\tSRC_FOURCC\\tDST_FOURCC\\tQUEUE_VALID\\tOUTPUT_MEMORY\\tCAPTURE_MEMORY\\tOUTPUT_PLANES\\tCAPTURE_PLANES\\tCONTEXT\\n")
     for name in names:
         value = format(int.from_bytes(name.encode(), "little"), "08x")
@@ -70,8 +70,8 @@ for i in range(1, 9): Path(sys.argv[-1].replace("%02d", f"{i:02d}")).write_bytes
             old = root / "verify/features/run.old"; old.mkdir(parents=True)
             for i in range(1, 9): (old / f"jpeg-{i:02d}.jpg").write_bytes(b"stale")
             for i in range(8): (old / f"results.tsv.layout-{i}-test.jpg").write_bytes(b"stale")
-            env = {key: value for key, value in os.environ.items() if not key.startswith(("VAREQ_", "LIBVA_"))}
-            env.update(PATH=str(root / "bin") + os.pathsep + os.environ["PATH"], VAREQ_BUILD_DIR=str(root / "builddir"),
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("VAV4L2_", "LIBVA_"))}
+            env.update(PATH=str(root / "bin") + os.pathsep + os.environ["PATH"], VAV4L2_BUILD_DIR=str(root / "builddir"),
                        TEST_CLIENT_ABORT=str(int(abort)), TEST_ENCODE_FAILURE=str(int(encode_failure)),
                        TEST_DECODE_FAILURE=str(int(decode_failure)), TEST_LAYOUT_DIFF=str(int(layout_difference)),
                        TEST_LAYOUT_MISSING=str(int(layout_missing)))
@@ -92,8 +92,8 @@ for i in range(1, 9): Path(sys.argv[-1].replace("%02d", f"{i:02d}")).write_bytes
         self.assertIsNone(self.source["tree"])
 
     def test_parent_hardware_settings_cannot_select_a_real_client(self):
-        with patch.dict(os.environ, {"VAREQ_BUILD_DIR": "/unavailable/hardware-build", "VAREQ_RENDER_NODE": "/unavailable/render-node",
-            "VAREQ_VPP_TRACE": "/unavailable/vpp.tsv", "LIBVA_DRIVERS_PATH": "/unavailable/drivers"}):
+        with patch.dict(os.environ, {"VAV4L2_BUILD_DIR": "/unavailable/hardware-build", "VAV4L2_RENDER_NODE": "/unavailable/render-node",
+            "VAV4L2_VPP_TRACE": "/unavailable/vpp.tsv", "LIBVA_DRIVERS_PATH": "/unavailable/drivers"}):
             code, summary = self.run_case()
         self.assertEqual(code, 0)
         self.assertIn("PASS=23 FAIL=0 COMPLETE=1 EXIT=0", summary)

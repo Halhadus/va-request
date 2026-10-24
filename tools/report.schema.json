@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Halhadus/va-request/report/v1",
-  "title": "va-request test report v1",
+  "$id": "https://github.com/Halhadus/va-v4l2/report/v1",
+  "title": "libva-v4l2 test report v1",
   "type": "object",
   "required": ["schema", "run_id", "profile", "source", "platform", "suites", "complete", "exit_code", "summary"],
   "properties": {
-    "schema": {"const": "va-request.test-report/v1"},
+    "schema": {"const": "libva-v4l2.test-report/v1"},
     "run_id": {"type": "string"},
     "profile": {"enum": ["unit", "hardware", "smoke", "acceptance", "rk3588"]},
     "complete": {"type": "boolean"},

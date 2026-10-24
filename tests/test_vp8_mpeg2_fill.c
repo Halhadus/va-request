@@ -1,6 +1,6 @@
 /*
  * Unit tests for the shipped VP8 / MPEG-2 VA→V4L2 fill functions.
- * Drives vareq_vp8_fill_frame / vareq_mpeg2_fill_* — not a reimplementation.
+ * Drives vav4l2_vp8_fill_frame / vav4l2_mpeg2_fill_* — not a reimplementation.
  */
 
 #include <stdio.h>
@@ -9,7 +9,7 @@
 #include <va/va_dec_vp8.h>
 #include <linux/v4l2-controls.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
 static int g_fail;
 
@@ -43,7 +43,7 @@ static void test_vp8_key_polarity(void)
     slice.partition_size[0] = 100;
     slice.partition_size[1] = 200;
 
-    vareq_vp8_fill_frame(&frame, &pic, &slice, NULL, NULL, NULL);
+    vav4l2_vp8_fill_frame(&frame, &pic, &slice, NULL, NULL, NULL);
     expect_true(frame.flags & V4L2_VP8_FRAME_FLAG_KEY_FRAME, "vp8-va-key0-is-key");
     expect_true(frame.width == 320 && frame.height == 240, "vp8-size");
     expect_true(frame.first_part_header_bits == 17, "vp8-header-bits");
@@ -52,7 +52,7 @@ static void test_vp8_key_polarity(void)
     expect_true(frame.dct_part_sizes[0] == 200, "vp8-dct-part0");
 
     pic.pic_fields.bits.key_frame = 1;
-    vareq_vp8_fill_frame(&frame, &pic, &slice, NULL, NULL, NULL);
+    vav4l2_vp8_fill_frame(&frame, &pic, &slice, NULL, NULL, NULL);
     expect_true(!(frame.flags & V4L2_VP8_FRAME_FLAG_KEY_FRAME), "vp8-va-key1-is-inter");
 }
 
@@ -77,7 +77,7 @@ static void test_vp8_quant_deltas(void)
     iq.quantization_index[0][4] = 38;
     iq.quantization_index[0][5] = 41;
 
-    vareq_vp8_fill_frame(&frame, &pic, NULL, NULL, &iq, NULL);
+    vav4l2_vp8_fill_frame(&frame, &pic, NULL, NULL, &iq, NULL);
     expect_true(frame.quant.y_ac_qi == 40, "vp8-yac");
     expect_true(frame.quant.y_dc_delta == (int8_t)(36 - 40), "vp8-ydc-delta");
     expect_true(frame.quant.y2_dc_delta == (int8_t)(42 - 40), "vp8-y2dc-delta");
@@ -102,7 +102,7 @@ static void test_mpeg2_fcode_and_defaults(void)
     pic.picture_coding_extension.bits.frame_pred_frame_dct = 1;
     pic.picture_coding_extension.bits.intra_dc_precision = 1;
 
-    vareq_mpeg2_fill_sequence(&seq, &pic, VAProfileMPEG2Main);
+    vav4l2_mpeg2_fill_sequence(&seq, &pic, VAProfileMPEG2Main);
     expect_true(seq.horizontal_size == 720 && seq.vertical_size == 480,
                 "mpeg2-seq-size");
     expect_true(seq.chroma_format == 1, "mpeg2-chroma-420");
@@ -110,11 +110,11 @@ static void test_mpeg2_fcode_and_defaults(void)
     expect_true(seq.profile_and_level_indication == ((4 << 4) | (8 << 1)),
                 "mpeg2-main-pl");
 
-    vareq_mpeg2_fill_sequence(&seq, &pic, VAProfileMPEG2Simple);
+    vav4l2_mpeg2_fill_sequence(&seq, &pic, VAProfileMPEG2Simple);
     expect_true(seq.profile_and_level_indication == ((5 << 4) | (8 << 1)),
                 "mpeg2-simple-pl");
 
-    vareq_mpeg2_fill_picture(&vpic, &pic, NULL);
+    vav4l2_mpeg2_fill_picture(&vpic, &pic, NULL);
     expect_true(vpic.picture_coding_type == V4L2_MPEG2_PIC_CODING_TYPE_P,
                 "mpeg2-ptype");
     expect_true(vpic.picture_structure == V4L2_MPEG2_PIC_FRAME, "mpeg2-frame");
@@ -125,7 +125,7 @@ static void test_mpeg2_fcode_and_defaults(void)
     expect_true(vpic.flags & V4L2_MPEG2_PIC_FLAG_PROGRESSIVE, "mpeg2-pic-progressive");
     expect_true(vpic.flags & V4L2_MPEG2_PIC_FLAG_FRAME_PRED_DCT, "mpeg2-fpfdct");
 
-    vareq_mpeg2_fill_quant(&q, NULL);
+    vav4l2_mpeg2_fill_quant(&q, NULL);
     expect_true(q.intra_quantiser_matrix[0] == 8, "mpeg2-default-intra0");
     expect_true(q.non_intra_quantiser_matrix[0] == 16, "mpeg2-default-nonintra");
     /* H.262 6.3.7: untransmitted chroma matrices inherit the luma values. */
@@ -184,7 +184,7 @@ static void test_h264_sps_pps(void)
     h264_fill_decode_params(&dec, &pic, NULL, &slice);
     expect_true(!(dec.flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC), "h264-va-picture-alone-does-not-prove-idr");
     const uint8_t idr[] = {0, 0, 1, 0x65, 0xb8, 0x40, 0x80};
-    expect_true(vareq_h264_parse_header(idr, sizeof(idr), &pic, &slice, &pps, &dec) == VA_STATUS_SUCCESS &&
+    expect_true(vav4l2_h264_parse_header(idr, sizeof(idr), &pic, &slice, &pps, &dec) == VA_STATUS_SUCCESS &&
         (dec.flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC) && dec.nal_ref_idc == 3 && dec.dec_ref_pic_marking_bit_size == 2,
         "h264-actual-nal-proves-idr");
     expect_true(dec.frame_num == 0, "h264-fn0");

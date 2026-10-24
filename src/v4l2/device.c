@@ -1,5 +1,5 @@
 /*
- * v4l2request — V4L2 Request API device and buffer management
+ * v4l2 — V4L2 Request API device and buffer management
  *
  * Handles:
  * - V4L2 device open and capability check
@@ -27,25 +27,25 @@
 #include <va/va_drmcommon.h>
 #include <drm_fourcc.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 #include "probe.h"
 
-static vareq_ioctl_fn g_ioctl_hook;
+static vav4l2_ioctl_fn g_ioctl_hook;
 
-void vareq_set_ioctl_hook(vareq_ioctl_fn fn)
+void vav4l2_set_ioctl_hook(vav4l2_ioctl_fn fn)
 {
     g_ioctl_hook = fn;
 }
 
 /* Optional structured evidence,independent of stderr. Never change the
  * caller's errno or ioctl result when opening/writing diagnostics fails. */
-static void decode_trace_write(const struct vareq_context *ctx, int fd, const char *stage, int status, uint64_t argument)
+static void decode_trace_write(const struct vav4l2_context *ctx, int fd, const char *stage, int status, uint64_t argument)
 {
-    int saved = errno; const char *path = getenv("VAREQ_DECODE_TRACE");
+    int saved = errno; const char *path = getenv("VAV4L2_DECODE_TRACE");
     if (path && *path) {
         int out = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
         if (out >= 0) {
-            const struct vareq_surface *surf = ctx ? ctx->current_surface : NULL;
+            const struct vav4l2_surface *surf = ctx ? ctx->current_surface : NULL;
             char line[768];
             int n = snprintf(line, sizeof(line), "STAGE=%s\tPID=%ld\tFD=%d\tCONTEXT=%u\tCODEC=%d\tFRAME=%llu\tSURFACE=%u\tSTATUS=%d\tARG=%llu\tERRNO=%d\tALLOCATED=%d\tFREE=%d\tMEMORY=%u\tWIDTH=%d\tHEIGHT=%d\tSTRIDE=%u\tCAP_HEIGHT=%u\tSIZEIMAGE=%u\tINDEX=%d\tWRITER=%d\tBORROWS=%u\tPOOL=%d\n",
                 stage, (long)getpid(), fd, ctx ? ctx->context_id : VA_INVALID_ID, ctx ? (int)ctx->codec : -1,
@@ -60,12 +60,12 @@ static void decode_trace_write(const struct vareq_context *ctx, int fd, const ch
     }
     errno = saved;
 }
-void vareq_decode_trace(const struct vareq_context *ctx, const char *stage, int status, uint64_t argument)
+void vav4l2_decode_trace(const struct vav4l2_context *ctx, const char *stage, int status, uint64_t argument)
 {
     decode_trace_write(ctx, ctx ? ctx->v4l2_fd : -1, stage, status, argument);
 }
 
-int vareq_ioctl_once(int fd, unsigned long request, void *arg)
+int vav4l2_ioctl_once(int fd, unsigned long request, void *arg)
 {
     int result = g_ioctl_hook ? g_ioctl_hook(fd, request, arg) : ioctl(fd, request, arg);
     decode_trace_write(NULL, fd, "ioctl", result, request);
@@ -73,21 +73,21 @@ int vareq_ioctl_once(int fd, unsigned long request, void *arg)
 }
 
 /* Helper to call ioctl with retry (shared via the header). */
-int vareq_xioctl(int fd, unsigned long request, void *arg)
+int vav4l2_xioctl(int fd, unsigned long request, void *arg)
 {
     int r;
     do {
-        r = vareq_ioctl_once(fd, request, arg);
+        r = vav4l2_ioctl_once(fd, request, arg);
     } while (r == -1 && errno == EINTR);
     return r;
 }
 
-#define xioctl(fd, req, arg) vareq_xioctl((fd), (req), (arg))
+#define xioctl(fd, req, arg) vav4l2_xioctl((fd), (req), (arg))
 
 /* poll() with EINTR retry — a stray signal (profiler, SIGWINCH) must never
  * be mistaken for a decode timeout; the decode path turns timeouts into
  * full STREAMOFF/STREAMON queue resets. */
-int vareq_poll_intr(struct pollfd *fds, nfds_t n, int timeout)
+int vav4l2_poll_intr(struct pollfd *fds, nfds_t n, int timeout)
 {
     struct timespec start, now;
     if (timeout >= 0 && clock_gettime(CLOCK_MONOTONIC, &start) < 0) return -1;
@@ -109,123 +109,123 @@ int vareq_poll_intr(struct pollfd *fds, nfds_t n, int timeout)
 /*
  * Open a V4L2 video device and verify it's a stateless decoder
  */
-int vareq_open_device(const char *path)
+int vav4l2_open_device(const char *path)
 {
     int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
-        fprintf(stderr, "v4l2request: open %s: %s\n", path, strerror(errno));
+        fprintf(stderr, "v4l2: open %s: %s\n", path, strerror(errno));
         return -1;
     }
 
     /* Verify capabilities */
     struct v4l2_capability cap = { 0 };
     if (xioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
-        fprintf(stderr, "v4l2request: QUERYCAP failed on %s: %s\n", path, strerror(errno));
+        fprintf(stderr, "v4l2: QUERYCAP failed on %s: %s\n", path, strerror(errno));
         close(fd);
         return -1;
     }
 
     uint32_t caps = cap.capabilities & V4L2_CAP_DEVICE_CAPS ? cap.device_caps : cap.capabilities;
     if (!(caps & V4L2_CAP_VIDEO_M2M_MPLANE) || !(caps & V4L2_CAP_STREAMING)) {
-        fprintf(stderr, "v4l2request: %s is not M2M mplane device\n", path);
+        fprintf(stderr, "v4l2: %s is not M2M mplane device\n", path);
         close(fd);
         return -1;
     }
 
-    fprintf(stderr, "v4l2request: opened %s (%s)\n", path, cap.card);
+    fprintf(stderr, "v4l2: opened %s (%s)\n", path, cap.card);
     return fd;
 }
 
-int vareq_codec_backend_init(struct vareq_context *ctx)
+int vav4l2_codec_backend_init(struct vav4l2_context *ctx)
 {
     if (!ctx || ctx->v4l2_fd < 0) { errno = EINVAL; return -1; }
-    if (ctx->codec == VAREQ_CODEC_VPP || !vareq_compat_backend_needed()) return 0;
+    if (ctx->codec == VAV4L2_CODEC_VPP || !vav4l2_compat_backend_needed()) return 0;
     struct v4l2_capability cap = {0};
     if (xioctl(ctx->v4l2_fd, VIDIOC_QUERYCAP, &cap) < 0) return -1;
-    struct vareq_compat_identity identity; vareq_compat_identity(&cap, &identity);
-    struct vareq_compat_codec codec = {.direction = ctx->codec == VAREQ_CODEC_JPEG_ENC ? VAREQ_COMPAT_ENCODE : VAREQ_COMPAT_DECODE,
+    struct vav4l2_compat_identity identity; vav4l2_compat_identity(&cap, &identity);
+    struct vav4l2_compat_codec codec = {.direction = ctx->codec == VAV4L2_CODEC_JPEG_ENC ? VAV4L2_COMPAT_ENCODE : VAV4L2_COMPAT_DECODE,
         .va_profile = ctx->profile, .profile_known = 1};
-    if (codec.direction == VAREQ_COMPAT_ENCODE) codec.coded_format = V4L2_PIX_FMT_JPEG;
-    else if (vareq_codec_coded_fourcc(ctx->codec, &codec.coded_format) < 0) { errno = ENOTSUP; return -1; }
-    return vareq_compat_backend_init(&ctx->compat_backend, &identity, &codec, ctx->v4l2_fd);
+    if (codec.direction == VAV4L2_COMPAT_ENCODE) codec.coded_format = V4L2_PIX_FMT_JPEG;
+    else if (vav4l2_codec_coded_fourcc(ctx->codec, &codec.coded_format) < 0) { errno = ENOTSUP; return -1; }
+    return vav4l2_compat_backend_init(&ctx->compat_backend, &identity, &codec, ctx->v4l2_fd);
 }
 
-void vareq_close_context_device(struct vareq_context *ctx)
+void vav4l2_close_context_device(struct vav4l2_context *ctx)
 {
     int saved = errno;
-    vareq_compat_backend_finish(&ctx->compat_backend, ctx->v4l2_fd);
+    vav4l2_compat_backend_finish(&ctx->compat_backend, ctx->v4l2_fd);
     if (ctx->v4l2_fd >= 0) close(ctx->v4l2_fd);
     ctx->v4l2_fd = -1; errno = saved;
 }
 
-int vareq_codec_format(struct vareq_context *ctx, struct v4l2_format *format)
+int vav4l2_codec_format(struct vav4l2_context *ctx, struct v4l2_format *format)
 {
-    if (vareq_compat_prepare_format(&ctx->compat_backend, format) < 0) return -1;
+    if (vav4l2_compat_prepare_format(&ctx->compat_backend, format) < 0) return -1;
     return xioctl(ctx->v4l2_fd, VIDIOC_S_FMT, format);
 }
 
-static int codec_control(struct vareq_context *ctx, int fd, struct v4l2_control *control)
+static int codec_control(struct vav4l2_context *ctx, int fd, struct v4l2_control *control)
 {
     if (ctx) {
         struct v4l2_ext_control item = {.id = control->id, .value = control->value};
         struct v4l2_ext_controls controls = {.which = V4L2_CTRL_WHICH_CUR_VAL, .count = 1, .controls = &item};
-        if (vareq_compat_prepare_controls(&ctx->compat_backend, &controls) < 0) return -1;
+        if (vav4l2_compat_prepare_controls(&ctx->compat_backend, &controls) < 0) return -1;
         control->value = item.value;
     }
     return xioctl(fd, VIDIOC_S_CTRL, control);
 }
 
-int vareq_codec_control(struct vareq_context *ctx, struct v4l2_control *control)
+int vav4l2_codec_control(struct vav4l2_context *ctx, struct v4l2_control *control)
 {
     return codec_control(ctx, ctx->v4l2_fd, control);
 }
 
-int vareq_codec_prepare_controls(struct vareq_context *ctx, int request_fd, struct v4l2_ext_controls *controls)
+int vav4l2_codec_prepare_controls(struct vav4l2_context *ctx, int request_fd, struct v4l2_ext_controls *controls)
 {
     controls->which = request_fd >= 0 ? V4L2_CTRL_WHICH_REQUEST_VAL : V4L2_CTRL_WHICH_CUR_VAL;
     controls->request_fd = request_fd >= 0 ? request_fd : 0;
-    return vareq_compat_prepare_controls(&ctx->compat_backend, controls);
+    return vav4l2_compat_prepare_controls(&ctx->compat_backend, controls);
 }
 
-int vareq_codec_controls(struct vareq_context *ctx, int request_fd, struct v4l2_ext_controls *controls)
+int vav4l2_codec_controls(struct vav4l2_context *ctx, int request_fd, struct v4l2_ext_controls *controls)
 {
-    if (vareq_codec_prepare_controls(ctx, request_fd, controls) < 0) return -1;
-    return request_fd >= 0 ? vareq_set_request_controls(request_fd, ctx->v4l2_fd, controls) : vareq_set_global_controls(ctx->v4l2_fd, controls);
+    if (vav4l2_codec_prepare_controls(ctx, request_fd, controls) < 0) return -1;
+    return request_fd >= 0 ? vav4l2_set_request_controls(request_fd, ctx->v4l2_fd, controls) : vav4l2_set_global_controls(ctx->v4l2_fd, controls);
 }
 
 /*
  * Open the media device associated with a V4L2 video device
  * video node → matching media node via sysfs (numbers need not match)
  */
-int vareq_open_media_for_device(const char *video_path)
+int vav4l2_open_media_for_device(const char *video_path)
 {
     /* /dev/videoN lives next to /dev/mediaM on the same platform device.
      * Walk sysfs — do not assume mediaN == videoN (AV1 has been video4 → media3). */
     char media_path[128];
     int fd;
 
-    if (vareq_find_media_path(video_path, media_path, sizeof(media_path)) < 0) {
-        fprintf(stderr, "v4l2request: no media graph interface for %s\n", video_path);
+    if (vav4l2_find_media_path(video_path, media_path, sizeof(media_path)) < 0) {
+        fprintf(stderr, "v4l2: no media graph interface for %s\n", video_path);
         return -1;
     }
 
     fd = open(media_path, O_RDWR | O_CLOEXEC);
     if (fd < 0)
-        fprintf(stderr, "v4l2request: open %s (for %s): %s\n",
+        fprintf(stderr, "v4l2: open %s (for %s): %s\n",
                 media_path, video_path, strerror(errno));
     else
-        fprintf(stderr, "v4l2request: media for %s is %s\n", video_path, media_path);
+        fprintf(stderr, "v4l2: media for %s is %s\n", video_path, media_path);
     return fd;
 }
 
 /*
  * Allocate a V4L2 request
  */
-int vareq_request_alloc(int media_fd)
+int vav4l2_request_alloc(int media_fd)
 {
     int request_fd = -1;
     if (xioctl(media_fd, MEDIA_IOC_REQUEST_ALLOC, &request_fd) < 0) {
-        fprintf(stderr, "v4l2request: REQUEST_ALLOC failed: %s\n", strerror(errno));
+        fprintf(stderr, "v4l2: REQUEST_ALLOC failed: %s\n", strerror(errno));
         return -1;
     }
     return request_fd;
@@ -235,7 +235,7 @@ int vareq_request_alloc(int media_fd)
  * Setup output queue (compressed bitstream input)
  * Returns 0 on success, -1 on error
  */
-static int setup_output_queue(struct vareq_context *ctx, int fd, uint32_t codec_format, int width, int height)
+static int setup_output_queue(struct vav4l2_context *ctx, int fd, uint32_t codec_format, int width, int height)
 {
     if (width <= 0 || height <= 0) return -1;
     /* Set output format (compressed input) */
@@ -260,13 +260,13 @@ static int setup_output_queue(struct vareq_context *ctx, int fd, uint32_t codec_
     if (coded_size > UINT32_MAX) return -1;
     fmt.fmt.pix_mp.plane_fmt[0].sizeimage = coded_size;
 
-    if ((ctx ? vareq_codec_format(ctx, &fmt) : xioctl(fd, VIDIOC_S_FMT, &fmt)) < 0) {
-        fprintf(stderr, "v4l2request: S_FMT output failed: %s\n", strerror(errno));
+    if ((ctx ? vav4l2_codec_format(ctx, &fmt) : xioctl(fd, VIDIOC_S_FMT, &fmt)) < 0) {
+        fprintf(stderr, "v4l2: S_FMT output failed: %s\n", strerror(errno));
         return -1;
     }
     if (fmt.fmt.pix_mp.pixelformat != codec_format || fmt.fmt.pix_mp.num_planes != 1 ||
         fmt.fmt.pix_mp.width < (unsigned)width || fmt.fmt.pix_mp.height < (unsigned)height) {
-        fprintf(stderr, "v4l2request: coded format/geometry changed by the selected decoder\n");
+        fprintf(stderr, "v4l2: coded format/geometry changed by the selected decoder\n");
         return -1;
     }
 
@@ -294,36 +294,36 @@ static int setup_output_queue(struct vareq_context *ctx, int fd, uint32_t codec_
     /* Decode waits for OUTPUT DQBUF before the next submission. Four slots
      * are an optimization,not a DPB requirement;retry smaller pools only for
      * allocation pressure. Never shrink an individual coded buffer. */
-    for (unsigned count = VAREQ_NUM_OUTPUT_BUFS; count; count /= 2) {
+    for (unsigned count = VAV4L2_NUM_OUTPUT_BUFS; count; count /= 2) {
         struct v4l2_requestbuffers req = {.count = count, .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, .memory = V4L2_MEMORY_MMAP};
         int result = xioctl(fd, VIDIOC_REQBUFS, &req);
         decode_trace_write(NULL, fd, "output-allocate", result, ((uint64_t)count << 32) | req.count);
         if (result == 0 && req.count) {
-            fprintf(stderr, "v4l2request: output queue: %u buffers\n", req.count);
-            return req.count < VAREQ_NUM_OUTPUT_BUFS ? req.count : VAREQ_NUM_OUTPUT_BUFS;
+            fprintf(stderr, "v4l2: output queue: %u buffers\n", req.count);
+            return req.count < VAV4L2_NUM_OUTPUT_BUFS ? req.count : VAV4L2_NUM_OUTPUT_BUFS;
         }
         int error = result < 0 ? errno : ENOMEM;
         if (error != ENOMEM) {
-            fprintf(stderr, "v4l2request: REQBUFS output failed: %s\n", strerror(error));
+            fprintf(stderr, "v4l2: REQBUFS output failed: %s\n", strerror(error));
             errno = error; return -1;
         }
         struct v4l2_requestbuffers release = {.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, .memory = V4L2_MEMORY_MMAP};
         if (xioctl(fd, VIDIOC_REQBUFS, &release) < 0) {
-            fprintf(stderr, "v4l2request: REQBUFS(0) output retry failed: %s\n", strerror(errno));
+            fprintf(stderr, "v4l2: REQBUFS(0) output retry failed: %s\n", strerror(errno));
             return -1;
         }
-        if (count > 1) fprintf(stderr, "v4l2request: retrying OUTPUT allocation with %u buffers\n", count / 2);
+        if (count > 1) fprintf(stderr, "v4l2: retrying OUTPUT allocation with %u buffers\n", count / 2);
     }
-    fprintf(stderr, "v4l2request: REQBUFS output exhausted allocation retries\n");
+    fprintf(stderr, "v4l2: REQBUFS output exhausted allocation retries\n");
     errno = ENOMEM; return -1;
 }
 
-int vareq_setup_output_queue(int fd, uint32_t codec_format, int width, int height)
+int vav4l2_setup_output_queue(int fd, uint32_t codec_format, int width, int height)
 {
     return setup_output_queue(NULL, fd, codec_format, width, height);
 }
 
-int vareq_setup_codec_output(struct vareq_context *ctx, uint32_t codec_format, int width, int height)
+int vav4l2_setup_codec_output(struct vav4l2_context *ctx, uint32_t codec_format, int width, int height)
 {
     return setup_output_queue(ctx, ctx->v4l2_fd, codec_format, width, height);
 }
@@ -332,16 +332,16 @@ int vareq_setup_codec_output(struct vareq_context *ctx, uint32_t codec_format, i
  * Setup capture queue (decoded frames output)
  * Returns 0 on success, -1 on error
  */
-int vareq_setup_capture_queue(int fd, int width, int height, uint32_t pixelformat)
+int vav4l2_setup_capture_queue(int fd, int width, int height, uint32_t pixelformat)
 {
-    return vareq_setup_capture_queue_count(fd, width, height, pixelformat,
-                                            VAREQ_NUM_CAPTURE_BUFS);
+    return vav4l2_setup_capture_queue_count(fd, width, height, pixelformat,
+                                            VAV4L2_NUM_CAPTURE_BUFS);
 }
 
-static int setup_capture_queue(struct vareq_context *ctx, int fd, int width, int height,
+static int setup_capture_queue(struct vav4l2_context *ctx, int fd, int width, int height,
                                      uint32_t pixelformat, int count)
 {
-    if (width <= 0 || height <= 0 || !vareq_drm_fourcc_for_capture(pixelformat)) { errno = ENOTSUP; return -1; }
+    if (width <= 0 || height <= 0 || !vav4l2_drm_fourcc_for_capture(pixelformat)) { errno = ENOTSUP; return -1; }
     /* Set capture format (decoded output). Default NV12; 10-bit/422 use
      * NV15/NV16/NV20 which rkvdec only accepts after a matching SPS. */
     struct v4l2_format fmt = { 0 };
@@ -352,15 +352,15 @@ static int setup_capture_queue(struct vareq_context *ctx, int fd, int width, int
     fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
     fmt.fmt.pix_mp.num_planes = 1;
 
-    if ((ctx ? vareq_codec_format(ctx, &fmt) : xioctl(fd, VIDIOC_S_FMT, &fmt)) < 0) {
-        fprintf(stderr, "v4l2request: S_FMT capture failed: %s\n", strerror(errno));
+    if ((ctx ? vav4l2_codec_format(ctx, &fmt) : xioctl(fd, VIDIOC_S_FMT, &fmt)) < 0) {
+        fprintf(stderr, "v4l2: S_FMT capture failed: %s\n", strerror(errno));
         return -1;
     }
 
     if (fmt.fmt.pix_mp.width < (uint32_t)width || fmt.fmt.pix_mp.height < (uint32_t)height ||
         fmt.fmt.pix_mp.pixelformat != (pixelformat ? pixelformat : V4L2_PIX_FMT_NV12) ||
         fmt.fmt.pix_mp.num_planes != 1) {
-        fprintf(stderr, "v4l2request: capture cannot hold requested %dx%d %.4s (got %ux%u %.4s, %u planes)\n",
+        fprintf(stderr, "v4l2: capture cannot hold requested %dx%d %.4s (got %ux%u %.4s, %u planes)\n",
                 width, height, (char *)&pixelformat, fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height,
                 (char *)&fmt.fmt.pix_mp.pixelformat, fmt.fmt.pix_mp.num_planes);
         return -1;
@@ -368,25 +368,25 @@ static int setup_capture_queue(struct vareq_context *ctx, int fd, int width, int
 
     /* Request capture buffers */
     struct v4l2_requestbuffers req = { 0 };
-    req.count = count > 0 ? count : VAREQ_NUM_CAPTURE_BUFS;
+    req.count = count > 0 ? count : VAV4L2_NUM_CAPTURE_BUFS;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     req.memory = V4L2_MEMORY_MMAP;
 
     if (xioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
-        fprintf(stderr, "v4l2request: REQBUFS capture failed: %s\n", strerror(errno));
+        fprintf(stderr, "v4l2: REQBUFS capture failed: %s\n", strerror(errno));
         return -1;
     }
 
-    fprintf(stderr, "v4l2request: capture queue: %d buffers\n", req.count);
-    return req.count < VAREQ_MAX_CAPTURE_BUFS ? req.count : VAREQ_MAX_CAPTURE_BUFS;
+    fprintf(stderr, "v4l2: capture queue: %d buffers\n", req.count);
+    return req.count < VAV4L2_MAX_CAPTURE_BUFS ? req.count : VAV4L2_MAX_CAPTURE_BUFS;
 }
 
-int vareq_setup_capture_queue_count(int fd, int width, int height, uint32_t pixelformat, int count)
+int vav4l2_setup_capture_queue_count(int fd, int width, int height, uint32_t pixelformat, int count)
 {
     return setup_capture_queue(NULL, fd, width, height, pixelformat, count);
 }
 
-int vareq_setup_codec_capture(struct vareq_context *ctx, int width, int height, uint32_t pixelformat, int count)
+int vav4l2_setup_codec_capture(struct vav4l2_context *ctx, int width, int height, uint32_t pixelformat, int count)
 {
     return setup_capture_queue(ctx, ctx->v4l2_fd, width, height, pixelformat, count);
 }
@@ -395,29 +395,29 @@ int vareq_setup_codec_capture(struct vareq_context *ctx, int width, int height, 
  * Start streaming on a queue — required after REQBUFS and before QBUF
  * Returns 0 on success, -1 on error
  */
-int vareq_streamon(int fd, enum v4l2_buf_type type)
+int vav4l2_streamon(int fd, enum v4l2_buf_type type)
 {
     if (xioctl(fd, VIDIOC_STREAMON, &type) < 0) {
-        fprintf(stderr, "v4l2request: STREAMON(type=%u) failed: %s\n",
+        fprintf(stderr, "v4l2: STREAMON(type=%u) failed: %s\n",
                 type, strerror(errno));
         return -1;
     }
     return 0;
 }
 
-int vareq_streamoff(int fd, enum v4l2_buf_type type)
+int vav4l2_streamoff(int fd, enum v4l2_buf_type type)
 {
     if (xioctl(fd, VIDIOC_STREAMOFF, &type) < 0) {
-        fprintf(stderr, "v4l2request: STREAMOFF(type=%u) failed: %s\n",
+        fprintf(stderr, "v4l2: STREAMOFF(type=%u) failed: %s\n",
                 type, strerror(errno));
         return -1;
     }
     return 0;
 }
 
-static void release_ctx_capture_surfaces(struct vareq_context *ctx);
-static void vareq_unmap_capture_buffers(struct vareq_context *ctx);
-static int vareq_mmap_one_capture(struct vareq_context *ctx, int index);
+static void release_ctx_capture_surfaces(struct vav4l2_context *ctx);
+static void vav4l2_unmap_capture_buffers(struct vav4l2_context *ctx);
+static int vav4l2_mmap_one_capture(struct vav4l2_context *ctx, int index);
 
 static int reqbufs_zero_memory(int fd, enum v4l2_buf_type type, unsigned memory)
 {
@@ -427,7 +427,7 @@ static int reqbufs_zero_memory(int fd, enum v4l2_buf_type type, unsigned memory)
     req.type = type;
     req.memory = memory ? memory : V4L2_MEMORY_MMAP;
     if (xioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
-        fprintf(stderr, "v4l2request: REQBUFS(0) type=%u failed: %s\n",
+        fprintf(stderr, "v4l2: REQBUFS(0) type=%u failed: %s\n",
                 type, strerror(errno));
         return -1;
     }
@@ -439,7 +439,7 @@ static int reqbufs_zero(int fd, enum v4l2_buf_type type)
     return reqbufs_zero_memory(fd, type, V4L2_MEMORY_MMAP);
 }
 
-int vareq_m2m_finish_output(struct vareq_context *ctx, const struct vareq_m2m_state *q)
+int vav4l2_m2m_finish_output(struct vav4l2_context *ctx, const struct vav4l2_m2m_state *q)
 {
     if (!ctx || !q || q->out_planes < 1 || q->out_planes > 3) return -1;
     struct v4l2_plane planes[3] = {{0}};
@@ -448,31 +448,31 @@ int vareq_m2m_finish_output(struct vareq_context *ctx, const struct vareq_m2m_st
     int result = xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buffer);
     if (result < 0 && errno == EAGAIN) {
         struct pollfd pfd = {.fd = ctx->v4l2_fd, .events = POLLOUT};
-        if (vareq_poll_intr(&pfd, 1, 2000) > 0 && (pfd.revents & POLLOUT) &&
+        if (vav4l2_poll_intr(&pfd, 1, 2000) > 0 && (pfd.revents & POLLOUT) &&
             !(pfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
             result = xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buffer);
     }
     if (result < 0 || buffer.index != 0 || buffer.length != (unsigned)q->out_planes ||
         buffer.memory != (q->out_memory ? q->out_memory : V4L2_MEMORY_MMAP) ||
         (buffer.flags & V4L2_BUF_FLAG_ERROR)) {
-        fprintf(stderr, "v4l2request: M2M OUTPUT completion failed (index=%u flags=0x%x planes=%u)\n",
+        fprintf(stderr, "v4l2: M2M OUTPUT completion failed (index=%u flags=0x%x planes=%u)\n",
                 buffer.index, buffer.flags, buffer.length);
         return -1;
     }
     return 0;
 }
 
-void vareq_m2m_teardown(struct vareq_context *ctx, struct vareq_m2m_state *q)
+void vav4l2_m2m_teardown(struct vav4l2_context *ctx, struct vav4l2_m2m_state *q)
 {
     int i;
 
     if (!ctx || !q || !q->valid)
         return;
     if (ctx->v4l2_fd >= 0) {
-        int output = vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
-        int capture = vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+        int output = vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+        int capture = vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
         if ((output < 0 && (q->streaming & 1)) || (capture < 0 && (q->streaming & 2))) {
-            vareq_close_context_device(ctx);
+            vav4l2_close_context_device(ctx);
         }
     }
     for (i = 0; i < 3; i++) {
@@ -484,14 +484,14 @@ void vareq_m2m_teardown(struct vareq_context *ctx, struct vareq_m2m_state *q)
     if (ctx->v4l2_fd >= 0) {
         int output = reqbufs_zero_memory(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, q->out_memory);
         int capture = reqbufs_zero_memory(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, q->cap_memory);
-        if (output < 0 || capture < 0) { vareq_close_context_device(ctx); }
+        if (output < 0 || capture < 0) { vav4l2_close_context_device(ctx); }
     }
     memset(q, 0, sizeof(*q));
 }
 
-void vareq_release_context_device(struct vareq_context *ctx)
+void vav4l2_release_context_device(struct vav4l2_context *ctx)
 {
-    vareq_h264_discard_field(ctx, 1);
+    vav4l2_h264_discard_field(ctx, 1);
     int i;
 
     if (!ctx)
@@ -499,12 +499,12 @@ void vareq_release_context_device(struct vareq_context *ctx)
 
     /* Persistent M2M queues hold V4L2 MMAP mappings — release them while
      * the device fd is still open. */
-    vareq_m2m_teardown(ctx, &ctx->vpp_q);
-    vareq_m2m_teardown(ctx, &ctx->jpeg_q);
+    vav4l2_m2m_teardown(ctx, &ctx->vpp_q);
+    vav4l2_m2m_teardown(ctx, &ctx->jpeg_q);
 
     if (ctx->v4l2_fd >= 0 && ctx->streamed) {
-        vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
-        vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+        vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+        vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
         ctx->streamed = 0;
     }
 
@@ -513,14 +513,14 @@ void vareq_release_context_device(struct vareq_context *ctx)
         ctx->request_fd = -1;
     }
 
-    for (i = 0; i < ctx->output_bufs_allocd && i < VAREQ_NUM_OUTPUT_BUFS; i++) {
+    for (i = 0; i < ctx->output_bufs_allocd && i < VAV4L2_NUM_OUTPUT_BUFS; i++) {
         if (ctx->output_buf_ptr[i] && ctx->output_buf_ptr[i] != MAP_FAILED) {
             munmap(ctx->output_buf_ptr[i], ctx->output_buf_size);
             ctx->output_buf_ptr[i] = NULL;
         }
     }
     release_ctx_capture_surfaces(ctx);
-    vareq_unmap_capture_buffers(ctx);
+    vav4l2_unmap_capture_buffers(ctx);
 
     if (ctx->v4l2_fd >= 0) {
         if (ctx->output_bufs_allocd > 0) {
@@ -533,7 +533,7 @@ void vareq_release_context_device(struct vareq_context *ctx)
             ctx->capture_bufs_allocd = 0;
             ctx->n_free_cap = 0;
         }
-        vareq_close_context_device(ctx);
+        vav4l2_close_context_device(ctx);
     }
 
     if (ctx->media_fd >= 0) {
@@ -542,7 +542,7 @@ void vareq_release_context_device(struct vareq_context *ctx)
     }
 }
 
-static void release_ctx_capture_surfaces(struct vareq_context *ctx)
+static void release_ctx_capture_surfaces(struct vav4l2_context *ctx)
 {
     int i;
 
@@ -550,23 +550,23 @@ static void release_ctx_capture_surfaces(struct vareq_context *ctx)
         return;
     /* FFmpeg also allocates surfaces outside render_targets. Match live
      * capture views by mapping identity before any mapping is released. */
-    for (i = 0; i < VAREQ_MAX_SURFACES; i++) {
-        struct vareq_surface *s = ctx->driver_data->surfaces[i];
-        if (!vareq_surface_capture_matches(ctx, s)) {
+    for (i = 0; i < VAV4L2_MAX_SURFACES; i++) {
+        struct vav4l2_surface *s = ctx->driver_data->surfaces[i];
+        if (!vav4l2_surface_capture_matches(ctx, s)) {
             if (s && s->capture_ctx == ctx)
                 s->capture_ctx = NULL;
             continue;
         }
-        if (s->has_pic && s->cap_view && !s->prime && !s->gbm_imported && !s->gbm_writable && s->last_writer != VAREQ_WRITER_CPU) {
-            uint32_t size = vareq_capture_plane_size(s->cap_fourcc, s->stride, s->aligned_h);
+        if (s->has_pic && s->cap_view && !s->prime && !s->gbm_imported && !s->gbm_writable && s->last_writer != VAV4L2_WRITER_CPU) {
+            uint32_t size = vav4l2_capture_plane_size(s->cap_fourcc, s->stride, s->aligned_h);
             void *snapshot = size && size <= ctx->capture_buf_size
-                ? vareq_surface_map_memfd(s, size) : NULL;
+                ? vav4l2_surface_map_memfd(s, size) : NULL;
 
             if (snapshot) {
                 memcpy(snapshot, s->cap_view, size);
-                s->last_writer = VAREQ_WRITER_MEMFD;
+                s->last_writer = VAV4L2_WRITER_MEMFD;
             } else {
-                fprintf(stderr, "v4l2request: cannot preserve capture surface %u on release\n", (unsigned)i);
+                fprintf(stderr, "v4l2: cannot preserve capture surface %u on release\n", (unsigned)i);
                 s->has_pic = 0;
                 s->status = VASurfaceSkipped;
             }
@@ -581,76 +581,76 @@ static void release_ctx_capture_surfaces(struct vareq_context *ctx)
 /* Rebuild both free pools from scratch. Capture indices still claimed by a
  * render-target surface (surf->buf_index) stay claimed — begin_picture
  * returns them when the surface is re-targeted. */
-static void rebuild_free_pools(struct vareq_context *ctx)
+static void rebuild_free_pools(struct vav4l2_context *ctx)
 {
-    int claimed[VAREQ_MAX_CAPTURE_BUFS] = { 0 };
+    int claimed[VAV4L2_MAX_CAPTURE_BUFS] = { 0 };
     int i;
 
     ctx->n_free_out = 0;
-    for (i = 0; i < ctx->output_bufs_allocd && i < VAREQ_NUM_OUTPUT_BUFS; i++)
-        vareq_out_pool_push(ctx, i);
+    for (i = 0; i < ctx->output_bufs_allocd && i < VAV4L2_NUM_OUTPUT_BUFS; i++)
+        vav4l2_out_pool_push(ctx, i);
 
     if (ctx->driver_data) {
-        for (i = 0; i < VAREQ_MAX_SURFACES; i++) {
-            struct vareq_surface *s = ctx->driver_data->surfaces[i];
-            if (vareq_surface_capture_matches(ctx, s))
+        for (i = 0; i < VAV4L2_MAX_SURFACES; i++) {
+            struct vav4l2_surface *s = ctx->driver_data->surfaces[i];
+            if (vav4l2_surface_capture_matches(ctx, s))
                 claimed[s->buf_index] = 1;
         }
     }
 
     ctx->n_free_cap = 0;
-    for (i = 0; i < ctx->capture_bufs_allocd && i < VAREQ_MAX_CAPTURE_BUFS; i++)
+    for (i = 0; i < ctx->capture_bufs_allocd && i < VAV4L2_MAX_CAPTURE_BUFS; i++)
         if (!claimed[i])
-            vareq_cap_pool_push(ctx, i);
+            vav4l2_cap_pool_push(ctx, i);
 }
 
-static void close_failed_decoder(struct vareq_context *ctx)
+static void close_failed_decoder(struct vav4l2_context *ctx)
 {
     if (ctx->request_fd >= 0) { close(ctx->request_fd); ctx->request_fd = -1; }
     ctx->streamed = 0;
-    vareq_av1_dpb_model_reset(ctx);
+    vav4l2_av1_dpb_model_reset(ctx);
     /* Ownership is unknown after a failed stop. Closing the device
      * cancels its queues; never recycle those indices as free. */
-    vareq_close_context_device(ctx);
+    vav4l2_close_context_device(ctx);
     ctx->n_free_out = ctx->n_free_cap = 0; ctx->g_ctrl_valid = 0;
-    if (ctx->driver_data) for (int i = 0; i < VAREQ_MAX_SURFACES; i++) {
-        struct vareq_surface *s = ctx->driver_data->surfaces[i];
-        if (!vareq_surface_capture_matches(ctx, s)) continue;
-        if (s->last_writer != VAREQ_WRITER_CPU) { s->has_pic = 0; s->status = VASurfaceSkipped; }
+    if (ctx->driver_data) for (int i = 0; i < VAV4L2_MAX_SURFACES; i++) {
+        struct vav4l2_surface *s = ctx->driver_data->surfaces[i];
+        if (!vav4l2_surface_capture_matches(ctx, s)) continue;
+        if (s->last_writer != VAV4L2_WRITER_CPU) { s->has_pic = 0; s->status = VASurfaceSkipped; }
         s->buf_index = -1; s->cap_view = NULL; s->capture_ctx = NULL;
     }
-    fprintf(stderr, "v4l2request: failed STREAMOFF closed decoder; recreate the context\n");
+    fprintf(stderr, "v4l2: failed STREAMOFF closed decoder; recreate the context\n");
 }
 
-VAStatus vareq_validate_reference(const struct vareq_context *ctx, VASurfaceID id)
+VAStatus vav4l2_validate_reference(const struct vav4l2_context *ctx, VASurfaceID id)
 {
     if (!ctx || !ctx->driver_data) return VA_STATUS_ERROR_INVALID_CONTEXT;
-    const struct vareq_surface *s = vareq_surface_by_id(ctx->driver_data, id);
+    const struct vav4l2_surface *s = vav4l2_surface_by_id(ctx->driver_data, id);
     if (!s) return VA_STATUS_ERROR_INVALID_SURFACE;
     if (s->status == VASurfaceRendering) return VA_STATUS_ERROR_SURFACE_BUSY;
-    if (!s->has_pic || s->status == VASurfaceSkipped || (s->last_writer == VAREQ_WRITER_CPU && !s->prime_capture_valid))
+    if (!s->has_pic || s->status == VASurfaceSkipped || (s->last_writer == VAV4L2_WRITER_CPU && !s->prime_capture_valid))
         return VA_STATUS_ERROR_DECODING_ERROR;
-    if (!vareq_surface_capture_matches(ctx, s)) return VA_STATUS_ERROR_INVALID_SURFACE;
+    if (!vav4l2_surface_capture_matches(ctx, s)) return VA_STATUS_ERROR_INVALID_SURFACE;
     return VA_STATUS_SUCCESS;
 }
 
-void vareq_decode_reset(struct vareq_context *ctx)
+void vav4l2_decode_reset(struct vav4l2_context *ctx)
 {
-    vareq_h264_discard_field(ctx, 1);
+    vav4l2_h264_discard_field(ctx, 1);
     if (!ctx || ctx->v4l2_fd < 0)
         return;
 
-    fprintf(stderr, "v4l2request: resetting decode queues\n");
+    fprintf(stderr, "v4l2: resetting decode queues\n");
 
     int stop_failed = 0;
     if (ctx->streamed) {
-        int output = vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
-        int capture = vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+        int output = vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+        int capture = vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
         stop_failed = output < 0 || capture < 0;
         ctx->streamed = 0;
     }
     /* STREAMOFF also drops every kernel DPB reference. */
-    vareq_av1_dpb_model_reset(ctx);
+    vav4l2_av1_dpb_model_reset(ctx);
 
     if (ctx->request_fd >= 0) {
         close(ctx->request_fd);
@@ -668,9 +668,9 @@ void vareq_decode_reset(struct vareq_context *ctx)
     rebuild_free_pools(ctx);
 }
 
-static int queue_output_flags(struct vareq_context *ctx, int index, uint32_t size, uint64_t timestamp, unsigned flags);
+static int queue_output_flags(struct vav4l2_context *ctx, int index, uint32_t size, uint64_t timestamp, unsigned flags);
 
-int vareq_h264_field_supported(struct vareq_context *ctx)
+int vav4l2_h264_field_supported(struct vav4l2_context *ctx)
 {
     /* CREATE_BUFS(count=0) queries capabilities without releasing an existing
      * queue, unlike REQBUFS(count=0). Do not infer HOLD from the codec fourcc. */
@@ -681,7 +681,7 @@ int vareq_h264_field_supported(struct vareq_context *ctx)
         (query.capabilities & V4L2_BUF_CAP_SUPPORTS_M2M_HOLD_CAPTURE_BUF);
 }
 
-static int decode_submit(struct vareq_context *ctx, int out_buf_idx,
+static int decode_submit(struct vav4l2_context *ctx, int out_buf_idx,
     uint32_t bytesused, uint64_t timestamp, int field_capture, int hold)
 {
     struct pollfd pfd;
@@ -691,18 +691,18 @@ static int decode_submit(struct vareq_context *ctx, int out_buf_idx,
     if (!ctx || ctx->v4l2_fd < 0 || ctx->request_fd < 0)
         return -1;
     if (out_buf_idx < 0 || out_buf_idx >= ctx->output_bufs_allocd ||
-        out_buf_idx >= VAREQ_NUM_OUTPUT_BUFS || !bytesused || bytesused > ctx->output_buf_size)
+        out_buf_idx >= VAV4L2_NUM_OUTPUT_BUFS || !bytesused || bytesused > ctx->output_buf_size)
         return -1;
 
-    vareq_decode_trace(ctx, "submit", 0, bytesused);
+    vav4l2_decode_trace(ctx, "submit", 0, bytesused);
     cap_buf_idx = field_capture;
     if (field_capture >= ctx->capture_bufs_allocd) return -1;
-    if (field_capture < 0 && (ctx->capture_memory == V4L2_MEMORY_DMABUF || vareq_expbuf_export_wanted()) && ctx->current_surface &&
+    if (field_capture < 0 && (ctx->capture_memory == V4L2_MEMORY_DMABUF || vav4l2_expbuf_export_wanted()) && ctx->current_surface &&
         ctx->current_surface->buf_index >= 0) {
-        if (!vareq_surface_capture_matches(ctx, ctx->current_surface)) {
-            vareq_decode_trace(ctx, "capture-owner", -1, out_buf_idx);
-            fprintf(stderr, "v4l2request: capture slot belongs to another context\n");
-            vareq_out_pool_push(ctx, out_buf_idx);
+        if (!vav4l2_surface_capture_matches(ctx, ctx->current_surface)) {
+            vav4l2_decode_trace(ctx, "capture-owner", -1, out_buf_idx);
+            fprintf(stderr, "v4l2: capture slot belongs to another context\n");
+            vav4l2_out_pool_push(ctx, out_buf_idx);
             return -1;
         }
         cap_buf_idx = ctx->current_surface->buf_index;
@@ -710,59 +710,59 @@ static int decode_submit(struct vareq_context *ctx, int out_buf_idx,
     claimed = cap_buf_idx >= 0;
     if (cap_buf_idx < 0) {
         if (ctx->n_free_cap == 0) {
-            vareq_decode_trace(ctx, "capture-empty", -1, out_buf_idx);
-            fprintf(stderr, "v4l2request: no free capture buffer\n");
+            vav4l2_decode_trace(ctx, "capture-empty", -1, out_buf_idx);
+            fprintf(stderr, "v4l2: no free capture buffer\n");
 
-            vareq_out_pool_push(ctx, out_buf_idx);
+            vav4l2_out_pool_push(ctx, out_buf_idx);
             return -1;
         }
         cap_buf_idx = ctx->free_cap_bufs[--ctx->n_free_cap];
     }
 
-    if (field_capture < 0 && ctx->capture_memory == V4L2_MEMORY_DMABUF && vareq_capture_dma_bind(ctx, cap_buf_idx) < 0) {
-        vareq_out_pool_push(ctx, out_buf_idx);
-        if (!claimed) vareq_cap_pool_push(ctx, cap_buf_idx);
+    if (field_capture < 0 && ctx->capture_memory == V4L2_MEMORY_DMABUF && vav4l2_capture_dma_bind(ctx, cap_buf_idx) < 0) {
+        vav4l2_out_pool_push(ctx, out_buf_idx);
+        if (!claimed) vav4l2_cap_pool_push(ctx, cap_buf_idx);
         return -1;
     }
     if (queue_output_flags(ctx, out_buf_idx, bytesused, timestamp, hold ? V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF : 0) < 0) {
-        vareq_decode_trace(ctx, "queue-output", -1, out_buf_idx);
-        fprintf(stderr, "v4l2request: QBUF output[%d] failed\n", out_buf_idx);
-        if (field_capture >= 0) { vareq_decode_reset(ctx); return -1; }
-        vareq_out_pool_push(ctx, out_buf_idx);
+        vav4l2_decode_trace(ctx, "queue-output", -1, out_buf_idx);
+        fprintf(stderr, "v4l2: QBUF output[%d] failed\n", out_buf_idx);
+        if (field_capture >= 0) { vav4l2_decode_reset(ctx); return -1; }
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         if (!claimed)
-            vareq_cap_pool_push(ctx, cap_buf_idx);
+            vav4l2_cap_pool_push(ctx, cap_buf_idx);
         return -1;
     }
 
     /* Capture is queued bare: the stateless decoder spec forbids CAPTURE
      * buffers in a request (vb2 answers EPERM for them). */
-    if (ctx->capture_memory == V4L2_MEMORY_DMABUF) vareq_prime_device_written(ctx->current_surface, 0);
-    if (field_capture < 0 && (ctx->capture_memory == V4L2_MEMORY_DMABUF ? vareq_capture_dma_queue(ctx, cap_buf_idx) :
-        vareq_queue_capture(ctx->v4l2_fd, cap_buf_idx, ctx->request_fd)) < 0) {
-        vareq_decode_trace(ctx, "queue-capture", -1, out_buf_idx);
-        fprintf(stderr, "v4l2request: QBUF capture[%d] failed\n", cap_buf_idx);
+    if (ctx->capture_memory == V4L2_MEMORY_DMABUF) vav4l2_prime_device_written(ctx->current_surface, 0);
+    if (field_capture < 0 && (ctx->capture_memory == V4L2_MEMORY_DMABUF ? vav4l2_capture_dma_queue(ctx, cap_buf_idx) :
+        vav4l2_queue_capture(ctx->v4l2_fd, cap_buf_idx, ctx->request_fd)) < 0) {
+        vav4l2_decode_trace(ctx, "queue-capture", -1, out_buf_idx);
+        fprintf(stderr, "v4l2: QBUF capture[%d] failed\n", cap_buf_idx);
         /* OUTPUT is still bound to an unqueued request; DQBUF cannot
          * recover it. STREAMOFF cancels both queues and rebuilds pools. */
-        vareq_decode_reset(ctx);
+        vav4l2_decode_reset(ctx);
         return -1;
     }
 
-    if (vareq_submit_request(ctx->request_fd) < 0) {
-        vareq_decode_trace(ctx, "request-queue", -1, out_buf_idx);
-        fprintf(stderr, "v4l2request: MEDIA_REQUEST_IOC_QUEUE failed\n");
+    if (vav4l2_submit_request(ctx->request_fd) < 0) {
+        vav4l2_decode_trace(ctx, "request-queue", -1, out_buf_idx);
+        fprintf(stderr, "v4l2: MEDIA_REQUEST_IOC_QUEUE failed\n");
         /* The buffers stay queued kernel-side: full reset, not just a
          * pool push — a request that failed to queue produces nothing. */
-        vareq_decode_reset(ctx);
+        vav4l2_decode_reset(ctx);
         return -1;
     }
 
     pfd.fd = hold ? ctx->request_fd : ctx->v4l2_fd;
     pfd.events = hold ? POLLPRI : POLLIN;
     pfd.revents = 0;
-    if (vareq_poll_intr(&pfd, 1, 3000) <= 0 || (hold && !(pfd.revents & POLLPRI))) {
-        vareq_decode_trace(ctx, "decode-poll", -1, out_buf_idx);
-        fprintf(stderr, "v4l2request: decode timeout, resetting queues\n");
-        vareq_decode_reset(ctx);
+    if (vav4l2_poll_intr(&pfd, 1, 3000) <= 0 || (hold && !(pfd.revents & POLLPRI))) {
+        vav4l2_decode_trace(ctx, "decode-poll", -1, out_buf_idx);
+        fprintf(stderr, "v4l2: decode timeout, resetting queues\n");
+        vav4l2_decode_reset(ctx);
         return -1;
     }
 
@@ -770,47 +770,47 @@ static int decode_submit(struct vareq_context *ctx, int out_buf_idx,
     if (!hold) {
         int cap_err = 0;
 
-        done_cap = ctx->capture_memory == V4L2_MEMORY_DMABUF ? vareq_capture_dma_dequeue(ctx, &cap_err) :
-            vareq_dequeue_buffer(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, &cap_err);
+        done_cap = ctx->capture_memory == V4L2_MEMORY_DMABUF ? vav4l2_capture_dma_dequeue(ctx, &cap_err) :
+            vav4l2_dequeue_buffer(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, &cap_err);
         if (done_cap < 0 || done_cap != cap_buf_idx || done_cap >= ctx->capture_bufs_allocd) {
-            vareq_decode_trace(ctx, "capture-dequeue", -1, out_buf_idx);
-            fprintf(stderr, "v4l2request: no matching completed capture buffer\n");
-            vareq_decode_reset(ctx);
+            vav4l2_decode_trace(ctx, "capture-dequeue", -1, out_buf_idx);
+            fprintf(stderr, "v4l2: no matching completed capture buffer\n");
+            vav4l2_decode_reset(ctx);
             return -1;
         }
         if (cap_err) {
-            vareq_decode_trace(ctx, "capture-corrupt", VA_STATUS_ERROR_DECODING_ERROR, done_cap);
+            vav4l2_decode_trace(ctx, "capture-corrupt", VA_STATUS_ERROR_DECODING_ERROR, done_cap);
             /* Corrupt frame: recycle the slot, recover the bitstream buffer
              * via the shared tail, and report -2 ("skipped") — callers mark
              * the surface instead of failing the vaEndPicture entrypoint
              * (Chrome caches VA-API failures for the whole session). */
             if (!claimed)
-                vareq_cap_pool_push(ctx, done_cap);
+                vav4l2_cap_pool_push(ctx, done_cap);
             done_cap = -2;
         }
     }
 
-    done_out = vareq_dequeue_buffer(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, &out_err);
+    done_out = vav4l2_dequeue_buffer(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, &out_err);
     if (done_out < 0) {
         pfd.fd = ctx->v4l2_fd;
         pfd.events = POLLOUT;
-        if (vareq_poll_intr(&pfd, 1, 200) > 0)
-            done_out = vareq_dequeue_buffer(ctx->v4l2_fd,
+        if (vav4l2_poll_intr(&pfd, 1, 200) > 0)
+            done_out = vav4l2_dequeue_buffer(ctx->v4l2_fd,
                                              V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
                                              &out_err);
     }
     if (done_out != out_buf_idx) {
-        vareq_decode_trace(ctx, "output-dequeue", -1, out_buf_idx);
-        fprintf(stderr, "v4l2request: no matching completed output buffer, resetting queues\n");
-        vareq_decode_reset(ctx);
+        vav4l2_decode_trace(ctx, "output-dequeue", -1, out_buf_idx);
+        fprintf(stderr, "v4l2: no matching completed output buffer, resetting queues\n");
+        vav4l2_decode_reset(ctx);
         return -1;
     }
-    vareq_out_pool_push(ctx, done_out);
+    vav4l2_out_pool_push(ctx, done_out);
     if (out_err && done_cap >= 0) {
-        vareq_decode_trace(ctx, "output-corrupt", VA_STATUS_ERROR_DECODING_ERROR, done_out);
-        if (hold) { vareq_decode_reset(ctx); return -2; }
+        vav4l2_decode_trace(ctx, "output-corrupt", VA_STATUS_ERROR_DECODING_ERROR, done_out);
+        if (hold) { vav4l2_decode_reset(ctx); return -2; }
         if (!claimed)
-            vareq_cap_pool_push(ctx, done_cap);
+            vav4l2_cap_pool_push(ctx, done_cap);
         done_cap = -2;
     }
 
@@ -820,19 +820,19 @@ static int decode_submit(struct vareq_context *ctx, int out_buf_idx,
     if (xioctl(ctx->request_fd, MEDIA_REQUEST_IOC_REINIT, NULL) < 0) {
         close(ctx->request_fd);
         ctx->request_fd = -1;
-        if (hold) { vareq_decode_reset(ctx); return -1; }
+        if (hold) { vav4l2_decode_reset(ctx); return -1; }
     }
 
-    vareq_decode_trace(ctx, "submit-done", done_cap < 0 ? done_cap : 0, done_cap >= 0 ? (unsigned)done_cap : UINT32_MAX);
+    vav4l2_decode_trace(ctx, "submit-done", done_cap < 0 ? done_cap : 0, done_cap >= 0 ? (unsigned)done_cap : UINT32_MAX);
     return done_cap;
 }
 
-int vareq_decode_submit(struct vareq_context *ctx, int out_buf_idx, uint32_t bytesused, uint64_t timestamp)
+int vav4l2_decode_submit(struct vav4l2_context *ctx, int out_buf_idx, uint32_t bytesused, uint64_t timestamp)
 {
     return decode_submit(ctx, out_buf_idx, bytesused, timestamp, -1, 0);
 }
 
-int vareq_decode_submit_field(struct vareq_context *ctx, int out_buf_idx,
+int vav4l2_decode_submit_field(struct vav4l2_context *ctx, int out_buf_idx,
     uint32_t bytesused, uint64_t timestamp, int capture_index, int hold)
 {
     return decode_submit(ctx, out_buf_idx, bytesused, timestamp, capture_index, hold);
@@ -842,14 +842,14 @@ int vareq_decode_submit_field(struct vareq_context *ctx, int out_buf_idx,
  * Reconfigure capture (and coded OUTPUT size) when bit-depth, chroma or
  * resolution changes. Safe to call before the first STREAMON.
  */
-int vareq_ensure_capture(struct vareq_context *ctx, int width, int height,
+int vav4l2_ensure_capture(struct vav4l2_context *ctx, int width, int height,
                           uint32_t pixelformat)
 {
     int n_cap, want_cap;
     uint32_t fourcc = pixelformat;
     int size_changed, fmt_changed;
 
-    if (!ctx || ctx->v4l2_fd < 0 || width <= 0 || height <= 0 || !vareq_drm_fourcc_for_capture(fourcc))
+    if (!ctx || ctx->v4l2_fd < 0 || width <= 0 || height <= 0 || !vav4l2_drm_fourcc_for_capture(fourcc))
         return -1;
 
     /* Display size from vaCreateContext is often 1920x1080 while the
@@ -865,20 +865,20 @@ int vareq_ensure_capture(struct vareq_context *ctx, int width, int height,
         return 0;
 
     fprintf(stderr,
-            "v4l2request: renegotiate capture %dx%d %.4s -> %dx%d %.4s streamed=%d\n",
+            "v4l2: renegotiate capture %dx%d %.4s -> %dx%d %.4s streamed=%d\n",
             ctx->width, ctx->height, (char *)&ctx->cap_pixelformat,
             width, height, (char *)&fourcc, ctx->streamed);
 
     if (ctx->streamed) {
-        int output = vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
-        int capture = vareq_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+        int output = vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+        int capture = vav4l2_streamoff(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
         if (output < 0 || capture < 0) { close_failed_decoder(ctx); return -1; }
         ctx->streamed = 0;
-        vareq_av1_dpb_model_reset(ctx);
+        vav4l2_av1_dpb_model_reset(ctx);
     }
 
     release_ctx_capture_surfaces(ctx);
-    vareq_unmap_capture_buffers(ctx);
+    vav4l2_unmap_capture_buffers(ctx);
 
     if (ctx->capture_bufs_allocd > 0) {
         struct v4l2_requestbuffers req = { 0 };
@@ -886,7 +886,7 @@ int vareq_ensure_capture(struct vareq_context *ctx, int width, int height,
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
         req.memory = ctx->capture_memory ? ctx->capture_memory : V4L2_MEMORY_MMAP;
         if (xioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req) < 0) {
-            fprintf(stderr, "v4l2request: REQBUFS(0) capture failed: %s\n",
+            fprintf(stderr, "v4l2: REQBUFS(0) capture failed: %s\n",
                     strerror(errno));
             return -1;
         }
@@ -915,7 +915,7 @@ int vareq_ensure_capture(struct vareq_context *ctx, int width, int height,
             codec_fcc = cur.fmt.pix_mp.pixelformat;
 
             for (i = 0; i < ctx->output_bufs_allocd &&
-                        i < VAREQ_NUM_OUTPUT_BUFS; i++) {
+                        i < VAV4L2_NUM_OUTPUT_BUFS; i++) {
                 if (ctx->output_buf_ptr[i] && ctx->output_buf_ptr[i] != MAP_FAILED) {
                     munmap(ctx->output_buf_ptr[i], ctx->output_buf_size);
                     ctx->output_buf_ptr[i] = NULL;
@@ -929,27 +929,27 @@ int vareq_ensure_capture(struct vareq_context *ctx, int width, int height,
                 ofmt = cur;
                 ofmt.fmt.pix_mp.width = width;
                 ofmt.fmt.pix_mp.height = height;
-                if (vareq_codec_format(ctx, &ofmt) < 0) {
-                    fprintf(stderr, "v4l2request: S_FMT output resize failed: %s\n", strerror(errno));
+                if (vav4l2_codec_format(ctx, &ofmt) < 0) {
+                    fprintf(stderr, "v4l2: S_FMT output resize failed: %s\n", strerror(errno));
                     return -1;
                 }
-                n_out = vareq_setup_codec_output(ctx, codec_fcc,
+                n_out = vav4l2_setup_codec_output(ctx, codec_fcc,
                                                   width, height);
                 if (n_out > 0) {
                     int j;
 
                     ctx->output_bufs_allocd = n_out;
-                    if (vareq_mmap_output_buffers(ctx->v4l2_fd, n_out,
+                    if (vav4l2_mmap_output_buffers(ctx->v4l2_fd, n_out,
                                                    ctx->output_buf_ptr,
                                                    &ctx->output_buf_size) < 0) {
-                        fprintf(stderr, "v4l2request: output re-mmap failed\n");
+                        fprintf(stderr, "v4l2: output re-mmap failed\n");
                         return -1;
                     }
-                    for (j = 0; j < n_out && j < VAREQ_NUM_OUTPUT_BUFS; j++)
-                        vareq_out_pool_push(ctx, j);
+                    for (j = 0; j < n_out && j < VAV4L2_NUM_OUTPUT_BUFS; j++)
+                        vav4l2_out_pool_push(ctx, j);
                 } else {
                     fprintf(stderr,
-                            "v4l2request: output queue rebuild failed\n");
+                            "v4l2: output queue rebuild failed\n");
                     return -1;
                 }
             } else {
@@ -961,68 +961,68 @@ int vareq_ensure_capture(struct vareq_context *ctx, int width, int height,
     /* Native allocations can return fewer slots than requested. Keep full
      * DPB ownership by trying an independently allocated DMA-BUF pool before
      * accepting a degraded native pool. Never recycle live references. */
-    want_cap = ctx->codec == VAREQ_CODEC_AV1 ?
+    want_cap = ctx->codec == VAV4L2_CODEC_AV1 ?
                ((uint64_t)width * (uint64_t)height >= 3840u * 2160u ?
-                VAREQ_NUM_CAPTURE_BUFS_AV1_4K : VAREQ_NUM_CAPTURE_BUFS_AV1) :
-               VAREQ_NUM_CAPTURE_BUFS;
-    n_cap = vareq_capture_dma_setup(ctx, width, height, fourcc, want_cap);
+                VAV4L2_NUM_CAPTURE_BUFS_AV1_4K : VAV4L2_NUM_CAPTURE_BUFS_AV1) :
+               VAV4L2_NUM_CAPTURE_BUFS;
+    n_cap = vav4l2_capture_dma_setup(ctx, width, height, fourcc, want_cap);
     if (n_cap < 0) return -1;
-    if (!n_cap) n_cap = vareq_setup_codec_capture(ctx, width, height, fourcc, want_cap);
+    if (!n_cap) n_cap = vav4l2_setup_codec_capture(ctx, width, height, fourcc, want_cap);
     if (n_cap <= 0 && want_cap > 24) {
-        fprintf(stderr, "v4l2request: retrying capture REQBUFS with 24 buffers\n");
-        n_cap = vareq_setup_codec_capture(ctx, width, height,
+        fprintf(stderr, "v4l2: retrying capture REQBUFS with 24 buffers\n");
+        n_cap = vav4l2_setup_codec_capture(ctx, width, height,
                                                  fourcc, 24);
     }
-    if (n_cap <= 0 && VAREQ_NUM_CAPTURE_BUFS > 8) {
-        fprintf(stderr, "v4l2request: retrying capture REQBUFS with 8 buffers\n");
-        n_cap = vareq_setup_codec_capture(ctx, width, height,
+    if (n_cap <= 0 && VAV4L2_NUM_CAPTURE_BUFS > 8) {
+        fprintf(stderr, "v4l2: retrying capture REQBUFS with 8 buffers\n");
+        n_cap = vav4l2_setup_codec_capture(ctx, width, height,
                                                  fourcc, 8);
     }
-    if (n_cap <= 0 && VAREQ_NUM_CAPTURE_BUFS > 4) {
-        fprintf(stderr, "v4l2request: retrying capture REQBUFS with 4 buffers\n");
-        n_cap = vareq_setup_codec_capture(ctx, width, height,
+    if (n_cap <= 0 && VAV4L2_NUM_CAPTURE_BUFS > 4) {
+        fprintf(stderr, "v4l2: retrying capture REQBUFS with 4 buffers\n");
+        n_cap = vav4l2_setup_codec_capture(ctx, width, height,
                                                  fourcc, 4);
     }
-    const char *pool_mode = getenv("VAREQ_CAPTURE_POOL_DMABUF");
+    const char *pool_mode = getenv("VAV4L2_CAPTURE_POOL_DMABUF");
     int pool_required = pool_mode && !strcmp(pool_mode, "required");
-    if (ctx->capture_memory != V4L2_MEMORY_DMABUF && (n_cap < want_cap || pool_required) && vareq_capture_pool_allowed(ctx)) {
-        vareq_decode_trace(ctx, "capture-pool-fallback", n_cap, want_cap);
+    if (ctx->capture_memory != V4L2_MEMORY_DMABUF && (n_cap < want_cap || pool_required) && vav4l2_capture_pool_allowed(ctx)) {
+        vav4l2_decode_trace(ctx, "capture-pool-fallback", n_cap, want_cap);
         if (reqbufs_zero_memory(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, V4L2_MEMORY_MMAP) < 0) { close_failed_decoder(ctx); return -1; }
-        n_cap = vareq_capture_pool_setup(ctx, width, height, fourcc, want_cap);
+        n_cap = vav4l2_capture_pool_setup(ctx, width, height, fourcc, want_cap);
         if (n_cap < 0) { close_failed_decoder(ctx); return -1; }
         if (!n_cap && pool_required) return -1;
-        if (!n_cap) n_cap = vareq_setup_codec_capture(ctx, width, height, fourcc, want_cap);
+        if (!n_cap) n_cap = vav4l2_setup_codec_capture(ctx, width, height, fourcc, want_cap);
         if (n_cap <= 0) return -1;
     }
     if (n_cap <= 0) return -1;
     ctx->capture_bufs_allocd = n_cap;
-    if (vareq_debug)
-        fprintf(stderr, "v4l2request: capture pool n=%d\n", n_cap);
+    if (vav4l2_debug)
+        fprintf(stderr, "v4l2: capture pool n=%d\n", n_cap);
     ctx->n_free_cap = 0;
     {
         int i;
-        for (i = 0; i < n_cap && i < VAREQ_MAX_CAPTURE_BUFS; i++)
-            vareq_cap_pool_push(ctx, i);
+        for (i = 0; i < n_cap && i < VAV4L2_MAX_CAPTURE_BUFS; i++)
+            vav4l2_cap_pool_push(ctx, i);
     }
     ctx->width = width;
     ctx->height = height;
     ctx->cap_pixelformat = fourcc;
 
-    if (vareq_get_capture_geometry(ctx->v4l2_fd, &ctx->cap_width, &ctx->cap_height,
+    if (vav4l2_get_capture_geometry(ctx->v4l2_fd, &ctx->cap_width, &ctx->cap_height,
                                     &ctx->cap_stride, &ctx->cap_sizeimage) < 0 ||
         ctx->cap_width < (uint32_t)width || ctx->cap_height < (uint32_t)height ||
         !ctx->cap_stride || !ctx->cap_sizeimage) {
-        fprintf(stderr, "v4l2request: invalid negotiated capture for requested %dx%d (got %ux%u)\n",
+        fprintf(stderr, "v4l2: invalid negotiated capture for requested %dx%d (got %ux%u)\n",
                 width, height, ctx->cap_width, ctx->cap_height);
         ctx->n_free_cap = 0;
         ctx->cap_width = ctx->cap_height = 0;
         return -1;
     }
-    fprintf(stderr, "v4l2request: capture geometry %ux%u stride=%u size=%u fourcc=%.4s\n",
+    fprintf(stderr, "v4l2: capture geometry %ux%u stride=%u size=%u fourcc=%.4s\n",
             ctx->cap_width, ctx->cap_height, ctx->cap_stride, ctx->cap_sizeimage, (char *)&fourcc);
     /* Map capture slots lazily after DQBUF; avoid pinning the full pool. */
-    vareq_bind_capture_export(ctx);
-    vareq_decode_trace(ctx, "capture-config", 0, fourcc);
+    vav4l2_bind_capture_export(ctx);
+    vav4l2_decode_trace(ctx, "capture-config", 0, fourcc);
     return 0;
 }
 
@@ -1031,14 +1031,14 @@ int vareq_ensure_capture(struct vareq_context *ctx, int width, int height,
  * The stride can be larger than the width (alignment) — image export must
  * use these values, not the display dimensions.
  */
-int vareq_get_capture_geometry(int fd, uint32_t *w, uint32_t *h,
+int vav4l2_get_capture_geometry(int fd, uint32_t *w, uint32_t *h,
                                 uint32_t *stride, uint32_t *sizeimage)
 {
     struct v4l2_format fmt = { 0 };
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
     if (xioctl(fd, VIDIOC_G_FMT, &fmt) < 0) {
-        fprintf(stderr, "v4l2request: G_FMT capture failed: %s\n", strerror(errno));
+        fprintf(stderr, "v4l2: G_FMT capture failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -1051,14 +1051,14 @@ int vareq_get_capture_geometry(int fd, uint32_t *w, uint32_t *h,
 
 
 
-static void vareq_unmap_capture_buffers(struct vareq_context *ctx)
+static void vav4l2_unmap_capture_buffers(struct vav4l2_context *ctx)
 {
     int i;
 
     if (!ctx)
         return;
-    vareq_capture_dma_release(ctx);
-    for (i = 0; i < VAREQ_MAX_CAPTURE_BUFS; i++) {
+    vav4l2_capture_dma_release(ctx);
+    for (i = 0; i < VAV4L2_MAX_CAPTURE_BUFS; i++) {
         if (!ctx->capture_buf_ptr[i] || ctx->capture_buf_ptr[i] == MAP_FAILED) {
             ctx->capture_buf_ptr[i] = NULL;
             continue;
@@ -1073,7 +1073,7 @@ static void vareq_unmap_capture_buffers(struct vareq_context *ctx)
     ctx->capture_buf_anon = 0;
 }
 
-static int vareq_mmap_one_capture(struct vareq_context *ctx, int index)
+static int vav4l2_mmap_one_capture(struct vav4l2_context *ctx, int index)
 {
     struct v4l2_buffer buf = { 0 };
     struct v4l2_plane planes[1] = { 0 };
@@ -1082,7 +1082,7 @@ static int vareq_mmap_one_capture(struct vareq_context *ctx, int index)
     int anon;
 
     if (!ctx || ctx->v4l2_fd < 0 || index < 0 ||
-        index >= ctx->capture_bufs_allocd || index >= VAREQ_MAX_CAPTURE_BUFS)
+        index >= ctx->capture_bufs_allocd || index >= VAV4L2_MAX_CAPTURE_BUFS)
         return -1;
     if (ctx->capture_buf_ptr[index] && ctx->capture_buf_ptr[index] != MAP_FAILED)
         return 0;
@@ -1093,7 +1093,7 @@ static int vareq_mmap_one_capture(struct vareq_context *ctx, int index)
     buf.length = 1;
     buf.m.planes = planes;
     if (xioctl(ctx->v4l2_fd, VIDIOC_QUERYBUF, &buf) < 0) {
-        fprintf(stderr, "v4l2request: QUERYBUF capture[%d] failed: %s\n",
+        fprintf(stderr, "v4l2: QUERYBUF capture[%d] failed: %s\n",
                 index, strerror(errno));
         return -1;
     }
@@ -1109,12 +1109,12 @@ static int vareq_mmap_one_capture(struct vareq_context *ctx, int index)
         ptr = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED,
                    ctx->v4l2_fd, planes[0].m.mem_offset);
         if (ptr == MAP_FAILED) {
-            fprintf(stderr, "v4l2request: mmap capture[%d] failed: %s\n",
+            fprintf(stderr, "v4l2: mmap capture[%d] failed: %s\n",
                     index, strerror(errno));
             return -1;
         }
-        if (vareq_debug)
-            fprintf(stderr, "v4l2request: capture mmap idx=%d size=%u\n",
+        if (vav4l2_debug)
+            fprintf(stderr, "v4l2: capture mmap idx=%d size=%u\n",
                     index, length);
     }
     ctx->capture_buf_ptr[index] = ptr;
@@ -1125,13 +1125,13 @@ static int vareq_mmap_one_capture(struct vareq_context *ctx, int index)
 
 /*
  * Mmap all output buffers after REQBUFS
- * ptrs[] must be at least VAREQ_NUM_OUTPUT_BUFS
+ * ptrs[] must be at least VAV4L2_NUM_OUTPUT_BUFS
  * Returns number of mmap'd buffers or -1 on error
  */
-int vareq_mmap_output_buffers(int fd, int count, void **ptrs, uint32_t *size_out)
+int vav4l2_mmap_output_buffers(int fd, int count, void **ptrs, uint32_t *size_out)
 {
-    if (count > VAREQ_NUM_OUTPUT_BUFS)
-        count = VAREQ_NUM_OUTPUT_BUFS;
+    if (count > VAV4L2_NUM_OUTPUT_BUFS)
+        count = VAV4L2_NUM_OUTPUT_BUFS;
 
     for (int i = 0; i < count; i++) {
         struct v4l2_buffer buf = { 0 };
@@ -1144,14 +1144,14 @@ int vareq_mmap_output_buffers(int fd, int count, void **ptrs, uint32_t *size_out
         buf.m.planes = planes;
 
         if (xioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
-            fprintf(stderr, "v4l2request: QUERYBUF output[%d] failed: %s\n", i, strerror(errno));
+            fprintf(stderr, "v4l2: QUERYBUF output[%d] failed: %s\n", i, strerror(errno));
             return -1;
         }
 
         void *ptr = mmap(NULL, planes[0].length, PROT_READ | PROT_WRITE,
                          MAP_SHARED, fd, planes[0].m.mem_offset);
         if (ptr == MAP_FAILED) {
-            fprintf(stderr, "v4l2request: mmap output[%d] failed: %s\n", i, strerror(errno));
+            fprintf(stderr, "v4l2: mmap output[%d] failed: %s\n", i, strerror(errno));
             return -1;
         }
 
@@ -1168,7 +1168,7 @@ int vareq_mmap_output_buffers(int fd, int count, void **ptrs, uint32_t *size_out
  * The bitstream was already memcpy'd into the pre-mapped output buffer by
  * the caller — only its length travels with the QBUF.
  */
-static int queue_output_flags(struct vareq_context *ctx, int buf_index,
+static int queue_output_flags(struct vav4l2_context *ctx, int buf_index,
                         uint32_t size, uint64_t timestamp, unsigned flags)
 {
     struct v4l2_buffer buf = { 0 };
@@ -1192,7 +1192,7 @@ static int queue_output_flags(struct vareq_context *ctx, int buf_index,
 
     /* hantro AV1 rejects QBUF unless plane length matches the mapped size.
      * Lengths are fixed per REQBUFS cycle — memoize per index. */
-    if (buf_index >= 0 && buf_index < VAREQ_NUM_OUTPUT_BUFS &&
+    if (buf_index >= 0 && buf_index < VAV4L2_NUM_OUTPUT_BUFS &&
         ctx->output_plane_len[buf_index]) {
         planes[0].length = ctx->output_plane_len[buf_index];
     } else {
@@ -1205,21 +1205,21 @@ static int queue_output_flags(struct vareq_context *ctx, int buf_index,
         q.m.planes = qp;
         if (xioctl(fd, VIDIOC_QUERYBUF, &q) == 0) {
             planes[0].length = qp[0].length;
-            if (buf_index >= 0 && buf_index < VAREQ_NUM_OUTPUT_BUFS)
+            if (buf_index >= 0 && buf_index < VAV4L2_NUM_OUTPUT_BUFS)
                 ctx->output_plane_len[buf_index] = qp[0].length;
         }
     }
     planes[0].bytesused = size;
 
     if (xioctl(fd, VIDIOC_QBUF, &buf) < 0) {
-        fprintf(stderr, "v4l2request: QBUF output[%d] failed: %s\n", buf_index, strerror(errno));
+        fprintf(stderr, "v4l2: QBUF output[%d] failed: %s\n", buf_index, strerror(errno));
         return -1;
     }
 
     return 0;
 }
 
-int vareq_queue_output(struct vareq_context *ctx, int buf_index, uint32_t size, uint64_t timestamp)
+int vav4l2_queue_output(struct vav4l2_context *ctx, int buf_index, uint32_t size, uint64_t timestamp)
 {
     return queue_output_flags(ctx, buf_index, size, timestamp, 0);
 }
@@ -1227,7 +1227,7 @@ int vareq_queue_output(struct vareq_context *ctx, int buf_index, uint32_t size, 
 /*
  * Queue a capture buffer (decoded frame output)
  */
-int vareq_queue_capture(int fd, int buf_index, int request_fd)
+int vav4l2_queue_capture(int fd, int buf_index, int request_fd)
 {
     struct v4l2_buffer buf = { 0 };
     struct v4l2_plane planes[1] = { 0 };
@@ -1245,14 +1245,14 @@ int vareq_queue_capture(int fd, int buf_index, int request_fd)
     (void)request_fd;
 
     if (xioctl(fd, VIDIOC_QBUF, &buf) < 0) {
-        fprintf(stderr, "v4l2request: QBUF capture[%d] failed: %s\n", buf_index, strerror(errno));
+        fprintf(stderr, "v4l2: QBUF capture[%d] failed: %s\n", buf_index, strerror(errno));
         return -1;
     }
 
     return 0;
 }
 
-int vareq_surface_alloc_export_fd(struct vareq_surface *s)
+int vav4l2_surface_alloc_export_fd(struct vav4l2_surface *s)
 {
     uint32_t stride, h, sz;
     int fd;
@@ -1264,11 +1264,11 @@ int vareq_surface_alloc_export_fd(struct vareq_surface *s)
 
     stride = s->cpu_stride ? s->cpu_stride : s->width;
     h = s->height;
-    sz = vareq_va_image_size(s->format ? s->format : VA_FOURCC_NV12, stride, h);
+    sz = vav4l2_va_image_size(s->format ? s->format : VA_FOURCC_NV12, stride, h);
     if (!sz)
         sz = stride * h * 3 / 2;
 
-    fd = memfd_create("vareq-surf", MFD_CLOEXEC);
+    fd = memfd_create("vav4l2-surf", MFD_CLOEXEC);
     if (fd < 0)
         return -1;
     if (ftruncate(fd, (off_t)sz) < 0) {
@@ -1286,7 +1286,7 @@ int vareq_surface_alloc_export_fd(struct vareq_surface *s)
     return 0;
 }
 
-int vareq_surface_ensure_cpu(struct vareq_surface *s)
+int vav4l2_surface_ensure_cpu(struct vav4l2_surface *s)
 {
     if (!s || !s->cpu_size)
         return -1;
@@ -1301,11 +1301,11 @@ int vareq_surface_ensure_cpu(struct vareq_surface *s)
 /* Grow-only: a smaller `size` (resolution step-down) must never ftruncate —
  * clients may still hold mappings or dup'd fds of the larger memfd, and
  * shrinking drops pages under them (SIGBUS). */
-int vareq_surface_grow_memfd(struct vareq_surface *s, uint32_t size)
+int vav4l2_surface_grow_memfd(struct vav4l2_surface *s, uint32_t size)
 {
     if (!s)
         return -1;
-    if (s->memfd_fd < 0 && vareq_surface_alloc_export_fd(s) < 0)
+    if (s->memfd_fd < 0 && vav4l2_surface_alloc_export_fd(s) < 0)
         return -1;
     if (size == 0 || s->memfd_fd < 0 || size <= s->memfd_size)
         return 0;
@@ -1321,7 +1321,7 @@ int vareq_surface_grow_memfd(struct vareq_surface *s, uint32_t size)
  * moving remap would pull the pages from under them) by parking the old
  * one as "retired" until the last borrower releases it. Callers must
  * NOT munmap the result — the surface owns it. NULL on failure. */
-void *vareq_surface_map_memfd(struct vareq_surface *s, uint32_t need)
+void *vav4l2_surface_map_memfd(struct vav4l2_surface *s, uint32_t need)
 {
     void *nm;
 
@@ -1329,7 +1329,7 @@ void *vareq_surface_map_memfd(struct vareq_surface *s, uint32_t need)
         return NULL;
     if (s->memfd_map && s->memfd_map_size >= need)
         return s->memfd_map;
-    if (need > s->memfd_size && vareq_surface_grow_memfd(s, need) < 0)
+    if (need > s->memfd_size && vav4l2_surface_grow_memfd(s, need) < 0)
         return NULL;
     if (s->memfd_map) {
         if (s->memfd_borrows) {
@@ -1358,20 +1358,20 @@ void *vareq_surface_map_memfd(struct vareq_surface *s, uint32_t need)
     return s->memfd_map;
 }
 
-int vareq_surface_pull_capture(struct vareq_context *ctx,
-                                struct vareq_surface *surf, int buf_index)
+int vav4l2_surface_pull_capture(struct vav4l2_context *ctx,
+                                struct vav4l2_surface *surf, int buf_index)
 {
     if (!ctx || !surf || ctx->v4l2_fd < 0 || buf_index < 0 || buf_index >= ctx->capture_bufs_allocd) return -1;
-    vareq_decode_trace(ctx, "pull-begin", 0, buf_index);
+    vav4l2_decode_trace(ctx, "pull-begin", 0, buf_index);
     surf->h264_frame_num_valid = 0;
-    if (ctx->capture_memory == V4L2_MEMORY_DMABUF) return vareq_capture_dma_complete(ctx, surf, buf_index);
-    if (vareq_mmap_one_capture(ctx, buf_index) < 0) { vareq_decode_trace(ctx, "pull-map", -1, buf_index); return -1; }
+    if (ctx->capture_memory == V4L2_MEMORY_DMABUF) return vav4l2_capture_dma_complete(ctx, surf, buf_index);
+    if (vav4l2_mmap_one_capture(ctx, buf_index) < 0) { vav4l2_decode_trace(ctx, "pull-map", -1, buf_index); return -1; }
     void *src = ctx->capture_buf_ptr[buf_index];
     if (!src || src == MAP_FAILED) return -1;
-    return vareq_surface_store_capture(ctx, surf, buf_index, src, ctx->capture_buf_size, 1);
+    return vav4l2_surface_store_capture(ctx, surf, buf_index, src, ctx->capture_buf_size, 1);
 }
 
-int vareq_surface_store_capture(struct vareq_context *ctx, struct vareq_surface *surf,
+int vav4l2_surface_store_capture(struct vav4l2_context *ctx, struct vav4l2_surface *surf,
                                   int buf_index, void *src, uint32_t sz, int live_view)
 {
     uint32_t stride, alh, fcc; void *dst;
@@ -1380,23 +1380,23 @@ int vareq_surface_store_capture(struct vareq_context *ctx, struct vareq_surface 
     fcc = ctx->cap_pixelformat ? ctx->cap_pixelformat : V4L2_PIX_FMT_NV12;
     if (ctx->cap_sizeimage && ctx->cap_sizeimage < sz)
         sz = ctx->cap_sizeimage;
-    uint32_t need = vareq_capture_plane_size(fcc, stride, alh);
+    uint32_t need = vav4l2_capture_plane_size(fcc, stride, alh);
     uint32_t row = (fcc == V4L2_PIX_FMT_NV15 || fcc == V4L2_PIX_FMT_NV20)
         ? ((surf->width + 3) / 4) * 5 : (surf->width + 1) & ~1u;
-    if (!need || sz < need || stride < row || alh < surf->height) { vareq_decode_trace(ctx, "pull-geometry", -1, sz); return -1; }
+    if (!need || sz < need || stride < row || alh < surf->height) { vav4l2_decode_trace(ctx, "pull-geometry", -1, sz); return -1; }
 
     /* A client may still hold the GBM fd exported before EXPBUF became
      * available. That object must receive every new frame in either mode. */
     if ((surf->prime || (surf->gbm_bo && surf->format != VA_FOURCC_NV12)) &&
-        vareq_prime_capture(surf, src, stride, alh, fcc, sz) < 0) return -1;
+        vav4l2_prime_capture(surf, src, stride, alh, fcc, sz) < 0) return -1;
     if (surf->gbm_bo && surf->format == VA_FOURCC_NV12 && (fcc != V4L2_PIX_FMT_NV12 ||
-        vareq_gbm_surface_upload(surf, src, stride, alh) < 0)) {
+        vav4l2_gbm_surface_upload(surf, src, stride, alh) < 0)) {
         surf->gbm_dirty = 1;
-        fprintf(stderr, "v4l2request: gbm display upload failed\n");
+        fprintf(stderr, "v4l2: gbm display upload failed\n");
         return -1;
     }
 
-    if (live_view && vareq_expbuf_export_wanted()) {
+    if (live_view && vav4l2_expbuf_export_wanted()) {
         /* Skip capture→GBM/memfd memcpy. Chrome EXPBUFs this index.
          * GetImage/Derive read capture_buf_ptr[buf_index] while it is live. */
         surf->has_pic = 1;
@@ -1406,7 +1406,7 @@ int vareq_surface_store_capture(struct vareq_context *ctx, struct vareq_surface 
         surf->cap_fourcc = fcc;
         surf->cap_view = live_view ? src : NULL;
         surf->capture_ctx = ctx;
-        surf->last_writer = VAREQ_WRITER_MEMFD;
+        surf->last_writer = VAV4L2_WRITER_MEMFD;
         return 0;
     }
 
@@ -1414,7 +1414,7 @@ int vareq_surface_store_capture(struct vareq_context *ctx, struct vareq_surface 
      * Lazy memfd: when this surface has a GBM display bo, the bo is the
      * per-frame snapshot and the memfd copy is skipped — CPU-readback
      * callers (vaGetImage / vaDeriveImage / VPP source) refill it on
-     * demand via vareq_surface_ensure_memfd(). Halves the per-frame
+     * demand via vav4l2_surface_ensure_memfd(). Halves the per-frame
      * memcpy traffic for zero-copy clients (Chrome never reads back).
      * An existing exported bo must receive the current pixels. A memfd
      * fallback cannot update handles already held by display clients.
@@ -1427,13 +1427,13 @@ int vareq_surface_store_capture(struct vareq_context *ctx, struct vareq_surface 
         surf->cap_fourcc = fcc;
         surf->cap_view = live_view ? src : NULL;
         surf->capture_ctx = ctx;
-        surf->last_writer = VAREQ_WRITER_BO;
+        surf->last_writer = VAV4L2_WRITER_BO;
         return 0;
     }
 
-    if (vareq_surface_grow_memfd(surf, sz) < 0) { vareq_decode_trace(ctx, "pull-memfd-grow", -1, sz); return -1; }
-    dst = vareq_surface_map_memfd(surf, sz);
-    if (!dst) { vareq_decode_trace(ctx, "pull-memfd-map", -1, sz); return -1; }
+    if (vav4l2_surface_grow_memfd(surf, sz) < 0) { vav4l2_decode_trace(ctx, "pull-memfd-grow", -1, sz); return -1; }
+    dst = vav4l2_surface_map_memfd(surf, sz);
+    if (!dst) { vav4l2_decode_trace(ctx, "pull-memfd-map", -1, sz); return -1; }
     memcpy(dst, src, sz);
 
     surf->has_pic = 1;
@@ -1443,11 +1443,11 @@ int vareq_surface_store_capture(struct vareq_context *ctx, struct vareq_surface 
     surf->cap_fourcc = fcc;
     surf->cap_view = live_view ? src : NULL;
     surf->capture_ctx = ctx;
-    surf->last_writer = VAREQ_WRITER_MEMFD;
+    surf->last_writer = VAV4L2_WRITER_MEMFD;
     return 0;
 }
 
-int vareq_bind_capture_export(struct vareq_context *ctx)
+int vav4l2_bind_capture_export(struct vav4l2_context *ctx)
 {
     int i, n;
     uint32_t sz;
@@ -1457,22 +1457,22 @@ int vareq_bind_capture_export(struct vareq_context *ctx)
 
     sz = ctx->cap_sizeimage;
     if (!sz)
-        sz = vareq_capture_plane_size(ctx->cap_pixelformat ? ctx->cap_pixelformat
+        sz = vav4l2_capture_plane_size(ctx->cap_pixelformat ? ctx->cap_pixelformat
                                                             : V4L2_PIX_FMT_NV12,
                                        ctx->cap_stride, ctx->cap_height);
 
     n = ctx->num_render_targets;
     for (i = 0; i < n; i++) {
         VASurfaceID id;
-        struct vareq_surface *s;
+        struct vav4l2_surface *s;
 
         if (!ctx->render_targets)
             break;
         id = ctx->render_targets[i];
-        s = vareq_surface_by_id(ctx->driver_data, id);
+        s = vav4l2_surface_by_id(ctx->driver_data, id);
         if (!s)
             continue;
-        if (vareq_surface_grow_memfd(s, sz) < 0)
+        if (vav4l2_surface_grow_memfd(s, sz) < 0)
             continue;
         s->stride = ctx->cap_stride;
         s->aligned_h = ctx->cap_height;
@@ -1481,7 +1481,7 @@ int vareq_bind_capture_export(struct vareq_context *ctx)
     return 0;
 }
 
-void vareq_fill_prime_layers(VADRMPRIMESurfaceDescriptor *desc,
+void vav4l2_fill_prime_layers(VADRMPRIMESurfaceDescriptor *desc,
                               int fd, uint32_t object_size,
                               uint64_t modifier, uint32_t va_fourcc,
                               uint32_t width, uint32_t height,
@@ -1525,7 +1525,7 @@ void vareq_fill_prime_layers(VADRMPRIMESurfaceDescriptor *desc,
 
 /* DMA-BUF supports SEEK_END/SEEK_SET for its complete object size. Never
  * return an fd with a descriptor that understates its required plane span. */
-int vareq_export_fd_validate(int fd, uint64_t required, uint32_t *size)
+int vav4l2_export_fd_validate(int fd, uint64_t required, uint32_t *size)
 {
     off_t end = lseek(fd, 0, SEEK_END);
     if (!required || end < 0 || (uint64_t)end < required || (uint64_t)end > UINT32_MAX ||
@@ -1541,7 +1541,7 @@ int vareq_export_fd_validate(int fd, uint64_t required, uint32_t *size)
 /* flag_error (optional) is set when the dequeued buffer carried
  * V4L2_BUF_FLAG_ERROR — the index is still returned so the caller can
  * recycle the slot; the data itself must not be used. */
-int vareq_dequeue_buffer(int fd, enum v4l2_buf_type type, int *flag_error)
+int vav4l2_dequeue_buffer(int fd, enum v4l2_buf_type type, int *flag_error)
 {
     struct v4l2_buffer buf = { 0 };
     struct v4l2_plane planes[1] = { 0 };
@@ -1555,11 +1555,11 @@ int vareq_dequeue_buffer(int fd, enum v4l2_buf_type type, int *flag_error)
         *flag_error = 0;
     if (xioctl(fd, VIDIOC_DQBUF, &buf) < 0) {
         if (errno != EAGAIN)
-            fprintf(stderr, "v4l2request: DQBUF failed: %s\n", strerror(errno));
+            fprintf(stderr, "v4l2: DQBUF failed: %s\n", strerror(errno));
         return -1;
     }
     if (buf.flags & V4L2_BUF_FLAG_ERROR) {
-        fprintf(stderr, "v4l2request: DQBUF type=%u idx=%u ERROR flags=0x%x bytesused=%u\n",
+        fprintf(stderr, "v4l2: DQBUF type=%u idx=%u ERROR flags=0x%x bytesused=%u\n",
                 (unsigned)type, buf.index, buf.flags, planes[0].bytesused);
         if (flag_error)
             *flag_error = 1;
@@ -1579,14 +1579,14 @@ int vareq_dequeue_buffer(int fd, enum v4l2_buf_type type, int *flag_error)
  *
  * Returns 0 on success, -1 on error.
  */
-int vareq_set_request_controls(int request_fd, int v4l2_fd,
+int vav4l2_set_request_controls(int request_fd, int v4l2_fd,
                                 struct v4l2_ext_controls *ctrls)
 {
     ctrls->which = V4L2_CTRL_WHICH_REQUEST_VAL;
     ctrls->request_fd = request_fd;
 
     if (xioctl(v4l2_fd, VIDIOC_S_EXT_CTRLS, ctrls) < 0) {
-        fprintf(stderr, "v4l2request: S_EXT_CTRLS (request_fd=%d) failed: %s "
+        fprintf(stderr, "v4l2: S_EXT_CTRLS (request_fd=%d) failed: %s "
                 "(%d controls, first_id=0x%x)\n",
                 request_fd, strerror(errno),
                 ctrls->count, ctrls->count > 0 ? ctrls->controls[0].id : 0);
@@ -1601,13 +1601,13 @@ int vareq_set_request_controls(int request_fd, int v4l2_fd,
  * stream-level controls globally — e.g. the rkvdec HEVC SPS rejects the
  * request-scoped variant with EINVAL.
  */
-int vareq_set_global_controls(int v4l2_fd, struct v4l2_ext_controls *ctrls)
+int vav4l2_set_global_controls(int v4l2_fd, struct v4l2_ext_controls *ctrls)
 {
     ctrls->which = V4L2_CTRL_WHICH_CUR_VAL;
     ctrls->request_fd = 0;
 
     if (xioctl(v4l2_fd, VIDIOC_S_EXT_CTRLS, ctrls) < 0) {
-        fprintf(stderr, "v4l2request: S_EXT_CTRLS (global) failed: %s\n",
+        fprintf(stderr, "v4l2: S_EXT_CTRLS (global) failed: %s\n",
                 strerror(errno));
         return -1;
     }
@@ -1616,21 +1616,21 @@ int vareq_set_global_controls(int v4l2_fd, struct v4l2_ext_controls *ctrls)
 
 /* Queue the request; the decoder consumes the controls bound to it.
  * Returns 0 on success, -1 on error. */
-int vareq_submit_request(int request_fd)
+int vav4l2_submit_request(int request_fd)
 {
     if (xioctl(request_fd, MEDIA_REQUEST_IOC_QUEUE, NULL) < 0) {
-        fprintf(stderr, "v4l2request: REQUEST_IOC_QUEUE failed: %s\n", strerror(errno));
+        fprintf(stderr, "v4l2: REQUEST_IOC_QUEUE failed: %s\n", strerror(errno));
         return -1;
     }
 
     return 0;
 }
 
-void vareq_explog(const char *fmt, ...)
+void vav4l2_explog(const char *fmt, ...)
 {
     va_list ap;
 
-    if (!vareq_debug)
+    if (!vav4l2_debug)
         return;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -1638,25 +1638,25 @@ void vareq_explog(const char *fmt, ...)
     fflush(stderr);
 }
 
-int vareq_expbuf_export_wanted(void)
+int vav4l2_expbuf_export_wanted(void)
 {
     static int once, wanted;
     if (!once) {
-        const char *e = getenv("VAREQ_EXPBUF_EXPORT");
+        const char *e = getenv("VAV4L2_EXPBUF_EXPORT");
 
         /* Native export is enabled unless explicitly disabled. */
         wanted = 1;
         if (e && e[0] == '0')
             wanted = 0;
         once = 1;
-        if (vareq_debug)
-            fprintf(stderr, "v4l2request: EXPBUF wanted=%d pid=%d\n",
+        if (vav4l2_debug)
+            fprintf(stderr, "v4l2: EXPBUF wanted=%d pid=%d\n",
                     wanted, getpid());
     }
     return wanted;
 }
 
-int vareq_capture_expbuf(struct vareq_context *ctx, int buf_index)
+int vav4l2_capture_expbuf(struct vav4l2_context *ctx, int buf_index)
 {
     struct v4l2_exportbuffer exp;
 
@@ -1671,16 +1671,16 @@ int vareq_capture_expbuf(struct vareq_context *ctx, int buf_index)
     exp.index = (unsigned)buf_index;
     exp.plane = 0;
     exp.flags = O_CLOEXEC | O_RDWR;
-    if (vareq_xioctl(ctx->v4l2_fd, VIDIOC_EXPBUF, &exp) < 0) {
-        fprintf(stderr, "v4l2request: EXPBUF capture[%d] failed: %s\n",
+    if (vav4l2_xioctl(ctx->v4l2_fd, VIDIOC_EXPBUF, &exp) < 0) {
+        fprintf(stderr, "v4l2: EXPBUF capture[%d] failed: %s\n",
                 buf_index, strerror(errno));
         return -1;
     }
     return exp.fd;
 }
 
-int vareq_claim_capture_for_export(struct vareq_context *ctx,
-                                    struct vareq_surface *surf)
+int vav4l2_claim_capture_for_export(struct vav4l2_context *ctx,
+                                    struct vav4l2_surface *surf)
 {
     int idx, w, h;
     uint32_t fourcc;
@@ -1690,12 +1690,12 @@ int vareq_claim_capture_for_export(struct vareq_context *ctx,
     w = ctx->width > 0 ? ctx->width : (int)surf->width;
     h = ctx->height > 0 ? ctx->height : (int)surf->height;
     fourcc = ctx->cap_pixelformat ? ctx->cap_pixelformat : V4L2_PIX_FMT_NV12;
-    if (vareq_ensure_capture(ctx, w, h, fourcc) < 0)
+    if (vav4l2_ensure_capture(ctx, w, h, fourcc) < 0)
         return -1;
     if (surf->buf_index >= 0)
         return 0;
     if (ctx->n_free_cap == 0) {
-        vareq_explog("v4l2request: claim capture: no free slot surf=%u\n",
+        vav4l2_explog("v4l2: claim capture: no free slot surf=%u\n",
                       (unsigned)surf->surface_id);
         return -1;
     }
@@ -1707,7 +1707,7 @@ int vareq_claim_capture_for_export(struct vareq_context *ctx,
     surf->cap_fourcc = ctx->cap_pixelformat;
     /* Do not mmap here: mapping the whole Chrome pool pins ~75MB CMA and
      * has hung this SoC. EXPBUF does not need a userspace mapping. */
-    vareq_explog("v4l2request: claim capture idx=%d surf=%u\n",
+    vav4l2_explog("v4l2: claim capture idx=%d surf=%u\n",
                   idx, (unsigned)surf->surface_id);
     return 0;
 }

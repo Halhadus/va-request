@@ -8,7 +8,7 @@
 #include <sys/mman.h>
 #include <va/va.h>
 #include <va/va_enc_jpeg.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
 static int failures, mode, releases, stops;
 static unsigned out_bytes;
@@ -120,10 +120,10 @@ static void jpeg_case(int test_mode)
 {
     mode = test_mode; releases = 0; jpeg_quality_value = 0;
     uint8_t live[24]; memset(live, 0x6a, sizeof(live));
-    struct vareq_surface src = {.width = 4, .height = 4, .format = VA_FOURCC_NV12,
+    struct vav4l2_surface src = {.width = 4, .height = 4, .format = VA_FOURCC_NV12,
         .has_pic = 1, .cap_fourcc = V4L2_PIX_FMT_NV12, .buf_index = 0,
         .cap_view = live, .stride = 4, .aligned_h = 4, .memfd_fd = -1};
-    struct vareq_context c = {.codec = VAREQ_CODEC_JPEG_ENC, .current_surface = &src};
+    struct vav4l2_context c = {.codec = VAV4L2_CODEC_JPEG_ENC, .current_surface = &src};
     c.v4l2_fd = (mode == 6 || mode == 13 || mode == 18) ? memfd_create("jpeg-negotiation", MFD_CLOEXEC) : open("/dev/null", O_RDWR | O_CLOEXEC);
     if (mode == 6 || mode == 13 || mode == 18) {
         uint8_t payload[64]; memset(payload, 0x9b, sizeof(payload));
@@ -133,26 +133,26 @@ static void jpeg_case(int test_mode)
         jpeg_capture_set = jpeg_output_after_capture = jpeg_output_submitted = 0;
     }
     unsigned cap = mode == 3 ? 16 : 64;
-    struct vareq_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = cap, .num_elements = 1};
+    struct vav4l2_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = cap, .num_elements = 1};
     coded.data = calloc(1, sizeof(VACodedBufferSegment) + cap);
     if (!coded.data) exit(1);
     VACodedBufferSegment *seg = coded.data; seg->buf = seg + 1;
     c.buffers = &coded;
     VAEncPictureParameterBufferJPEG pic = {.coded_buf = 1, .picture_width = 4, .picture_height = 4, .quality = 50};
-    struct vareq_buffer params = {.type = VAEncPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
+    struct vav4l2_buffer params = {.type = VAEncPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
     struct { VAEncMiscParameterType type; VAEncMiscParameterBufferQualityLevel level; } preset = {
         .type = VAEncMiscParameterTypeQualityLevel, .level.quality_level = 1};
-    struct vareq_buffer preset_buf = {.type = VAEncMiscParameterBufferType, .data = &preset, .size = sizeof(preset)};
+    struct vav4l2_buffer preset_buf = {.type = VAEncMiscParameterBufferType, .data = &preset, .size = sizeof(preset)};
     /* FFmpeg8 default quality80 matrices are already scaled by truncation;
      * its picture quality is50. Preserve the established native50 path. */
     VAQMatrixBufferJPEG matrix = {.load_lum_quantiser_matrix = 1, .load_chroma_quantiser_matrix = 1,
         .lum_quantiser_matrix = {6,4,4,5,4,4,6,5,5,5,7,6,6,7,9,16,10,9,8,8,9,19,14,14,11,16,23,20,24,24,22,20,22,22,25,28,36,31,25,27,34,27,22,22,32,43,32,34,38,39,41,41,41,24,30,45,48,44,40,48,36,40,41,39},
         .chroma_quantiser_matrix = {6,7,7,9,8,9,18,10,10,18,39,26,22,26,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39,39}};
-    struct vareq_buffer matrix_buf = {.type = VAQMatrixBufferType, .data = &matrix, .size = sizeof(matrix)};
-    struct vareq_buffer *buffers[] = {&params, &preset_buf, &matrix_buf};
+    struct vav4l2_buffer matrix_buf = {.type = VAQMatrixBufferType, .data = &matrix, .size = sizeof(matrix)};
+    struct vav4l2_buffer *buffers[] = {&params, &preset_buf, &matrix_buf};
     if (mode == 10 || mode == 11) pic.quality = 0;
     if (mode == 11) preset.level.quality_level = UINT32_MAX;
-    struct vareq_m2m_state *q = &c.jpeg_q;
+    struct vav4l2_m2m_state *q = &c.jpeg_q;
     if (mode != 4 && mode != 6 && mode != 13 && mode != 18) {
         q->valid = 1; q->key[0] = q->key[1] = 4; q->key[2] = 50;
         q->out_planes = 1; q->out_len[0] = 72; q->cap_len = 64;
@@ -161,14 +161,14 @@ static void jpeg_case(int test_mode)
         q->ofmt.fmt.pix_mp.num_planes = 1; q->ofmt.fmt.pix_mp.plane_fmt[0].bytesperline = 8;
         memset(q->cap_map, 0x9b, 64);
     }
-    vareq_set_ioctl_hook(m2m_ioctl);
-    VAStatus result = vareq_jpeg_encode(&c, buffers, mode == 18 ? 3 : mode >= 10 ? 2 : 1);
+    vav4l2_set_ioctl_hook(m2m_ioctl);
+    VAStatus result = vav4l2_jpeg_encode(&c, buffers, mode == 18 ? 3 : mode >= 10 ? 2 : 1);
     if (!mode || mode == 6 || mode == 10 || mode == 11 || mode == 18) {
         expect(result == VA_STATUS_SUCCESS && seg->size == 44 && ((uint8_t *)seg->buf)[43] == 0x9b,
                "jpeg-full-capacity-with-data-offset");
         if (result != VA_STATUS_SUCCESS) {
-            vareq_m2m_teardown(&c, q);
-            vareq_set_ioctl_hook(NULL);
+            vav4l2_m2m_teardown(&c, q);
+            vav4l2_set_ioctl_hook(NULL);
             free(coded.data); close(c.v4l2_fd);
             return;
         }
@@ -181,7 +181,7 @@ static void jpeg_case(int test_mode)
             expect(((uint8_t *)q->out_map[0])[0] == 0x6a && ((uint8_t *)q->out_map[1])[0] == 0x6a,
                    "jpeg-negotiated-nv12m-plane-pixels");
             /* Identical second picture must reuse the negotiated queues. */
-            expect(vareq_jpeg_encode(&c, buffers, mode == 18 ? 3 : 1) == VA_STATUS_SUCCESS && jpeg_output_submitted == 2,
+            expect(vav4l2_jpeg_encode(&c, buffers, mode == 18 ? 3 : 1) == VA_STATUS_SUCCESS && jpeg_output_submitted == 2,
                    "jpeg-negotiation-reused-next-picture");
         } else {
             expect(((uint8_t *)q->out_map[0])[0] == 0x6a && ((uint8_t *)q->out_map[0])[48] == 0x6a,
@@ -192,25 +192,25 @@ static void jpeg_case(int test_mode)
         if (mode == 3) expect(result == VA_STATUS_ERROR_NOT_ENOUGH_BUFFER &&
             (seg->status & VA_CODED_BUF_STATUS_FRAME_SIZE_OVERFLOW), "jpeg-small-coded-buffer-reports-overflow");
     }
-    vareq_m2m_teardown(&c, q);
-    vareq_set_ioctl_hook(NULL);
+    vav4l2_m2m_teardown(&c, q);
+    vav4l2_set_ioctl_hook(NULL);
     free(coded.data); close(c.v4l2_fd);
 }
 static void vpp_geometry(void)
 {
     mode = 0; out_bytes = 0;
-    struct vareq_driver_data dd = {0};
+    struct vav4l2_driver_data dd = {0};
     uint8_t input[144], output[96]; memset(input, 0x11, sizeof(input)); memset(output, 0, sizeof(output));
     memset(input + 16 * 6, 0x7a, 32);
-    struct vareq_surface src = {.width = 4, .height = 4, .format = VA_FOURCC_NV12,
+    struct vav4l2_surface src = {.width = 4, .height = 4, .format = VA_FOURCC_NV12,
         .has_pic = 1, .cap_fourcc = V4L2_PIX_FMT_NV12, .buf_index = 0,
         .cap_view = input, .stride = 16, .aligned_h = 6};
-    struct vareq_surface dst = {.width = 4, .height = 4, .format = VA_FOURCC_NV12,
+    struct vav4l2_surface dst = {.width = 4, .height = 4, .format = VA_FOURCC_NV12,
         .cpu_ptr = output, .cpu_stride = 16, .cpu_size = sizeof(output)};
     dd.surfaces[1] = &src;
-    struct vareq_context c = {.driver_data = &dd, .codec = VAREQ_CODEC_VPP, .current_surface = &dst};
+    struct vav4l2_context c = {.driver_data = &dd, .codec = VAV4L2_CODEC_VPP, .current_surface = &dst};
     c.v4l2_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
-    struct vareq_m2m_state *q = &c.vpp_q;
+    struct vav4l2_m2m_state *q = &c.vpp_q;
     q->valid = 1; q->key[0] = q->key[1] = q->key[3] = q->key[4] = 4;
     q->key[2] = q->key[5] = VA_FOURCC_NV12;
     q->out_planes = 1;
@@ -219,40 +219,40 @@ static void vpp_geometry(void)
     q->ofmt.fmt.pix_mp.plane_fmt[0].bytesperline = q->cfmt.fmt.pix_mp.plane_fmt[0].bytesperline = 8;
     memset(q->cap_map, 0x22, 48); memset((uint8_t *)q->cap_map + 32, 0x5b, 16);
     VAProcPipelineParameterBuffer pipe = {.surface = 1};
-    struct vareq_buffer params = {.type = VAProcPipelineParameterBufferType, .data = &pipe, .size = sizeof(pipe)};
-    struct vareq_buffer *buffers[] = {&params};
-    vareq_set_ioctl_hook(m2m_ioctl);
+    struct vav4l2_buffer params = {.type = VAProcPipelineParameterBufferType, .data = &pipe, .size = sizeof(pipe)};
+    struct vav4l2_buffer *buffers[] = {&params};
+    vav4l2_set_ioctl_hook(m2m_ioctl);
     /* VPP payload has no offset; report 48 bytes for this case. */
     mode = 5;
-    VAStatus result = vareq_vpp_run(&c, buffers, 1);
+    VAStatus result = vav4l2_vpp_run(&c, buffers, 1);
     expect(result == VA_STATUS_SUCCESS && out_bytes == 48 && ((uint8_t *)q->out_map[0])[32] == 0x7a,
            "vpp-padded-source-chroma-and-output-bytesused");
     expect(output[64] == 0x5b && output[32] == 0x22, "vpp-destination-plane-offset");
-    vareq_m2m_teardown(&c, q);
-    vareq_set_ioctl_hook(NULL); close(c.v4l2_fd);
+    vav4l2_m2m_teardown(&c, q);
+    vav4l2_set_ioctl_hook(NULL); close(c.v4l2_fd);
 }
 static void failed_teardown(void)
 {
     for (mode = 14; mode <= 17; mode++) {
-        struct vareq_context c = {.v4l2_fd = open("/dev/null", O_RDWR | O_CLOEXEC)};
+        struct vav4l2_context c = {.v4l2_fd = open("/dev/null", O_RDWR | O_CLOEXEC)};
         int fd = c.v4l2_fd;
-        struct vareq_m2m_state *q = &c.jpeg_q;
+        struct vav4l2_m2m_state *q = &c.jpeg_q;
         q->valid = 1; q->streaming = mode == 17 ? 0 : 3;
         q->out_map[0] = mapping(64); q->out_len[0] = 64;
         q->cap_map = mapping(64); q->cap_len = 64;
         stops = releases = 0;
-        vareq_set_ioctl_hook(m2m_ioctl);
-        vareq_m2m_teardown(&c, q);
+        vav4l2_set_ioctl_hook(m2m_ioctl);
+        vav4l2_m2m_teardown(&c, q);
         expect(c.v4l2_fd == -1 && fcntl(fd, F_GETFD) < 0 && !q->valid && !q->streaming &&
                !q->out_map[0] && !q->cap_map && stops == 2 && releases == (mode == 17 ? 2 : 0),
                "m2m-failed-active-stop-or-release-closes-device-before-reuse");
-        vareq_set_ioctl_hook(NULL);
+        vav4l2_set_ioctl_hook(NULL);
         if (c.v4l2_fd >= 0) close(c.v4l2_fd);
     }
 }
 int main(void)
 {
-    setenv("VAREQ_EXPBUF_EXPORT", "1", 1); /* Geometry fixture supplies live capture storage. */
+    setenv("VAV4L2_EXPBUF_EXPORT", "1", 1); /* Geometry fixture supplies live capture storage. */
     for (int i = 0; i <= 4; i++) jpeg_case(i);
     jpeg_case(6);
     jpeg_case(13);

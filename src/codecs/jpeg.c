@@ -20,16 +20,16 @@
 #include <va/va_enc_jpeg.h>
 #include <drm_fourcc.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
-#define xioctl(fd, req, arg) vareq_xioctl((fd), (req), (arg))
+#define xioctl(fd, req, arg) vav4l2_xioctl((fd), (req), (arg))
 
 #include "jpeg_dmabuf.h"
 
-static struct vareq_buffer *
-buffer_by_id(struct vareq_context *ctx, VABufferID id)
+static struct vav4l2_buffer *
+buffer_by_id(struct vav4l2_context *ctx, VABufferID id)
 {
-    struct vareq_buffer *b = ctx->buffers;
+    struct vav4l2_buffer *b = ctx->buffers;
     while (b) {
         if (b->buffer_id == id)
             return b;
@@ -40,36 +40,36 @@ buffer_by_id(struct vareq_context *ctx, VABufferID id)
 
 /* Borrow the latest 8-bit 420 storage; CPU replacement wins over capture
  * metadata. The surface owns persistent mappings and their lifetime. */
-static int surface_420(struct vareq_surface *s, struct vareq_image_view *view)
+static int surface_420(struct vav4l2_surface *s, struct vav4l2_image_view *view)
 {
     if (!s || s->status == VASurfaceSkipped) return 0;
-    *view = (struct vareq_image_view){.width = s->width, .height = s->height};
-    if (s->cpu_ptr && (s->last_writer == VAREQ_WRITER_CPU || !s->has_pic)) {
+    *view = (struct vav4l2_image_view){.width = s->width, .height = s->height};
+    if (s->cpu_ptr && (s->last_writer == VAV4L2_WRITER_CPU || !s->has_pic)) {
         view->data = s->cpu_ptr; view->fourcc = s->format;
         view->stride = s->cpu_stride; view->alloc_height = s->height; view->size = s->cpu_size;
     } else {
         if (!s->has_pic || s->cap_fourcc != V4L2_PIX_FMT_NV12) return 0;
         view->fourcc = VA_FOURCC_NV12; view->stride = s->stride;
         view->alloc_height = s->aligned_h ? s->aligned_h : s->height;
-        view->size = vareq_capture_plane_size(V4L2_PIX_FMT_NV12, view->stride, view->alloc_height);
+        view->size = vav4l2_capture_plane_size(V4L2_PIX_FMT_NV12, view->stride, view->alloc_height);
         if (!view->size) return 0;
-        if (vareq_expbuf_export_wanted() && s->last_writer != VAREQ_WRITER_BO && s->cap_view && s->buf_index >= 0)
+        if (vav4l2_expbuf_export_wanted() && s->last_writer != VAV4L2_WRITER_BO && s->cap_view && s->buf_index >= 0)
             view->data = s->cap_view;
         else {
-            if (vareq_surface_ensure_memfd(s) < 0 || s->memfd_fd < 0) return 0;
-            view->data = vareq_surface_map_memfd(s, view->size);
+            if (vav4l2_surface_ensure_memfd(s) < 0 || s->memfd_fd < 0) return 0;
+            view->data = vav4l2_surface_map_memfd(s, view->size);
         }
     }
     int planar = view->fourcc == VA_FOURCC_I420 || view->fourcc == VA_FOURCC_YV12;
     if (!planar && view->fourcc != VA_FOURCC_NV12 && view->fourcc != VA_FOURCC_NV21) return 0;
     uint64_t row = (uint64_t)view->width + (!planar && (view->width & 1));
-    uint32_t need = vareq_va_image_size(view->fourcc, view->stride, view->alloc_height);
+    uint32_t need = vav4l2_va_image_size(view->fourcc, view->stride, view->alloc_height);
     return view->data && view->width && view->height && view->alloc_height >= view->height &&
            view->stride >= row && need && need <= view->size;
 }
 
 /* Hantro selects its raw defaults when coded CAPTURE is configured. */
-static int set_output_420(struct vareq_context *ctx, struct v4l2_format *format, unsigned width, unsigned height, int planar)
+static int set_output_420(struct vav4l2_context *ctx, struct v4l2_format *format, unsigned width, unsigned height, int planar)
 {
     const uint32_t candidates[] = {V4L2_PIX_FMT_YUV420M, V4L2_PIX_FMT_NV12M, V4L2_PIX_FMT_NV12};
     for (unsigned i = planar ? 0 : 1; i < 3; i++) {
@@ -78,21 +78,21 @@ static int set_output_420(struct vareq_context *ctx, struct v4l2_format *format,
         format->fmt.pix_mp.width = width; format->fmt.pix_mp.height = height;
         format->fmt.pix_mp.pixelformat = candidates[i]; format->fmt.pix_mp.num_planes = 3 - i;
         format->fmt.pix_mp.field = V4L2_FIELD_NONE;
-        if (vareq_codec_format(ctx, format) == 0 && format->fmt.pix_mp.pixelformat == candidates[i]) return 0;
+        if (vav4l2_codec_format(ctx, format) == 0 && format->fmt.pix_mp.pixelformat == candidates[i]) return 0;
     }
     return -1;
 }
 
-VAStatus vareq_jpeg_encode(struct vareq_context *ctx,
-                            struct vareq_buffer **buffers, int num_buffers)
+VAStatus vav4l2_jpeg_encode(struct vav4l2_context *ctx,
+                            struct vav4l2_buffer **buffers, int num_buffers)
 {
     VAEncPictureParameterBufferJPEG *pic = NULL;
     int i, quality = 50;
     int fd = ctx->v4l2_fd;
-    struct vareq_surface *src = ctx->current_surface;
-    struct vareq_buffer *coded = NULL;
+    struct vav4l2_surface *src = ctx->current_surface;
+    struct vav4l2_buffer *coded = NULL;
     VACodedBufferSegment *seg;
-    struct vareq_image_view source;
+    struct vav4l2_image_view source;
     int w, h;
     struct v4l2_format ofmt, cfmt;
     struct v4l2_requestbuffers oreq, creq;
@@ -103,7 +103,7 @@ VAStatus vareq_jpeg_encode(struct vareq_context *ctx,
     int jpeg_size = 0;
     VAStatus st;
     VADRMPRIMESurfaceDescriptor dma = {0}; unsigned dma_raw = 0;
-    const char *dma_mode = getenv("VAREQ_JPEG_DMABUF");
+    const char *dma_mode = getenv("VAV4L2_JPEG_DMABUF");
     int dma_disabled = dma_mode && !strcmp(dma_mode, "0");
     int dma_required = dma_mode && !strcmp(dma_mode, "required"), direct = 0;
 
@@ -124,7 +124,7 @@ VAStatus vareq_jpeg_encode(struct vareq_context *ctx,
         }
     }
     if (!pic || !src) {
-        fprintf(stderr, "v4l2request: JPEG missing pic=%p src=%p nbuf=%d\n",
+        fprintf(stderr, "v4l2: JPEG missing pic=%p src=%p nbuf=%d\n",
                 (void *)pic, (void *)src, num_buffers);
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
@@ -137,8 +137,8 @@ VAStatus vareq_jpeg_encode(struct vareq_context *ctx,
 
     coded = buffer_by_id(ctx, pic->coded_buf);
     if (!coded || !coded->data || coded->type != VAEncCodedBufferType || coded->num_elements != 1) {
-        struct vareq_buffer *b;
-        fprintf(stderr, "v4l2request: JPEG coded_buf %u not found (ctx buffers:",
+        struct vav4l2_buffer *b;
+        fprintf(stderr, "v4l2: JPEG coded_buf %u not found (ctx buffers:",
                 pic->coded_buf);
         for (b = ctx->buffers; b; b = b->next)
             fprintf(stderr, " %u/t%u", b->buffer_id, b->type);
@@ -157,20 +157,20 @@ retry_transport:
     direct = !dma_disabled && (unsigned)w == src->width && (unsigned)h == src->height ? jpeg_prime(src, &dma, &dma_raw) : 0;
     if (direct < 0 || (!direct && dma_required)) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
     int source_ok = direct;
-    if (direct) source = (struct vareq_image_view){.fourcc = src->format};
+    if (direct) source = (struct vav4l2_image_view){.fourcc = src->format};
     else {
-        if (vareq_import_refresh(src) < 0) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
+        if (vav4l2_import_refresh(src) < 0) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
         source_ok = surface_420(src, &source);
     }
     if (!source_ok || w <= 0 || h <= 0 || (unsigned)w > src->width || (unsigned)h > src->height ||
         (w & 1) || (h & 1)) {
-        fprintf(stderr, "v4l2request: JPEG encode: no valid 8-bit 420 source\n");
+        fprintf(stderr, "v4l2: JPEG encode: no valid 8-bit 420 source\n");
         jpeg_close_prime(&dma); return VA_STATUS_ERROR_INVALID_SURFACE;
     }
     int planar_source = source.fourcc == VA_FOURCC_I420 || source.fourcc == VA_FOURCC_YV12;
 
     {
-        struct vareq_m2m_state *q = &ctx->jpeg_q;
+        struct vav4l2_m2m_state *q = &ctx->jpeg_q;
         uint32_t key[8] = { (uint32_t)w, (uint32_t)h, (uint32_t)quality,
                             (uint32_t)planar_source, direct ? dma_raw : 0,
                             direct ? dma.layers[0].pitch[0] : 0, direct ? dma.layers[0].pitch[1] : 0, direct ? dma.layers[0].pitch[2] : 0 };
@@ -180,7 +180,7 @@ retry_transport:
         int row;
 
         if (renegot) {
-            vareq_m2m_teardown(ctx, q);
+            vav4l2_m2m_teardown(ctx, q);
             if (ctx->v4l2_fd < 0) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
             q->valid = 1; /* teardown also owns partial setup on failure */
 
@@ -193,8 +193,8 @@ retry_transport:
             cfmt.fmt.pix_mp.height = h;
             cfmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_JPEG;
             cfmt.fmt.pix_mp.num_planes = 1;
-            if (vareq_codec_format(ctx, &cfmt) < 0) {
-                fprintf(stderr, "v4l2request: JPEG S_FMT capture: %s\n",
+            if (vav4l2_codec_format(ctx, &cfmt) < 0) {
+                fprintf(stderr, "v4l2: JPEG S_FMT capture: %s\n",
                         strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
@@ -202,20 +202,20 @@ retry_transport:
 
             if ((direct ? jpeg_dma_format(ctx, &ofmt, &dma, dma_raw) : set_output_420(ctx, &ofmt, w, h, planar_source)) < 0) {
                 if (direct && (errno == EINVAL || errno == ENOTTY)) goto fallback_dma;
-                fprintf(stderr, "v4l2request: JPEG S_FMT output: %s\n", strerror(errno));
+                fprintf(stderr, "v4l2: JPEG S_FMT output: %s\n", strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
             ctrl.id = V4L2_CID_JPEG_COMPRESSION_QUALITY;
             ctrl.value = quality;
-            if (vareq_codec_control(ctx, &ctrl) < 0) {
-                fprintf(stderr, "v4l2request: JPEG quality=%d failed: %s\n", quality, strerror(errno));
+            if (vav4l2_codec_control(ctx, &ctrl) < 0) {
+                fprintf(stderr, "v4l2: JPEG quality=%d failed: %s\n", quality, strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
             /* Validate the final raw layout before allocating queues. */
             if (xioctl(fd, VIDIOC_G_FMT, &ofmt) < 0) {
-                fprintf(stderr, "v4l2request: JPEG G_FMT output failed: %s\n", strerror(errno));
+                fprintf(stderr, "v4l2: JPEG G_FMT output failed: %s\n", strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
@@ -231,7 +231,7 @@ retry_transport:
                 ofmt.fmt.pix_mp.width < (uint32_t)w || ofmt.fmt.pix_mp.height < (uint32_t)h ||
                 cfmt.fmt.pix_mp.pixelformat != V4L2_PIX_FMT_JPEG || cfmt.fmt.pix_mp.num_planes != 1 ||
                 cfmt.fmt.pix_mp.width != (uint32_t)w || cfmt.fmt.pix_mp.height != (uint32_t)h) {
-                fprintf(stderr, "v4l2request: JPEG unsupported negotiated formats: OUTPUT %.4s %ux%u planes=%u, CAPTURE %.4s %ux%u planes=%u\n",
+                fprintf(stderr, "v4l2: JPEG unsupported negotiated formats: OUTPUT %.4s %ux%u planes=%u, CAPTURE %.4s %ux%u planes=%u\n",
                         (char *)&ofmt.fmt.pix_mp.pixelformat, ofmt.fmt.pix_mp.width, ofmt.fmt.pix_mp.height,
                         ofmt.fmt.pix_mp.num_planes, (char *)&cfmt.fmt.pix_mp.pixelformat, cfmt.fmt.pix_mp.width, cfmt.fmt.pix_mp.height, cfmt.fmt.pix_mp.num_planes);
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
@@ -245,7 +245,7 @@ retry_transport:
             q->out_memory = oreq.memory; q->cap_memory = V4L2_MEMORY_MMAP;
             if (xioctl(fd, VIDIOC_REQBUFS, &oreq) < 0) {
                 if (direct && (errno == EINVAL || errno == ENOTTY)) goto fallback_dma;
-                fprintf(stderr, "v4l2request: JPEG REQBUFS out: %s\n",
+                fprintf(stderr, "v4l2: JPEG REQBUFS out: %s\n",
                         strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
@@ -256,7 +256,7 @@ retry_transport:
             creq.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
             creq.memory = V4L2_MEMORY_MMAP;
             if (xioctl(fd, VIDIOC_REQBUFS, &creq) < 0) {
-                fprintf(stderr, "v4l2request: JPEG REQBUFS cap: %s\n",
+                fprintf(stderr, "v4l2: JPEG REQBUFS cap: %s\n",
                         strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
@@ -274,7 +274,7 @@ retry_transport:
             obuf.length = 8;
             obuf.m.planes = oplanes;
             if (xioctl(fd, VIDIOC_QUERYBUF, &obuf) < 0) {
-                fprintf(stderr, "v4l2request: JPEG QUERYBUF out: %s nplanes=%u\n",
+                fprintf(stderr, "v4l2: JPEG QUERYBUF out: %s nplanes=%u\n",
                         strerror(errno), ofmt.fmt.pix_mp.num_planes);
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
@@ -282,7 +282,7 @@ retry_transport:
             /* The kernel overwrites buf.length with the queue's real plane
              * count on QUERYBUF — that is the value QBUF will enforce. */
             if (obuf.length != ofmt.fmt.pix_mp.num_planes) {
-                fprintf(stderr, "v4l2request: JPEG QUERYBUF plane mismatch: got %u, expected %u\n",
+                fprintf(stderr, "v4l2: JPEG QUERYBUF plane mismatch: got %u, expected %u\n",
                         obuf.length, ofmt.fmt.pix_mp.num_planes);
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
@@ -333,7 +333,7 @@ retry_transport:
         uint32_t out_h = ofmt.fmt.pix_mp.height;
         if (direct) {
             if (!jpeg_dma_spans(&ofmt, &dma, dma_raw)) goto fallback_dma;
-            for (unsigned o = 0; o < dma.num_objects; o++) if (vareq_dmabuf_wait(dma.objects[o].fd, 0) < 0) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
+            for (unsigned o = 0; o < dma.num_objects; o++) if (vav4l2_dmabuf_wait(dma.objects[o].fd, 0) < 0) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
             for (int p = 0; p < planes; p++) {
                 plane_used[p] = ofmt.fmt.pix_mp.plane_fmt[p].sizeimage;
                 q->out_len[p] = dma.objects[dma.layers[0].object_index[jpeg_prime_plane(&dma, p)]].size;
@@ -350,7 +350,7 @@ retry_transport:
             if (ofmt.fmt.pix_mp.width < (uint32_t)w || out_h < (uint32_t)h || pitch[plane] < row_bytes ||
                 bytes < need[plane] || bytes > q->out_len[plane] || bytes > UINT32_MAX ||
                 !q->out_map[plane] || q->out_map[plane] == MAP_FAILED) {
-                fprintf(stderr, "v4l2request: JPEG OUTPUT plane %d has invalid geometry or backing\n", plane);
+                fprintf(stderr, "v4l2: JPEG OUTPUT plane %d has invalid geometry or backing\n", plane);
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
@@ -387,7 +387,7 @@ retry_transport:
         cbuf.length = 1;
         cbuf.m.planes = cplanes;
         if (xioctl(fd, VIDIOC_QBUF, &cbuf) < 0) {
-            fprintf(stderr, "v4l2request: JPEG QBUF cap: %s\n", strerror(errno));
+            fprintf(stderr, "v4l2: JPEG QBUF cap: %s\n", strerror(errno));
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
         }
@@ -404,7 +404,7 @@ retry_transport:
             if (direct) oplanes[plane].m.fd = dma.objects[dma.layers[0].object_index[jpeg_prime_plane(&dma, plane)]].fd;
         }
         if (xioctl(fd, VIDIOC_QBUF, &obuf) < 0) {
-            fprintf(stderr, "v4l2request: JPEG QBUF out: %s (planes=%d yused=%u)\n",
+            fprintf(stderr, "v4l2: JPEG QBUF out: %s (planes=%d yused=%u)\n",
                     strerror(errno), q->out_planes, oplanes[0].bytesused);
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
@@ -413,7 +413,7 @@ retry_transport:
             enum v4l2_buf_type t = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 
             if (xioctl(fd, VIDIOC_STREAMON, &t) < 0) {
-                fprintf(stderr, "v4l2request: JPEG STREAMON out: %s\n",
+                fprintf(stderr, "v4l2: JPEG STREAMON out: %s\n",
                         strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
@@ -421,7 +421,7 @@ retry_transport:
             q->streaming |= 1;
             t = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
             if (xioctl(fd, VIDIOC_STREAMON, &t) < 0) {
-                fprintf(stderr, "v4l2request: JPEG STREAMON cap: %s\n",
+                fprintf(stderr, "v4l2: JPEG STREAMON cap: %s\n",
                         strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
@@ -431,9 +431,9 @@ retry_transport:
 
         pfd.fd = fd;
         pfd.events = POLLIN;
-        if (vareq_poll_intr(&pfd, 1, 2000) <= 0 || !(pfd.revents & POLLIN) ||
+        if (vav4l2_poll_intr(&pfd, 1, 2000) <= 0 || !(pfd.revents & POLLIN) ||
             (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
-            fprintf(stderr, "v4l2request: JPEG encode timeout\n");
+            fprintf(stderr, "v4l2: JPEG encode timeout\n");
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
         }
@@ -445,7 +445,7 @@ retry_transport:
         cbuf.length = 1;
         cbuf.m.planes = cplanes;
         if (xioctl(fd, VIDIOC_DQBUF, &cbuf) < 0) {
-            fprintf(stderr, "v4l2request: JPEG DQBUF: %s\n", strerror(errno));
+            fprintf(stderr, "v4l2: JPEG DQBUF: %s\n", strerror(errno));
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
         }
@@ -455,7 +455,7 @@ retry_transport:
             st = VA_STATUS_ERROR_ENCODING_ERROR;
             goto fail;
         }
-        if (vareq_m2m_finish_output(ctx, q) < 0) {
+        if (vav4l2_m2m_finish_output(ctx, q) < 0) {
             seg->status = VA_CODED_BUF_STATUS_BAD_BITSTREAM;
             st = VA_STATUS_ERROR_ENCODING_ERROR;
             goto fail;
@@ -488,8 +488,8 @@ retry_transport:
             goto fail;
         }
     }
-    if (vareq_debug)
-        fprintf(stderr, "v4l2request: JPEG encoded %dx%d quality=%d bytes=%d planes=%d\n",
+    if (vav4l2_debug)
+        fprintf(stderr, "v4l2: JPEG encoded %dx%d quality=%d bytes=%d planes=%d\n",
                 w, h, quality, jpeg_size, ctx->jpeg_q.out_planes);
     jpeg_trace(ctx, "complete"); jpeg_close_prime(&dma);
     return st;
@@ -497,14 +497,14 @@ retry_transport:
 fallback_dma:
     /* No job has been submitted. Release the partially configured queues
      * before retrying the existing CPU staging path. */
-    vareq_m2m_teardown(ctx, &ctx->jpeg_q); jpeg_close_prime(&dma);
+    vav4l2_m2m_teardown(ctx, &ctx->jpeg_q); jpeg_close_prime(&dma);
     if (dma_required || ctx->v4l2_fd < 0) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
     dma_disabled = 1; goto retry_transport;
 fail:
     seg->size = 0;
     jpeg_trace(ctx, "failed");
-    vareq_m2m_teardown(ctx, &ctx->jpeg_q); jpeg_close_prime(&dma);
+    vav4l2_m2m_teardown(ctx, &ctx->jpeg_q); jpeg_close_prime(&dma);
     return st;
 }
 
-const int vareq_has_jpeg = 1;
+const int vav4l2_has_jpeg = 1;

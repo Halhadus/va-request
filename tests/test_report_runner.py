@@ -34,9 +34,9 @@ class Reports(unittest.TestCase):
 
     def test_shared_logs_keep_test_diagnostics_without_inherited_secrets(self):
         data = {"name": "decode", "result": "FAIL", "stdout": "pixel mismatch", "stderr": "queue failure",
-                "env": {"API_TOKEN": "private", "VAREQ_EXPORT": "gbm", "ASAN_OPTIONS": "halt_on_error=1"}}
+                "env": {"API_TOKEN": "private", "VAV4L2_EXPORT": "gbm", "ASAN_OPTIONS": "halt_on_error=1"}}
         result = json.loads(runner.sanitize_meson_log("unit-testlog.json", json.dumps(data).encode()))
-        self.assertEqual(result["env"], {"VAREQ_EXPORT": "gbm", "ASAN_OPTIONS": "halt_on_error=1"})
+        self.assertEqual(result["env"], {"VAV4L2_EXPORT": "gbm", "ASAN_OPTIONS": "halt_on_error=1"})
         self.assertEqual(result["stdout"], data["stdout"])
         self.assertEqual(result["stderr"], data["stderr"])
         text = b"Inherited environment: API_TOKEN=private\n1/1 decode FAIL\nqueue failure\n"

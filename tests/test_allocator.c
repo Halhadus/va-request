@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 static int exact_enabled, exact_only, exact_fault, exact_fd[1024], exact_exports;
 static unsigned exact_size;
 static int owner, fault, failures, queried, allocated, exported, jobs;
@@ -97,12 +97,12 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 }
 int main(void)
 {
-    unsetenv("VAREQ_ALLOC_TRACE"); /* Mock discovery is never hardware evidence. */
+    unsetenv("VAV4L2_ALLOC_TRACE"); /* Mock discovery is never hardware evidence. */
     owner = memfd_create("coherent-export-fixture", MFD_CLOEXEC); if (owner < 0) return 2;
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
     for (fault = 0; fault <= 16; fault++) {
         if (ftruncate(owner, 65536)) return 2;
-        vareq_allocator_cleanup(); int fd = vareq_alloc_shared_storage(64, 96);
+        vav4l2_allocator_cleanup(); int fd = vav4l2_alloc_shared_storage(64, 96);
         expect((fd >= 0) == !fault, "allocator-success-or-injected-failure");
         if (fd >= 0) {
             unsigned char byte = 0x69, got = 0;
@@ -113,26 +113,26 @@ int main(void)
     }
     fault = 0; exact_enabled = 1;
     for (exact_only = 0; exact_only <= 1; exact_only++) for (exact_fault = 0; exact_fault <= 6; exact_fault++) {
-        vareq_allocator_cleanup();
-        int fd = vareq_alloc_shared_storage(64, 96);
+        vav4l2_allocator_cleanup();
+        int fd = vav4l2_alloc_shared_storage(64, 96);
         expect((fd >= 0) == (!exact_only || !exact_fault), "exact-size-or-recognized-rga3-fallback");
         if (fd >= 0) {
             unsigned actual = 0;
-            expect(vareq_export_fd_validate(fd, 6144, &actual) == 0 && actual == (exact_fault ? 65536u : 8192u),
+            expect(vav4l2_export_fd_validate(fd, 6144, &actual) == 0 && actual == (exact_fault ? 65536u : 8192u),
                 "small-image-storage-has-no-extra-imported-pages"); close(fd);
         }
     }
-    exact_only = 0; exact_fault = 0; vareq_allocator_cleanup();
-    int before = exact_exports, large = vareq_alloc_shared_storage(128, 192);
+    exact_only = 0; exact_fault = 0; vav4l2_allocator_cleanup();
+    int before = exact_exports, large = vav4l2_alloc_shared_storage(128, 192);
     expect(large >= 0 && exact_exports == before, "exact-rga3-geometry-keeps-proven-allocation-backend");
     if (large >= 0) close(large);
-    expect(vareq_alloc_shared_storage(0, 1) < 0 && vareq_alloc_shared_storage(UINT32_MAX, 2) < 0, "allocator-rejects-zero-or-overflow-span");
+    expect(vav4l2_alloc_shared_storage(0, 1) < 0 && vav4l2_alloc_shared_storage(UINT32_MAX, 2) < 0, "allocator-rejects-zero-or-overflow-span");
     expect(queried && allocated && exported && !jobs, "allocation-never-queues-or-streams-a-device-job");
-    close(owner); vareq_set_ioctl_hook(NULL); vareq_allocator_cleanup();
+    close(owner); vav4l2_set_ioctl_hook(NULL); vav4l2_allocator_cleanup();
     printf("allocator: %s\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }
 
-int __wrap_vareq_list_video_nodes(char (*paths)[64], unsigned capacity)
+int __wrap_vav4l2_list_video_nodes(char (*paths)[64], unsigned capacity)
 {
     unsigned count = capacity < 9 ? capacity : 9;
     for (unsigned i = 0; i < count; i++) snprintf(paths[i], 64, "/dev/video%u", i);

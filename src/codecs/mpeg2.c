@@ -1,5 +1,5 @@
 /*
- * v4l2request — MPEG-2 parameter translation
+ * v4l2 — MPEG-2 parameter translation
  *
  * Maps VA-API MPEG-2 picture / IQ / slice buffers onto the split
  * V4L2 stateless controls (sequence + picture + quantisation) and
@@ -22,7 +22,7 @@
 #include <linux/v4l2-controls.h>
 #include <linux/videodev2.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
 static const uint8_t mpeg2_default_intra[64] = {
     8, 16, 19, 22, 26, 27, 29, 34,
@@ -35,7 +35,7 @@ static const uint8_t mpeg2_default_intra[64] = {
     27, 29, 35, 38, 46, 56, 69, 83
 };
 
-void vareq_mpeg2_fill_sequence(struct v4l2_ctrl_mpeg2_sequence *seq,
+void vav4l2_mpeg2_fill_sequence(struct v4l2_ctrl_mpeg2_sequence *seq,
                                 const VAPictureParameterBufferMPEG2 *pic,
                                 VAProfile profile)
 {
@@ -56,16 +56,16 @@ void vareq_mpeg2_fill_sequence(struct v4l2_ctrl_mpeg2_sequence *seq,
         seq->flags |= V4L2_MPEG2_SEQ_FLAG_PROGRESSIVE;
 }
 
-void vareq_mpeg2_fill_picture(struct v4l2_ctrl_mpeg2_picture *vpic,
+void vav4l2_mpeg2_fill_picture(struct v4l2_ctrl_mpeg2_picture *vpic,
                                const VAPictureParameterBufferMPEG2 *pic,
-                               struct vareq_driver_data *dd)
+                               struct vav4l2_driver_data *dd)
 {
     uint32_t f = (uint32_t)pic->f_code;
     uint32_t ext = pic->picture_coding_extension.bits.picture_structure;
 
     memset(vpic, 0, sizeof(*vpic));
-    vpic->forward_ref_ts = vareq_surface_ts(dd, pic->forward_reference_picture);
-    vpic->backward_ref_ts = vareq_surface_ts(dd, pic->backward_reference_picture);
+    vpic->forward_ref_ts = vav4l2_surface_ts(dd, pic->forward_reference_picture);
+    vpic->backward_ref_ts = vav4l2_surface_ts(dd, pic->backward_reference_picture);
     vpic->f_code[0][0] = (f >> 12) & 0xf;
     vpic->f_code[0][1] = (f >> 8) & 0xf;
     vpic->f_code[1][0] = (f >> 4) & 0xf;
@@ -98,7 +98,7 @@ void vareq_mpeg2_fill_picture(struct v4l2_ctrl_mpeg2_picture *vpic,
         vpic->flags |= V4L2_MPEG2_PIC_FLAG_PROGRESSIVE;
 }
 
-void vareq_mpeg2_fill_quant(struct v4l2_ctrl_mpeg2_quantisation *q,
+void vav4l2_mpeg2_fill_quant(struct v4l2_ctrl_mpeg2_quantisation *q,
                              const VAIQMatrixBufferMPEG2 *iq)
 {
     if (!q) return;
@@ -129,13 +129,13 @@ void vareq_mpeg2_fill_quant(struct v4l2_ctrl_mpeg2_quantisation *q,
                q->non_intra_quantiser_matrix, 64);
 }
 
-VAStatus vareq_mpeg2_translate(struct vareq_context *ctx,
-                                struct vareq_buffer **buffers,
+VAStatus vav4l2_mpeg2_translate(struct vav4l2_context *ctx,
+                                struct vav4l2_buffer **buffers,
                                 int num_buffers)
 {
     VAPictureParameterBufferMPEG2 *pic_param = NULL;
     VAIQMatrixBufferMPEG2 *iq = NULL;
-    struct vareq_collected cb;
+    struct vav4l2_collected cb;
     int n_slice_data = 0;
     struct v4l2_ctrl_mpeg2_sequence seq;
     struct v4l2_ctrl_mpeg2_picture vpic;
@@ -145,41 +145,41 @@ VAStatus vareq_mpeg2_translate(struct vareq_context *ctx,
     uint64_t timestamp;
     size_t total = 0;
 
-    vareq_collect_decode_buffers(buffers, num_buffers, &cb);
+    vav4l2_collect_decode_buffers(buffers, num_buffers, &cb);
     pic_param = cb.pic;
     iq = cb.iq;
     n_slice_data = cb.n_slice_datas;
 
     if (!pic_param) {
-        fprintf(stderr, "v4l2request: MPEG-2 decode missing picture params\n");
+        fprintf(stderr, "v4l2: MPEG-2 decode missing picture params\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
     if (n_slice_data == 0) {
-        fprintf(stderr, "v4l2request: MPEG-2 decode missing slice data\n");
+        fprintf(stderr, "v4l2: MPEG-2 decode missing slice data\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
     if (pic_param->picture_coding_type < 1 || pic_param->picture_coding_type > 3)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     if (pic_param->picture_coding_type != 1) {
-        VAStatus status = vareq_validate_reference(ctx, pic_param->forward_reference_picture);
+        VAStatus status = vav4l2_validate_reference(ctx, pic_param->forward_reference_picture);
         if (status != VA_STATUS_SUCCESS) return status;
         if (pic_param->picture_coding_type == 3) {
-            status = vareq_validate_reference(ctx, pic_param->backward_reference_picture);
+            status = vav4l2_validate_reference(ctx, pic_param->backward_reference_picture);
             if (status != VA_STATUS_SUCCESS) return status;
         }
     }
-    VAStatus packet_status = vareq_packetize_slices(VAREQ_CODEC_MPEG2, buffers, num_buffers, NULL, UINT32_MAX, &total);
+    VAStatus packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_MPEG2, buffers, num_buffers, NULL, UINT32_MAX, &total);
     if (packet_status != VA_STATUS_SUCCESS) return packet_status;
 
-    vareq_mpeg2_fill_sequence(&seq, pic_param, ctx->profile);
-    vareq_mpeg2_fill_picture(&vpic, pic_param, ctx->driver_data);
-    vareq_mpeg2_fill_quant(&quant, iq);
+    vav4l2_mpeg2_fill_sequence(&seq, pic_param, ctx->profile);
+    vav4l2_mpeg2_fill_picture(&vpic, pic_param, ctx->driver_data);
+    vav4l2_mpeg2_fill_quant(&quant, iq);
 
     request_fd = ctx->request_fd;
     v4l2_fd = ctx->v4l2_fd;
     if (request_fd < 0) {
-        fprintf(stderr, "v4l2request: MPEG-2 no request fd available\n");
+        fprintf(stderr, "v4l2: MPEG-2 no request fd available\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -198,24 +198,24 @@ VAStatus vareq_mpeg2_translate(struct vareq_context *ctx,
         _Static_assert(sizeof(seq) <= sizeof(ctx->g_ctrl_payload), "grow cache");
         if (!ctx->g_ctrl_valid ||
             memcmp(ctx->g_ctrl_payload, &seq, sizeof(seq)) != 0) {
-            if (vareq_codec_prepare_controls(ctx, -1, &gctrls) < 0) return VA_STATUS_ERROR_OPERATION_FAILED;
-            if (vareq_set_global_controls(v4l2_fd, &gctrls) < 0)
-                fprintf(stderr, "v4l2request: warning: MPEG-2 global sequence failed\n");
+            if (vav4l2_codec_prepare_controls(ctx, -1, &gctrls) < 0) return VA_STATUS_ERROR_OPERATION_FAILED;
+            if (vav4l2_set_global_controls(v4l2_fd, &gctrls) < 0)
+                fprintf(stderr, "v4l2: warning: MPEG-2 global sequence failed\n");
             memcpy(ctx->g_ctrl_payload, &seq, sizeof(seq));
             ctx->g_ctrl_valid = 1;
         }
     }
 
-    if (vareq_ensure_capture(ctx, pic_param->horizontal_size,
+    if (vav4l2_ensure_capture(ctx, pic_param->horizontal_size,
                               pic_param->vertical_size, V4L2_PIX_FMT_NV12) < 0) {
-        fprintf(stderr, "v4l2request: MPEG-2 capture reconfig failed\n");
+        fprintf(stderr, "v4l2: MPEG-2 capture reconfig failed\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
     if (!ctx->streamed) {
-        if (vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
-            vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
-            fprintf(stderr, "v4l2request: MPEG-2 STREAMON failed\n");
+        if (vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
+            vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
+            fprintf(stderr, "v4l2: MPEG-2 STREAMON failed\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         ctx->streamed = 1;
@@ -237,55 +237,55 @@ VAStatus vareq_mpeg2_translate(struct vareq_context *ctx,
         ctrls_arr[2].size = sizeof(quant);
         ctrls.controls = ctrls_arr;
         ctrls.count = 3;
-        if (vareq_codec_controls(ctx, request_fd, &ctrls) < 0) {
-            fprintf(stderr, "v4l2request: failed to set MPEG-2 request controls\n");
+        if (vav4l2_codec_controls(ctx, request_fd, &ctrls) < 0) {
+            fprintf(stderr, "v4l2: failed to set MPEG-2 request controls\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
     }
 
     if (ctx->n_free_out == 0) {
-        fprintf(stderr, "v4l2request: MPEG-2 no free output buffer\n");
+        fprintf(stderr, "v4l2: MPEG-2 no free output buffer\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     out_buf_idx = ctx->free_out_bufs[--ctx->n_free_out];
 
     timestamp = ctx->current_surface ? ctx->current_surface->timestamp : 0;
 
-    if (out_buf_idx < 0 || out_buf_idx >= VAREQ_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx]) {
-        vareq_out_pool_push(ctx, out_buf_idx);
+    if (out_buf_idx < 0 || out_buf_idx >= VAV4L2_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx]) {
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     /* MPEG-2 clients supply slice start codes; copy only declared ranges,
      * without inserting an H.264/HEVC Annex-B NAL prefix. */
-    packet_status = vareq_packetize_slices(VAREQ_CODEC_MPEG2, buffers, num_buffers,
+    packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_MPEG2, buffers, num_buffers,
         ctx->output_buf_ptr[out_buf_idx], ctx->output_buf_size, &total);
     if (packet_status != VA_STATUS_SUCCESS) {
-        vareq_out_pool_push(ctx, out_buf_idx);
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return packet_status;
     }
 
     /* On failure decode_submit resets both queues — do not push back. */
-    done_cap = vareq_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
+    done_cap = vav4l2_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
     if (done_cap == -2)
         return VA_STATUS_ERROR_DECODING_ERROR;
     if (done_cap < 0)
         return VA_STATUS_ERROR_OPERATION_FAILED;
 
     {
-        struct vareq_surface *surf = ctx->current_surface;
+        struct vav4l2_surface *surf = ctx->current_surface;
 
         if (surf) {
-            if (vareq_surface_pull_capture(ctx, surf, done_cap) < 0) {
-                fprintf(stderr, "v4l2request: MPEG-2 pull capture failed\n");
-                if (!vareq_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vareq_cap_pool_push(ctx, done_cap);
+            if (vav4l2_surface_pull_capture(ctx, surf, done_cap) < 0) {
+                fprintf(stderr, "v4l2: MPEG-2 pull capture failed\n");
+                if (!vav4l2_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vav4l2_cap_pool_push(ctx, done_cap);
                 return VA_STATUS_ERROR_OPERATION_FAILED;
             }
         } else {
-            vareq_cap_pool_push(ctx, done_cap);
+            vav4l2_cap_pool_push(ctx, done_cap);
         }
     }
 
     return VA_STATUS_SUCCESS;
 }
 
-const int vareq_has_mpeg2 = 1;
+const int vav4l2_has_mpeg2 = 1;

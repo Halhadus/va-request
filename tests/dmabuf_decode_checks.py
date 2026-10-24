@@ -28,8 +28,8 @@ def run(root, build, output, ffmpeg, render):
     current = Path(tempfile.mkdtemp(prefix='run.', dir=output))
     passed, failed, complete, stage = 0, 1, 0, 'setup'
     shim = build / 'prime_surface_interpose.so'
-    env = dict(os.environ, LIBVA_DRIVER_NAME='v4l2request', LIBVA_DRIVERS_PATH=str(build), VAREQ_ADVERTISE_AV1='0',
-               VAREQ_RENDER_NODE=render, VAREQ_PRIME_TRACE_DIR=str(current))
+    env = dict(os.environ, LIBVA_DRIVER_NAME='v4l2', LIBVA_DRIVERS_PATH=str(build), VAV4L2_ADVERTISE_AV1='0',
+               VAV4L2_RENDER_NODE=render, VAV4L2_PRIME_TRACE_DIR=str(current))
     env['LD_PRELOAD'] = str(shim) + (':' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else '')
     with (current / 'commands.jsonl').open('w') as commands, (current / 'results.tsv').open('w') as results:
         def command(args, environment=None):
@@ -42,11 +42,11 @@ def run(root, build, output, ffmpeg, render):
             identity = {}
             identity['tree'] = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=root, text=True).strip()
             identity['dirty'] = bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip())
-            for name in ['v4l2request_drv_video.so', 'prime_surface_interpose.so', 'hevc_slice_interpose.so']:
+            for name in ['v4l2_drv_video.so', 'prime_surface_interpose.so', 'hevc_slice_interpose.so']:
                 identity[name] = hashlib.sha256((build / name).read_bytes()).hexdigest()
-            identity['export'] = env.get('VAREQ_EXPBUF_EXPORT', 'default')
-            identity['capture_dmabuf'] = env.get('VAREQ_CAPTURE_DMABUF', '0')
-            identity['prime_canonical'] = env.get('VAREQ_PRIME_CANONICAL', '0')
+            identity['export'] = env.get('VAV4L2_EXPBUF_EXPORT', 'default')
+            identity['capture_dmabuf'] = env.get('VAV4L2_CAPTURE_DMABUF', '0')
+            identity['prime_canonical'] = env.get('VAV4L2_PRIME_CANONICAL', '0')
             (current / 'source.json').write_text(json.dumps(identity, indent=2) + '\n')
             stage = 'packet-imports'
             command([sys.executable, str(root / 'tests/hevc_slice_checks.py'), str(build), str(current / 'packets'), ffmpeg, render], env)

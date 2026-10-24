@@ -21,7 +21,7 @@ VECTORS = (('main', 8, 1, 'hevc'), ('main10', 10, 1, 'hevc'),
     ('h264-paff-i', 8, 1, 'paff'), ('h264-paff-p', 8, 1, 'paff'),
     ('vp8', 8, 1, 'vp8'), ('mpeg2', 8, 0, 'mpeg2'))
 FIELDS = ['MODE', 'PICTURE', 'SLICES', 'SEGMENTS', 'STATUS', 'DRIVER', 'EXPBUF']
-VENDOR = 'va-request 0.1.0'
+VENDOR = 'libva-v4l2 0.1.0'
 PAFF_HASHES = {'h264-paff-i': '05692de0347095b9c771665437a2fe0e08b057bdd93c638635098872714d56ca',
     'h264-paff-p': '7dd081a6e37ccc9270aa45ef65e23ca4a38fcd211c7e7ea62dad94bda5e90c8b'}
 
@@ -101,8 +101,8 @@ def save_paff_failure(run, stage, clip, ffmpeg, render, environment, command):
     prefix = run / f'{stage}-diagnostic'
     report = {'kind': 'separate diagnostic rerun', 'errors': []}
     software, hardware = Path(f'{prefix}-sw.pixels.bin'), Path(f'{prefix}-hw.pixels.bin')
-    env = dict(environment, VAREQ_HEVC_PACKET_LOG=f'{prefix}-adapter.tsv',
-        VAREQ_DECODE_TRACE=f'{prefix}-decode.tsv', VAREQ_STORAGE_TRACE=f'{prefix}-storage.tsv')
+    env = dict(environment, VAV4L2_HEVC_PACKET_LOG=f'{prefix}-adapter.tsv',
+        VAV4L2_DECODE_TRACE=f'{prefix}-decode.tsv', VAV4L2_STORAGE_TRACE=f'{prefix}-storage.tsv')
     for target, accelerated in [(software, False), (hardware, True)]:
         args = [ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-xerror']
         if accelerated: args += ['-hwaccel', 'vaapi', '-hwaccel_output_format', 'vaapi', '-vaapi_device', render]
@@ -139,9 +139,9 @@ def run_checks(root, build, output, ffmpeg, render):
     output.mkdir(parents=True, exist_ok=True)
     run = Path(tempfile.mkdtemp(prefix='run.', dir=output))
     pass_count, fail_count, complete, exit_code, stage = 0, 0, 0, 1, 'setup'
-    environment = dict(os.environ, LIBVA_DRIVER_NAME='v4l2request', LIBVA_DRIVERS_PATH=str(build), VAREQ_ADVERTISE_AV1='0')
+    environment = dict(os.environ, LIBVA_DRIVER_NAME='v4l2', LIBVA_DRIVERS_PATH=str(build), VAV4L2_ADVERTISE_AV1='0')
     shim = build / 'hevc_slice_interpose.so'
-    driver = build / 'v4l2request_drv_video.so'
+    driver = build / 'v4l2_drv_video.so'
     with (run / 'results.tsv').open('w') as results, (run / 'commands.jsonl').open('w') as commands:
         results.write('RESULT\tCASE\n'); results.flush()
 
@@ -154,7 +154,7 @@ def run_checks(root, build, output, ffmpeg, render):
         try:
             identity = subprocess.run(['git', 'rev-parse', 'HEAD^{tree}'], cwd=root, text=True, stdout=subprocess.PIPE, check=True)
             (run / 'source.json').write_text(json.dumps({'tree': identity.stdout.strip(), 'driver_sha256': hashlib.sha256(driver.read_bytes()).hexdigest(),
-                'adapter_sha256': hashlib.sha256(shim.read_bytes()).hexdigest(), 'export': environment.get('VAREQ_EXPBUF_EXPORT', 'default')}, indent=2) + '\n')
+                'adapter_sha256': hashlib.sha256(shim.read_bytes()).hexdigest(), 'export': environment.get('VAV4L2_EXPBUF_EXPORT', 'default')}, indent=2) + '\n')
             for tag, depth, slices, codec in VECTORS:
                 clip, reference = run / f'{tag}.{"ivf" if codec == "vp8" else "m2v" if codec == "mpeg2" else "h264" if codec in ("h264", "paff") else "hevc"}', run / f'{tag}-sw.md5'
                 fmt, software_fmt = ('p010le', 'yuv420p10le') if depth == 10 else ('nv12', 'yuv420p')
@@ -188,15 +188,15 @@ def run_checks(root, build, output, ffmpeg, render):
                     stage = f'{tag}-{mode}'
                     actual, trace = run / f'{stage}-hw.md5', run / f'{stage}-adapter.tsv'
                     preload = str(shim) + (':' + environment['LD_PRELOAD'] if environment.get('LD_PRELOAD') else '')
-                    instrumented = dict(environment, LD_PRELOAD=preload, VAREQ_HEVC_PACKET_MODE=mode, VAREQ_HEVC_PACKET_LOG=str(trace),
-                        VAREQ_DECODE_TRACE=str(run / f'{stage}-decode.tsv'), VAREQ_STORAGE_TRACE=str(run / f'{stage}-storage.tsv'))
+                    instrumented = dict(environment, LD_PRELOAD=preload, VAV4L2_HEVC_PACKET_MODE=mode, VAV4L2_HEVC_PACKET_LOG=str(trace),
+                        VAV4L2_DECODE_TRACE=str(run / f'{stage}-decode.tsv'), VAV4L2_STORAGE_TRACE=str(run / f'{stage}-storage.tsv'))
                     command([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-xerror', '-hwaccel', 'vaapi', '-hwaccel_output_format', 'vaapi',
                         '-vaapi_device', render, '-i', str(clip), '-vf', f'hwdownload,format={fmt}', '-pix_fmt', fmt,
                         '-frames:v', str(FRAMES), '-f', 'framemd5', '-y', str(actual)], instrumented)
-                    validate_trace(trace, mode, environment.get('VAREQ_EXPBUF_EXPORT', 'default'), slices, FRAMES * (2 if codec == 'paff' else 1))
-                    if codec == 'paff': validate_field_trace(Path(instrumented['VAREQ_DECODE_TRACE']))
+                    validate_trace(trace, mode, environment.get('VAV4L2_EXPBUF_EXPORT', 'default'), slices, FRAMES * (2 if codec == 'paff' else 1))
+                    if codec == 'paff': validate_field_trace(Path(instrumented['VAV4L2_DECODE_TRACE']))
                     if tag.endswith('-pps15'):
-                        rows = [dict(field.split('=', 1) for field in line.split('\t')) for line in Path(instrumented['VAREQ_DECODE_TRACE']).read_text().splitlines()]
+                        rows = [dict(field.split('=', 1) for field in line.split('\t')) for line in Path(instrumented['VAV4L2_DECODE_TRACE']).read_text().splitlines()]
                         headers = [row for row in rows if row.get('STAGE') == 'hevc-header']
                         if len(headers) != FRAMES or any(row.get('STATUS') != '0' or row.get('ARG') != '15' for row in headers):
                             raise ValueError(f'{stage}: missing actual nonzero PPS hardware controls')

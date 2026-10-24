@@ -21,11 +21,11 @@
 #include <va/va.h>
 #include <va/va_vpp.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 #include "probe.h"
 #include "compat/compat.h"
 
-#define xioctl(fd, req, arg) vareq_xioctl((fd), (req), (arg))
+#define xioctl(fd, req, arg) vav4l2_xioctl((fd), (req), (arg))
 
 static uint32_t va_to_v4l2_raw(uint32_t fourcc)
 {
@@ -88,29 +88,29 @@ static int raw_rgb(uint32_t fcc)
         fcc == V4L2_PIX_FMT_RGBA32 || fcc == V4L2_PIX_FMT_RGBX32 || fcc == V4L2_PIX_FMT_RGB565;
 }
 
-int vareq_vpp_device_score_job(const struct vareq_vpp_device *d, const struct vareq_compat_job *request)
+int vav4l2_vpp_device_score_job(const struct vav4l2_vpp_device *d, const struct vav4l2_compat_job *request)
 {
     if (!has_format(d->input, d->num_input, request->src) || !has_format(d->output, d->num_output, request->dst) ||
-        (request->rotate && !(d->controls & VAREQ_VPP_ROTATE)) ||
-        (request->hflip && !(d->controls & VAREQ_VPP_HFLIP)) || (request->vflip && !(d->controls & VAREQ_VPP_VFLIP))) return -1;
-    struct vareq_compat compat;
-    if (vareq_compat_resolve(&d->identity, &compat) < 0) return -1;
-    struct vareq_compat_job job = *request;
+        (request->rotate && !(d->controls & VAV4L2_VPP_ROTATE)) ||
+        (request->hflip && !(d->controls & VAV4L2_VPP_HFLIP)) || (request->vflip && !(d->controls & VAV4L2_VPP_VFLIP))) return -1;
+    struct vav4l2_compat compat;
+    if (vav4l2_compat_resolve(&d->identity, &compat) < 0) return -1;
+    struct vav4l2_compat_job job = *request;
     job.src_rgb = raw_rgb(job.src); job.dst_rgb = raw_rgb(job.dst);
-    return vareq_compat_vpp_score(&compat, &job);
+    return vav4l2_compat_vpp_score(&compat, &job);
 }
-int vareq_vpp_device_score(const struct vareq_vpp_device *d, uint32_t src, uint32_t dst,
+int vav4l2_vpp_device_score(const struct vav4l2_vpp_device *d, uint32_t src, uint32_t dst,
                           int rotate, int hflip, int vflip, int crop_offset, int compose)
 {
-    struct vareq_compat_job job = {.src = src, .dst = dst, .rotate = rotate, .hflip = hflip, .vflip = vflip,
+    struct vav4l2_compat_job job = {.src = src, .dst = dst, .rotate = rotate, .hflip = hflip, .vflip = vflip,
         .crop_offset = crop_offset, .compose = compose};
-    return vareq_vpp_device_score_job(d, &job);
+    return vav4l2_vpp_device_score_job(d, &job);
 }
 
-void vareq_vpp_transform_controls(unsigned behaviors, int *rotate, int *hflip, int *vflip)
+void vav4l2_vpp_transform_controls(unsigned behaviors, int *rotate, int *hflip, int *vflip)
 {
     if (*hflip && *vflip) { *rotate = (*rotate + 180) % 360; *hflip = *vflip = 0; }
-    if (behaviors & VAREQ_COMPAT_SWAP_MIRROR_AXES) { int value = *hflip; *hflip = *vflip; *vflip = value; }
+    if (behaviors & VAV4L2_COMPAT_SWAP_MIRROR_AXES) { int value = *hflip; *hflip = *vflip; *vflip = value; }
 }
 
 static unsigned raw_planes(uint32_t fourcc)
@@ -134,22 +134,22 @@ static int job_dimensions(int fd, unsigned sw, unsigned sh, uint32_t src,
     return 1;
 }
 
-static int select_device(struct vareq_context *ctx, uint32_t src, uint32_t dst,
+static int select_device(struct vav4l2_context *ctx, uint32_t src, uint32_t dst,
                          unsigned sw, unsigned sh, unsigned dw, unsigned dh,
                          int rotate, int hflip, int vflip, int crop_offset, int compose, int warm, unsigned excluded, unsigned src_quantization, unsigned dst_quantization)
 {
     /* Unit contexts can supply their own fd without a discovered path. */
     if (!ctx->device_path) { ctx->vpp_controls = 7; return 0; }
-    struct vareq_driver_data *dd = ctx->driver_data;
-    vareq_scan_vpp_devices(dd);
-    unsigned order[VAREQ_VPP_MAX_DEVICES], count = 0;
-    int scores[VAREQ_VPP_MAX_DEVICES];
+    struct vav4l2_driver_data *dd = ctx->driver_data;
+    vav4l2_scan_vpp_devices(dd);
+    unsigned order[VAV4L2_VPP_MAX_DEVICES], count = 0;
+    int scores[VAV4L2_VPP_MAX_DEVICES];
     for (unsigned i = 0; i < dd->num_vpp_devices; i++) {
         if (excluded & (1u << i)) continue;
-        const struct vareq_vpp_device *d = &dd->vpp_devices[i];
-        struct vareq_compat_job job = {.src = src, .dst = dst, .rotate = rotate, .hflip = hflip, .vflip = vflip,
+        const struct vav4l2_vpp_device *d = &dd->vpp_devices[i];
+        struct vav4l2_compat_job job = {.src = src, .dst = dst, .rotate = rotate, .hflip = hflip, .vflip = vflip,
             .crop_offset = crop_offset, .compose = compose, .src_quantization = src_quantization, .dst_quantization = dst_quantization};
-        scores[i] = vareq_vpp_device_score_job(d, &job);
+        scores[i] = vav4l2_vpp_device_score_job(d, &job);
         if (scores[i] < 0) continue;
         if (warm && !strcmp(ctx->device_path, d->path)) return 0;
         unsigned at = count++;
@@ -157,7 +157,7 @@ static int select_device(struct vareq_context *ctx, uint32_t src, uint32_t dst,
         order[at] = i;
     }
     for (unsigned i = 0; i < count; i++) {
-        const struct vareq_vpp_device *d = &dd->vpp_devices[order[i]];
+        const struct vav4l2_vpp_device *d = &dd->vpp_devices[order[i]];
         int same = !strcmp(ctx->device_path, d->path);
         int fd = same ? ctx->v4l2_fd : open(d->path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) continue;
@@ -165,18 +165,18 @@ static int select_device(struct vareq_context *ctx, uint32_t src, uint32_t dst,
         if (!same) {
             char *path = strdup(d->path);
             if (!path) { close(fd); return -1; }
-            vareq_m2m_teardown(ctx, &ctx->vpp_q); close(ctx->v4l2_fd);
+            vav4l2_m2m_teardown(ctx, &ctx->vpp_q); close(ctx->v4l2_fd);
             free(ctx->device_path); ctx->device_path = path; ctx->v4l2_fd = fd;
         }
-        struct vareq_compat compat;
-        if (vareq_compat_resolve(&d->identity, &compat) < 0) return -1;
+        struct vav4l2_compat compat;
+        if (vav4l2_compat_resolve(&d->identity, &compat) < 0) return -1;
         ctx->vpp_controls = d->controls; ctx->vpp_behaviors = compat.behaviors;
-        if (vareq_debug) for (unsigned j = 0; j < compat.count; j++)
-            fprintf(stderr, "v4l2request: compatibility %s on %s\n", compat.modules[j]->name, d->path);
-        if (vareq_debug) fprintf(stderr, "v4l2request: VPP selected %s card=%s controls=%u\n", d->path, d->identity.card, d->controls);
+        if (vav4l2_debug) for (unsigned j = 0; j < compat.count; j++)
+            fprintf(stderr, "v4l2: compatibility %s on %s\n", compat.modules[j]->name, d->path);
+        if (vav4l2_debug) fprintf(stderr, "v4l2: VPP selected %s card=%s controls=%u\n", d->path, d->identity.card, d->controls);
         return 0;
     }
-    fprintf(stderr, "v4l2request: no VPP node accepts formats/geometry/transform\n");
+    fprintf(stderr, "v4l2: no VPP node accepts formats/geometry/transform\n");
     return -1;
 }
 
@@ -215,7 +215,7 @@ static const VAProcColorStandardType vpp_color_out[] = {
     VAProcColorStandardBT709,
 };
 
-VAStatus vareq_vpp_query_filters(VAProcFilterType *filters, unsigned int *n)
+VAStatus vav4l2_vpp_query_filters(VAProcFilterType *filters, unsigned int *n)
 {
     /* Rotation and mirroring are pipeline controls, not VAProcFilter types. */
     if (!n)
@@ -225,7 +225,7 @@ VAStatus vareq_vpp_query_filters(VAProcFilterType *filters, unsigned int *n)
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus vareq_vpp_query_filter_caps(VAProcFilterType type, void *caps,
+VAStatus vav4l2_vpp_query_filter_caps(VAProcFilterType type, void *caps,
                                       unsigned int *n)
 {
     (void)type;
@@ -235,7 +235,7 @@ VAStatus vareq_vpp_query_filter_caps(VAProcFilterType type, void *caps,
     return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
 }
 
-VAStatus vareq_vpp_query_pipeline_caps(VAProcPipelineCaps *caps)
+VAStatus vav4l2_vpp_query_pipeline_caps(VAProcPipelineCaps *caps)
 {
     if (!caps)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -262,13 +262,13 @@ VAStatus vareq_vpp_query_pipeline_caps(VAProcPipelineCaps *caps)
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus vareq_vpp_query_device_caps(struct vareq_driver_data *dd, VAProcPipelineCaps *caps)
+VAStatus vav4l2_vpp_query_device_caps(struct vav4l2_driver_data *dd, VAProcPipelineCaps *caps)
 {
     if (!caps) return VA_STATUS_ERROR_INVALID_PARAMETER;
     if (dd->vpp_caps_ready) { *caps = dd->vpp_caps; return VA_STATUS_SUCCESS; }
-    VAStatus st = vareq_vpp_query_pipeline_caps(caps);
+    VAStatus st = vav4l2_vpp_query_pipeline_caps(caps);
     if (st != VA_STATUS_SUCCESS) return st;
-    vareq_scan_vpp_devices(dd);
+    vav4l2_scan_vpp_devices(dd);
     if (!dd->num_vpp_devices) return VA_STATUS_ERROR_OPERATION_FAILED;
     caps->rotation_flags = 1u << VA_ROTATION_NONE; caps->mirror_flags = 0;
     caps->num_input_pixel_formats = caps->num_output_pixel_formats = 0;
@@ -276,10 +276,10 @@ VAStatus vareq_vpp_query_device_caps(struct vareq_driver_data *dd, VAProcPipelin
     caps->min_input_width = caps->min_input_height = caps->min_output_width = caps->min_output_height = UINT32_MAX;
     caps->max_input_width = caps->max_input_height = caps->max_output_width = caps->max_output_height = 0;
     for (unsigned i = 0; i < dd->num_vpp_devices; i++) {
-        const struct vareq_vpp_device *d = &dd->vpp_devices[i];
-        if (d->controls & VAREQ_VPP_ROTATE) caps->rotation_flags |= (1u << VA_ROTATION_90) | (1u << VA_ROTATION_180) | (1u << VA_ROTATION_270);
-        if (d->controls & VAREQ_VPP_HFLIP) caps->mirror_flags |= VA_MIRROR_HORIZONTAL;
-        if (d->controls & VAREQ_VPP_VFLIP) caps->mirror_flags |= VA_MIRROR_VERTICAL;
+        const struct vav4l2_vpp_device *d = &dd->vpp_devices[i];
+        if (d->controls & VAV4L2_VPP_ROTATE) caps->rotation_flags |= (1u << VA_ROTATION_90) | (1u << VA_ROTATION_180) | (1u << VA_ROTATION_270);
+        if (d->controls & VAV4L2_VPP_HFLIP) caps->mirror_flags |= VA_MIRROR_HORIZONTAL;
+        if (d->controls & VAV4L2_VPP_VFLIP) caps->mirror_flags |= VA_MIRROR_VERTICAL;
         if (d->min_width[0] < caps->min_input_width) caps->min_input_width = d->min_width[0];
         if (d->min_height[0] < caps->min_input_height) caps->min_input_height = d->min_height[0];
         if (d->min_width[1] < caps->min_output_width) caps->min_output_width = d->min_width[1];
@@ -292,7 +292,7 @@ VAStatus vareq_vpp_query_device_caps(struct vareq_driver_data *dd, VAProcPipelin
     for (unsigned i = 0; i < sizeof(vpp_pixel_formats) / sizeof(vpp_pixel_formats[0]); i++) {
         int in = 0, out = 0;
         for (unsigned j = 0; j < dd->num_vpp_devices; j++) {
-            const struct vareq_vpp_device *d = &dd->vpp_devices[j];
+            const struct vav4l2_vpp_device *d = &dd->vpp_devices[j];
             uint32_t fcc = va_to_v4l2_raw(vpp_pixel_formats[i]);
             in |= has_format(d->input, d->num_input, fcc); out |= has_format(d->output, d->num_output, fcc);
         }
@@ -309,7 +309,7 @@ static void copy_raw(uint8_t *dst, uint32_t dst_stride, uint32_t dst_h,
                      uint32_t fourcc, int width, int height, int bpp)
 {
     if (fourcc == VA_FOURCC_NV12 || fourcc == VA_FOURCC_NV21) {
-        vareq_copy_nv12(dst, dst_stride, dst_h, src, src_stride, src_h, width, height);
+        vav4l2_copy_nv12(dst, dst_stride, dst_h, src, src_stride, src_h, width, height);
         return;
     }
     for (int y = 0; y < height; y++)
@@ -341,7 +341,7 @@ static int valid_region(const VARectangle *r, unsigned width, unsigned height, u
     return 1;
 }
 
-static int set_regions(int fd, struct vareq_m2m_state *q, const VARectangle *src,
+static int set_regions(int fd, struct vav4l2_m2m_state *q, const VARectangle *src,
                        const VARectangle *dst, int partial)
 {
     if (!partial && !q->selection_active) return 0;
@@ -355,7 +355,7 @@ static int set_regions(int fd, struct vareq_m2m_state *q, const VARectangle *src
         struct v4l2_rect requested = selection.r;
         if (xioctl(fd, VIDIOC_S_SELECTION, &selection) < 0 ||
             memcmp(&requested, &selection.r, sizeof(requested))) {
-            fprintf(stderr, "v4l2request: VPP crop/compose not accepted exactly\n");
+            fprintf(stderr, "v4l2: VPP crop/compose not accepted exactly\n");
             return -1;
         }
     }
@@ -403,7 +403,7 @@ static unsigned clip_byte(int value)
 /* Fill the destination backing after successful processing. Alpha zero keeps
  * existing pixels outside output_region; fractional background blending is
  * not implemented. YUV uses the negotiated matrix and range. */
-static void fill_background(struct vareq_surface *dst, uint32_t argb,
+static void fill_background(struct vav4l2_surface *dst, uint32_t argb,
                             const struct v4l2_pix_format_mplane *fmt)
 {
     if (!(argb >> 24)) return;
@@ -463,11 +463,11 @@ static void fill_background(struct vareq_surface *dst, uint32_t argb,
 
 #include "dmabuf.h"
 
-static VAStatus run_pipeline(struct vareq_context *ctx,
-                        struct vareq_buffer **buffers, int num_buffers)
+static VAStatus run_pipeline(struct vav4l2_context *ctx,
+                        struct vav4l2_buffer **buffers, int num_buffers)
 {
     VAProcPipelineParameterBuffer *pipe = NULL;
-    struct vareq_surface *src, *dst;
+    struct vav4l2_surface *src, *dst;
     int fd = ctx->v4l2_fd;
     int i, rotate = 0, hflip = 0, vflip = 0;
     int sw, sh, dw, dh;
@@ -492,7 +492,7 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
     if (!pipe)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
 
-    src = vareq_surface_by_id(ctx->driver_data, pipe->surface);
+    src = vav4l2_surface_by_id(ctx->driver_data, pipe->surface);
     dst = ctx->current_surface;
     if (!src || !dst)
         return VA_STATUS_ERROR_INVALID_SURFACE;
@@ -542,8 +542,8 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
     src_fcc = src->format ? src->format : VA_FOURCC_NV12;
     dst_fcc = dst->format ? dst->format : VA_FOURCC_NV12;
     int native_capture = !src->prime && !src->gbm_bo;
-    int decoded_nv16 = native_capture && src->has_pic && src->last_writer != VAREQ_WRITER_CPU && src->cap_fourcc == V4L2_PIX_FMT_NV16;
-    if (native_capture && src->has_pic && src->last_writer != VAREQ_WRITER_CPU && src->cap_fourcc == V4L2_PIX_FMT_NV12)
+    int decoded_nv16 = native_capture && src->has_pic && src->last_writer != VAV4L2_WRITER_CPU && src->cap_fourcc == V4L2_PIX_FMT_NV16;
+    if (native_capture && src->has_pic && src->last_writer != VAV4L2_WRITER_CPU && src->cap_fourcc == V4L2_PIX_FMT_NV12)
         src_fcc = VA_FOURCC_NV12;
     if (decoded_nv16) src_fcc = VA_FOURCC_YUY2;
     int src_ok = 0, dst_ok = 0;
@@ -551,7 +551,7 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
         src_ok |= src_fcc == vpp_pixel_formats[j];
         dst_ok |= dst_fcc == vpp_pixel_formats[j];
     }
-    if (!src_ok || !dst_ok || (native_capture && src->has_pic && src->last_writer != VAREQ_WRITER_CPU &&
+    if (!src_ok || !dst_ok || (native_capture && src->has_pic && src->last_writer != VAV4L2_WRITER_CPU &&
         src->cap_fourcc != V4L2_PIX_FMT_NV12 && !decoded_nv16))
         return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     if (!valid_region(&input, src->width, src->height, src_fcc) ||
@@ -589,30 +589,30 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
         int direct = run_dmabuf(ctx, src, dst, rotate, hflip, vflip, &input_color, &output_color, &input, &output);
         if (direct) return direct > 0 ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    if (vareq_import_refresh(src) < 0) return VA_STATUS_ERROR_OPERATION_FAILED;
+    if (vav4l2_import_refresh(src) < 0) return VA_STATUS_ERROR_OPERATION_FAILED;
     if (partial_output && dst->has_pic) {
-        if (vareq_import_refresh(dst) < 0 ||
-            (dst->gbm_bo && dst->last_writer == VAREQ_WRITER_BO && vareq_gbm_read_cpu(dst) < 0))
+        if (vav4l2_import_refresh(dst) < 0 ||
+            (dst->gbm_bo && dst->last_writer == VAV4L2_WRITER_BO && vav4l2_gbm_read_cpu(dst) < 0))
             return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    if (src->last_writer == VAREQ_WRITER_CPU && src->cpu_ptr) {
+    if (src->last_writer == VAV4L2_WRITER_CPU && src->cpu_ptr) {
         srcp = src->cpu_ptr;
         src_stride = src->cpu_stride;
         src_alh = src->height;
-    } else if (vareq_expbuf_export_wanted() && src->cap_view &&
+    } else if (vav4l2_expbuf_export_wanted() && src->cap_view &&
         src->buf_index >= 0 && src->stride) {
         /* Decode snapshot lives in the capture mmap; memfd was never filled. */
         srcp = src->cap_view;
         src_stride = src->stride;
         src_alh = src->aligned_h ? src->aligned_h : src->height;
     } else if (src->memfd_fd >= 0 && src->has_pic && src->stride) {
-        if (vareq_surface_ensure_memfd(src) < 0)
+        if (vav4l2_surface_ensure_memfd(src) < 0)
             return VA_STATUS_ERROR_OPERATION_FAILED;
-        src_map_sz = vareq_capture_plane_size(
+        src_map_sz = vav4l2_capture_plane_size(
             src->cap_fourcc ? src->cap_fourcc : V4L2_PIX_FMT_NV12,
             src->stride, src->aligned_h ? src->aligned_h : src->height);
         if (!src_map_sz) return VA_STATUS_ERROR_INVALID_PARAMETER;
-        src_map = vareq_surface_map_memfd(src, src_map_sz);
+        src_map = vav4l2_surface_map_memfd(src, src_map_sz);
         if (!src_map)
             return VA_STATUS_ERROR_OPERATION_FAILED;
         srcp = src_map;
@@ -637,9 +637,9 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
                     return VA_STATUS_ERROR_UNIMPLEMENTED; /* Fractional-alpha processing is not implemented. */
     }
     if (!dst->cpu_ptr) {
-        dst->cpu_stride = vareq_default_image_stride(dst_fcc, dst->width);
-        dst->cpu_size = vareq_va_image_size(dst_fcc, dst->cpu_stride, dst->height);
-        if (vareq_surface_ensure_cpu(dst) < 0)
+        dst->cpu_stride = vav4l2_default_image_stride(dst_fcc, dst->width);
+        dst->cpu_size = vav4l2_va_image_size(dst_fcc, dst->cpu_stride, dst->height);
+        if (vav4l2_surface_ensure_cpu(dst) < 0)
             dst->cpu_ptr = NULL;
         if (!dst->cpu_ptr)
             return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -648,7 +648,7 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
     dstp = dst->cpu_ptr;
 
     {
-        struct vareq_m2m_state *q = &ctx->vpp_q;
+        struct vav4l2_m2m_state *q = &ctx->vpp_q;
         uint32_t key[8] = {
             src->width, src->height, src_fcc, dw, dh, dst_fcc,
             (uint32_t)(rotate / 90) | ((uint32_t)hflip << 8) | ((uint32_t)vflip << 16),
@@ -665,10 +665,10 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
         }
         fd = ctx->v4l2_fd;
         renegot |= !q->valid;
-        vareq_vpp_transform_controls(ctx->vpp_behaviors, &rotate, &hflip, &vflip);
+        vav4l2_vpp_transform_controls(ctx->vpp_behaviors, &rotate, &hflip, &vflip);
 
         if (renegot) {
-            vareq_m2m_teardown(ctx, q);
+            vav4l2_m2m_teardown(ctx, q);
             if (ctx->v4l2_fd < 0) { st = VA_STATUS_ERROR_OPERATION_FAILED; goto fail; }
             q->valid = 1; /* teardown also owns partial setup on failure */
 
@@ -681,7 +681,7 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
             ofmt.fmt.pix_mp.num_planes = 1;
             ofmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
             if (xioctl(fd, VIDIOC_S_FMT, &ofmt) < 0) {
-                fprintf(stderr, "v4l2request: VPP S_FMT out: %s\n", strerror(errno));
+                fprintf(stderr, "v4l2: VPP S_FMT out: %s\n", strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
@@ -694,7 +694,7 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
             cfmt.fmt.pix_mp.num_planes = 1;
             cfmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
             if (xioctl(fd, VIDIOC_S_FMT, &cfmt) < 0) {
-                fprintf(stderr, "v4l2request: VPP S_FMT cap: %s\n", strerror(errno));
+                fprintf(stderr, "v4l2: VPP S_FMT cap: %s\n", strerror(errno));
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
@@ -714,9 +714,9 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
-            if (set_transform(fd, ctx->vpp_controls, VAREQ_VPP_ROTATE, V4L2_CID_ROTATE, rotate) < 0 ||
-                set_transform(fd, ctx->vpp_controls, VAREQ_VPP_HFLIP, V4L2_CID_HFLIP, hflip) < 0 ||
-                set_transform(fd, ctx->vpp_controls, VAREQ_VPP_VFLIP, V4L2_CID_VFLIP, vflip) < 0) {
+            if (set_transform(fd, ctx->vpp_controls, VAV4L2_VPP_ROTATE, V4L2_CID_ROTATE, rotate) < 0 ||
+                set_transform(fd, ctx->vpp_controls, VAV4L2_VPP_HFLIP, V4L2_CID_HFLIP, hflip) < 0 ||
+                set_transform(fd, ctx->vpp_controls, VAV4L2_VPP_VFLIP, V4L2_CID_VFLIP, vflip) < 0) {
                 st = VA_STATUS_ERROR_OPERATION_FAILED;
                 goto fail;
             }
@@ -790,8 +790,8 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
         uint32_t cap_stride = q->cfmt.fmt.pix_mp.plane_fmt[0].bytesperline;
         if (!out_stride) out_stride = (uint32_t)sw * bpp_src;
         if (!cap_stride) cap_stride = (uint32_t)dw * bpp_dst;
-        uint32_t out_size = vareq_va_image_size(queue_image_fourcc(src_fcc), out_stride, sh);
-        uint32_t cap_size = vareq_va_image_size(queue_image_fourcc(dst_fcc), cap_stride, dh);
+        uint32_t out_size = vav4l2_va_image_size(queue_image_fourcc(src_fcc), out_stride, sh);
+        uint32_t cap_size = vav4l2_va_image_size(queue_image_fourcc(dst_fcc), cap_stride, dh);
         if (out_stride < (uint32_t)sw * bpp_src || cap_stride < (uint32_t)dw * bpp_dst ||
             !out_size || !cap_size || out_size > q->out_len[0] || cap_size > q->cap_len) {
             st = VA_STATUS_ERROR_OPERATION_FAILED;
@@ -800,13 +800,13 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
         if (decoded_nv16) {
             /* Lossless 8-bit 4:2:2 staging. Capture chroma is full-height;
              * the VPP queue receives the already supported packed YUY2. */
-            vareq_nv16_to_yuy2(q->out_map[0], out_stride, srcp, src_stride, src_alh, sw, sh);
+            vav4l2_nv16_to_yuy2(q->out_map[0], out_stride, srcp, src_stride, src_alh, sw, sh);
         } else if (src_fcc == VA_FOURCC_YV12 || src_fcc == VA_FOURCC_422H || src_fcc == VA_FOURCC_YV16) {
-            struct vareq_image_view source = {.data = (void *)srcp, .fourcc = src_fcc,
+            struct vav4l2_image_view source = {.data = (void *)srcp, .fourcc = src_fcc,
                 .stride = src_stride, .width = sw, .height = sh, .alloc_height = src_alh, .size = src->cpu_size};
-            struct vareq_image_view target = {.data = q->out_map[0], .fourcc = queue_image_fourcc(src_fcc),
+            struct vav4l2_image_view target = {.data = q->out_map[0], .fourcc = queue_image_fourcc(src_fcc),
                 .stride = out_stride, .width = sw, .height = sh, .alloc_height = sh, .size = q->out_len[0]};
-            st = vareq_copy_image_rect(&target, 0, 0, &source, 0, 0, sw, sh);
+            st = vav4l2_copy_image_rect(&target, 0, 0, &source, 0, 0, sw, sh);
             if (st != VA_STATUS_SUCCESS) goto fail;
         } else copy_raw(q->out_map[0], out_stride, sh, srcp, src_stride, src_alh, src_fcc, sw, sh, bpp_src);
 
@@ -851,8 +851,8 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
 
         pfd.fd = fd;
         pfd.events = POLLIN;
-        if (vareq_poll_intr(&pfd, 1, 2000) <= 0) {
-            fprintf(stderr, "v4l2request: VPP timeout\n");
+        if (vav4l2_poll_intr(&pfd, 1, 2000) <= 0) {
+            fprintf(stderr, "v4l2: VPP timeout\n");
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
         }
@@ -863,7 +863,7 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
         cbuf.length = 1;
         cbuf.m.planes = cpl;
         if (xioctl(fd, VIDIOC_DQBUF, &cbuf) < 0) {
-            fprintf(stderr, "v4l2request: VPP DQBUF: %s\n", strerror(errno));
+            fprintf(stderr, "v4l2: VPP DQBUF: %s\n", strerror(errno));
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
         }
@@ -872,27 +872,27 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
         }
-        if (vareq_m2m_finish_output(ctx, q) < 0) {
+        if (vav4l2_m2m_finish_output(ctx, q) < 0) {
             st = VA_STATUS_ERROR_OPERATION_FAILED;
             goto fail;
         }
         if (partial_output) fill_background(dst, pipe->output_background_color, &q->cfmt.fmt.pix_mp);
-        struct vareq_image_view source = {.data = (uint8_t *)q->cap_map + cpl[0].data_offset,
+        struct vav4l2_image_view source = {.data = (uint8_t *)q->cap_map + cpl[0].data_offset,
             .fourcc = queue_image_fourcc(dst_fcc),
             .stride = cap_stride, .width = dst->width, .height = dst->height,
             .alloc_height = dh, .size = cap_size};
-        struct vareq_image_view target = {.data = dstp, .fourcc = dst_fcc, .stride = dst->cpu_stride,
+        struct vav4l2_image_view target = {.data = dstp, .fourcc = dst_fcc, .stride = dst->cpu_stride,
             .width = dst->width, .height = dst->height, .size = dst->cpu_size};
-        st = vareq_copy_image_rect(&target, output.x, output.y, &source, output.x, output.y, output.width, output.height);
+        st = vav4l2_copy_image_rect(&target, output.x, output.y, &source, output.x, output.y, output.width, output.height);
         if (st != VA_STATUS_SUCCESS) goto fail;
     }
 
     st = VA_STATUS_SUCCESS;
     dst->has_pic = 1;
-    dst->last_writer = VAREQ_WRITER_CPU;
+    dst->last_writer = VAV4L2_WRITER_CPU;
     dst->prime_capture_valid = 0;
-    if ((dst->prime && vareq_prime_write(dst) < 0) ||
-        (dst->gbm_bo && vareq_gbm_surface_upload(dst, dst->cpu_ptr, dst->cpu_stride, dst->height) < 0)) {
+    if ((dst->prime && vav4l2_prime_write(dst) < 0) ||
+        (dst->gbm_bo && vav4l2_gbm_surface_upload(dst, dst->cpu_ptr, dst->cpu_stride, dst->height) < 0)) {
         st = VA_STATUS_ERROR_OPERATION_FAILED;
         goto fail;
     }
@@ -910,20 +910,20 @@ static VAStatus run_pipeline(struct vareq_context *ctx,
             goto fail;
         }
     }
-    if (vareq_debug)
-        fprintf(stderr, "v4l2request: VPP %dx%d -> %dx%d rot=%d\n",
+    if (vav4l2_debug)
+        fprintf(stderr, "v4l2: VPP %dx%d -> %dx%d rot=%d\n",
                 src->width, src->height, dw, dh, rotate);
     return st;
 
 fail:
-    vareq_m2m_teardown(ctx, &ctx->vpp_q);
+    vav4l2_m2m_teardown(ctx, &ctx->vpp_q);
     return st;
 }
 
-static VAStatus run_and_trace(struct vareq_context *ctx, struct vareq_buffer **buffers, int num_buffers)
+static VAStatus run_and_trace(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int num_buffers)
 {
     VAStatus st = run_pipeline(ctx, buffers, num_buffers);
-    const char *path = getenv("VAREQ_VPP_TRACE");
+    const char *path = getenv("VAV4L2_VPP_TRACE");
     if (!path || !path[0]) return st;
     VAProcPipelineParameterBuffer *pipe = NULL;
     for (int i = 0; i < num_buffers; i++) if (buffers[i] && buffers[i]->type == VAProcPipelineParameterBufferType) pipe = buffers[i]->data;
@@ -932,7 +932,7 @@ static VAStatus run_and_trace(struct vareq_context *ctx, struct vareq_buffer **b
     if (!file) { perror("VPP trace"); return st; }
     if (ftell(file) == 0) fprintf(file, "STATUS\tNODE\tCARD\tSRC_FOURCC\tDST_FOURCC\tSOURCE_SIZE\tTARGET_SIZE\tCROP\tCOMPOSE\tROTATION\tMIRROR\tFILTER_FLAGS\tINPUT_COLOR\tOUTPUT_COLOR\tREQUEST_SITING\tQUEUE_VALID\tOUTPUT_MEMORY\tCAPTURE_MEMORY\tOUTPUT_PLANES\tCAPTURE_PLANES\tCONTEXT\n");
     const struct v4l2_pix_format_mplane *in = &ctx->vpp_q.ofmt.fmt.pix_mp, *out = &ctx->vpp_q.cfmt.fmt.pix_mp;
-    struct vareq_surface *src = vareq_surface_by_id(ctx->driver_data, pipe->surface), *dst = ctx->current_surface;
+    struct vav4l2_surface *src = vav4l2_surface_by_id(ctx->driver_data, pipe->surface), *dst = ctx->current_surface;
     const char *card = "unknown";
     for (unsigned i = 0; i < ctx->driver_data->num_vpp_devices; i++)
         if (ctx->device_path && !strcmp(ctx->device_path, ctx->driver_data->vpp_devices[i].path)) card = ctx->driver_data->vpp_devices[i].identity.card;
@@ -955,25 +955,25 @@ static VAStatus run_and_trace(struct vareq_context *ctx, struct vareq_buffer **b
     return st;
 }
 
-VAStatus vareq_vpp_run(struct vareq_context *ctx, struct vareq_buffer **buffers, int num_buffers)
+VAStatus vav4l2_vpp_run(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int num_buffers)
 {
     if (num_buffers <= 0 || !buffers) return VA_STATUS_ERROR_INVALID_PARAMETER;
     /* Validate the whole buffer list before the first composition pass. */
     for (int i = 0; i < num_buffers; i++) {
-        const struct vareq_buffer *b = buffers[i];
+        const struct vav4l2_buffer *b = buffers[i];
         if (!b || !b->data || b->type != VAProcPipelineParameterBufferType ||
             b->size < sizeof(VAProcPipelineParameterBuffer) ||
             (b->allocated_elements && b->num_elements > b->allocated_elements))
             return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
     for (int i = 0; i < num_buffers; i++) {
-        const struct vareq_buffer *b = buffers[i];
+        const struct vav4l2_buffer *b = buffers[i];
         unsigned count = b->num_elements ? b->num_elements : 1;
         for (unsigned j = 0; j < count; j++) {
-            struct vareq_buffer element = *b;
+            struct vav4l2_buffer element = *b;
             element.data = (uint8_t *)b->data + (size_t)j * b->size;
             element.num_elements = element.allocated_elements = 1;
-            struct vareq_buffer *one[] = {&element};
+            struct vav4l2_buffer *one[] = {&element};
             VAStatus st = run_and_trace(ctx, one, 1);
             if (st != VA_STATUS_SUCCESS) return st;
         }
@@ -981,4 +981,4 @@ VAStatus vareq_vpp_run(struct vareq_context *ctx, struct vareq_buffer **buffers,
     return VA_STATUS_SUCCESS;
 }
 
-const int vareq_has_vpp = 1;
+const int vav4l2_has_vpp = 1;

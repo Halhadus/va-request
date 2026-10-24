@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "compat/compat.h"
 @COMPAT_DECLARATIONS@
-static const struct vareq_compat_module *const modules[] = {
+static const struct vav4l2_compat_module *const modules[] = {
 @COMPAT_ENTRIES@
     NULL
 };
-const struct vareq_compat_module *const *vareq_compat_modules(size_t *count)
+const struct vav4l2_compat_module *const *vav4l2_compat_modules(size_t *count)
 {
     *count = sizeof(modules) / sizeof(modules[0]) - 1;
     return modules;

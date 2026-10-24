@@ -200,7 +200,7 @@ static void complete_rgb(const struct dmabuf_format *f)
     int ok = surface_size(f->rt, f->va, 128, 128, &s[0]) && surface_size(f->rt, f->va, 128, 128, &s[1]) && image(f->va, 128, 128, &im) &&
         status(vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc, &rt, 1, &cfg), "complete RGB config") &&
         status(vaCreateContext(display, cfg, 128, 128, VA_PROGRESSIVE, NULL, 0, &ctx), "complete RGB context");
-    VAProcPipelineParameterBuffer pipe = {.surface = s[0]}; setenv("VAREQ_VPP_DMABUF", "required", 1);
+    VAProcPipelineParameterBuffer pipe = {.surface = s[0]}; setenv("VAV4L2_VPP_DMABUF", "required", 1);
     /* Materialize both public allocations, then process into a PRIME3 alias. */
     VADRMPRIMESurfaceDescriptor d[2] = {{0}}; VADRMPRIME3SurfaceDescriptor v3; VASurfaceID alias = VA_INVALID_ID;
     for (unsigned i = 0; i < 2 && ok; i++) ok = complete_image(s[i], &im, f, 0, 1) &&
@@ -303,12 +303,12 @@ static void complete_jpeg(unsigned format, const char *name, unsigned iteration)
     dmabuf_close(&d); /* Only imported surfaces now retain the input objects. */
     for (unsigned frame = 0; frame < 4 && ok; frame++) {
         unsigned index = iteration * 4 + frame;
-        setenv("VAREQ_JPEG_DMABUF", "0", 1);
+        setenv("VAV4L2_JPEG_DMABUF", "0", 1);
         ok = jpeg_layout_upload(reference, &im, index) && jpeg_layout_encode(ctx, reference, coded, index, "ref");
-        setenv("VAREQ_JPEG_DMABUF", "required", 1);
+        setenv("VAV4L2_JPEG_DMABUF", "required", 1);
         ok = ok && jpeg_layout_upload(imported, &im, index) && jpeg_layout_encode(ctx, imported, coded, index, "test");
     }
-    setenv("VAREQ_JPEG_DMABUF", "auto", 1);
+    setenv("VAV4L2_JPEG_DMABUF", "auto", 1);
     if (coded != VA_INVALID_ID) vaDestroyBuffer(display, coded);
     if (ctx != VA_INVALID_ID) vaDestroyContext(display, ctx);
     if (cfg != VA_INVALID_ID) vaDestroyConfig(display, cfg);
@@ -331,7 +331,7 @@ int VA_DMABUF_COMPLETE_MAIN(int argc, char **argv)
     display = vaGetDisplayDRM(fd);
     if (!display || !status(vaInitialize(display, &major, &minor), "complete initialize")) { close(fd); fclose(results); return 2; }
     const char *vendor = vaQueryVendorString(display);
-    if (!vareq_test_driver_identity(vendor)) { fprintf(stderr, "Unexpected VA driver\n"); vaTerminate(display); close(fd); fclose(results); return 2; }
+    if (!vav4l2_test_driver_identity(vendor)) { fprintf(stderr, "Unexpected VA driver\n"); vaTerminate(display); close(fd); fclose(results); return 2; }
     for (unsigned i = 0; i < sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]); i++)
         for (unsigned layer = 0; layer < 2; layer++) complete_prime(&dmabuf_formats[i], layer ? VA_EXPORT_SURFACE_SEPARATE_LAYERS : VA_EXPORT_SURFACE_COMPOSED_LAYERS);
     for (unsigned i = 0; i < sizeof(additions) / sizeof(additions[0]); i++) {

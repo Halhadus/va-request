@@ -1,5 +1,5 @@
 /*
- * v4l2request — H.264 parameter translation
+ * v4l2 — H.264 parameter translation
  *
  * Maps VA-API H.264 buffers to V4L2 stateless controls and submits
  * a decode request via the V4L2 Request API.
@@ -27,7 +27,7 @@
 #include <linux/v4l2-controls.h>
 #include <linux/videodev2.h>
 
-#include "va_request.h"
+#include "va_v4l2.h"
 
 /* Convert VA-API SPS fields to V4L2 SPS flags */
 static uint32_t h264_sps_flags(const VAPictureParameterBufferH264 *pic)
@@ -81,15 +81,15 @@ static uint32_t h264_pps_flags(const VAPictureParameterBufferH264 *pic)
  *
  * If the surface is not found (e.g., unused DPB slot), returns 0.
  */
-static uint64_t h264_find_ref_timestamp(struct vareq_driver_data *dd,
+static uint64_t h264_find_ref_timestamp(struct vav4l2_driver_data *dd,
                                          VASurfaceID picture_id)
 {
-    struct vareq_surface *surf;
+    struct vav4l2_surface *surf;
 
     if (picture_id == VA_INVALID_SURFACE || picture_id == 0xFFFFFFFF)
         return 0;
 
-    surf = vareq_surface_by_id(dd, picture_id);
+    surf = vav4l2_surface_by_id(dd, picture_id);
     if (surf)
         return surf->timestamp;
 
@@ -213,7 +213,7 @@ void h264_fill_pps(struct v4l2_ctrl_h264_pps *pps,
  */
 void h264_fill_decode_params(struct v4l2_ctrl_h264_decode_params *dec,
                              const VAPictureParameterBufferH264 *pic,
-                             struct vareq_driver_data *dd,
+                             struct vav4l2_driver_data *dd,
                              const VASliceParameterBufferH264 *slice)
 {
     memset(dec, 0, sizeof(*dec));
@@ -428,7 +428,7 @@ static VAStatus h264_parse_header(const uint8_t *data, size_t size,
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus vareq_h264_parse_header(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
+VAStatus vav4l2_h264_parse_header(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
     const VASliceParameterBufferH264 *slice, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec)
 {
     return h264_parse_header(data, size, pic, slice, pps, dec, NULL, NULL, NULL);
@@ -437,7 +437,7 @@ VAStatus vareq_h264_parse_header(const uint8_t *data, size_t size, const VAPictu
 /* Validate every complete logical slice,not just the first NAL. Defaults
  * must come from a slice without an override when one is available. */
 static VAStatus h264_validate_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
-    struct vareq_buffer **buffers, int count, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec, unsigned *defaults, int *mmco5)
+    struct vav4l2_buffer **buffers, int count, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec, unsigned *defaults, int *mmco5)
 {
     if (!pic || !buffers || count <= 0 || !pps || !dec) return VA_STATUS_ERROR_INVALID_PARAMETER;
     struct v4l2_ctrl_h264_pps result_pps = *pps;
@@ -446,7 +446,7 @@ static VAStatus h264_validate_headers(const uint8_t *data, size_t size, const VA
     struct h264_bits first_marking = {0};
     unsigned slices = 0, picture_type = 2, seen_types = 0; int default_l0 = -1, default_l1 = -1, all_type = -1;
     for (int i = 0; i < count; i++) {
-        struct vareq_buffer *b = buffers[i];
+        struct vav4l2_buffer *b = buffers[i];
         if (!b || b->type != VASliceParameterBufferType) continue;
         if (!b->data || b->size < sizeof(VASliceParameterBufferH264)) return VA_STATUS_ERROR_INVALID_PARAMETER;
         unsigned n = b->num_elements ? b->num_elements : 1;
@@ -456,7 +456,7 @@ static VAStatus h264_validate_headers(const uint8_t *data, size_t size, const VA
             memcpy(&value, (const uint8_t *)b->data + (size_t)j * b->size, sizeof(value));
             const VASliceParameterBufferH264 *slice = &value;
             if (slice->slice_data_flag != VA_SLICE_DATA_FLAG_ALL && slice->slice_data_flag != VA_SLICE_DATA_FLAG_BEGIN) continue;
-            if (vareq_annexb_next(data, size, &offset, &nal, &length) != 1) return VA_STATUS_ERROR_INVALID_PARAMETER;
+            if (vav4l2_annexb_next(data, size, &offset, &nal, &length) != 1) return VA_STATUS_ERROR_INVALID_PARAMETER;
             struct v4l2_ctrl_h264_pps current_pps = result_pps;
             struct v4l2_ctrl_h264_decode_params current = *dec; int override; struct h264_bits marking;
             int reset;
@@ -498,7 +498,7 @@ static VAStatus h264_validate_headers(const uint8_t *data, size_t size, const VA
             slices++;
         }
     }
-    if (!slices || vareq_annexb_next(data, size, &offset, &nal, &length) != 0) return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (!slices || vav4l2_annexb_next(data, size, &offset, &nal, &length) != 0) return VA_STATUS_ERROR_INVALID_PARAMETER;
     if (default_l0 >= 0) result_pps.num_ref_idx_l0_default_active_minus1 = default_l0;
     if (default_l1 >= 0) result_pps.num_ref_idx_l1_default_active_minus1 = default_l1;
     first.flags &= ~(V4L2_H264_DECODE_PARAM_FLAG_PFRAME | V4L2_H264_DECODE_PARAM_FLAG_BFRAME);
@@ -509,8 +509,8 @@ static VAStatus h264_validate_headers(const uint8_t *data, size_t size, const VA
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus vareq_h264_validate_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
-    struct vareq_buffer **buffers, int count, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec)
+VAStatus vav4l2_h264_validate_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
+    struct vav4l2_buffer **buffers, int count, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec)
 {
     return h264_validate_headers(data, size, pic, buffers, count, pps, dec, NULL, NULL);
 }
@@ -536,7 +536,7 @@ void h264_fill_scaling_matrix(struct v4l2_ctrl_h264_scaling_matrix *sm,
     /* Remaining lists retain the flat value 16. */
 }
 
-struct vareq_h264_field {
+struct vav4l2_h264_field {
     VASurfaceID surface;
     uint64_t timestamp;
     VAPictureParameterBufferH264 pic;
@@ -550,40 +550,40 @@ struct vareq_h264_field {
     uint8_t data[];
 };
 
-int vareq_h264_field_pending(const struct vareq_context *ctx, VASurfaceID surface)
+int vav4l2_h264_field_pending(const struct vav4l2_context *ctx, VASurfaceID surface)
 {
     return ctx && ctx->h264_field && ctx->h264_field->surface == surface;
 }
 
-void vareq_h264_discard_field(struct vareq_context *ctx, int failed)
+void vav4l2_h264_discard_field(struct vav4l2_context *ctx, int failed)
 {
     if (!ctx || !ctx->h264_field) return;
-    struct vareq_surface *s = vareq_surface_by_id(ctx->driver_data, ctx->h264_field->surface);
+    struct vav4l2_surface *s = vav4l2_surface_by_id(ctx->driver_data, ctx->h264_field->surface);
     if (failed && s && s->status == VASurfaceRendering) s->status = VASurfaceSkipped;
     free(ctx->h264_field); ctx->h264_field = NULL;
 }
 
 /* Stage only owned bytes and translated controls. VA buffers may be destroyed
  * as soon as the first EndPicture returns. No request is queued for a half frame. */
-static VAStatus h264_pair_fields(struct vareq_context *ctx, VAPictureParameterBufferH264 *picture,
+static VAStatus h264_pair_fields(struct vav4l2_context *ctx, VAPictureParameterBufferH264 *picture,
     struct v4l2_ctrl_h264_sps *sps, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec,
     const struct v4l2_ctrl_h264_scaling_matrix *sm, int matrix, unsigned defaults, int mmco5,
-    const uint8_t *data, size_t *size, uint8_t **paired, struct vareq_h264_field **retained)
+    const uint8_t *data, size_t *size, uint8_t **paired, struct vav4l2_h264_field **retained)
 {
     if (!ctx->current_surface || picture->CurrPic.picture_id != ctx->current_surface_id)
         return VA_STATUS_ERROR_INVALID_SURFACE;
     unsigned fields = picture->CurrPic.flags & (VA_PICTURE_H264_TOP_FIELD | VA_PICTURE_H264_BOTTOM_FIELD);
     if (fields != VA_PICTURE_H264_TOP_FIELD && fields != VA_PICTURE_H264_BOTTOM_FIELD)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
-    struct vareq_h264_field *first = ctx->h264_field;
+    struct vav4l2_h264_field *first = ctx->h264_field;
     if (!first) {
         if (*size > UINT32_MAX || *size > SIZE_MAX - sizeof(*first)) return VA_STATUS_ERROR_ALLOCATION_FAILED;
         first = malloc(sizeof(*first) + *size);
         if (!first) return VA_STATUS_ERROR_ALLOCATION_FAILED;
-        *first = (struct vareq_h264_field){.surface = ctx->current_surface_id, .timestamp = ctx->current_surface->timestamp,
+        *first = (struct vav4l2_h264_field){.surface = ctx->current_surface_id, .timestamp = ctx->current_surface->timestamp,
             .pic = *picture, .sps = *sps, .pps = *pps, .dec = *dec, .sm = *sm, .defaults = defaults, .matrix = matrix, .size = *size};
         memcpy(first->data, data, *size); ctx->h264_field = first;
-        vareq_decode_trace(ctx, "h264-field-hold", 0, fields);
+        vav4l2_decode_trace(ctx, "h264-field-hold", 0, fields);
         return VA_STATUS_SUCCESS;
     }
     unsigned first_fields = first->pic.CurrPic.flags & (VA_PICTURE_H264_TOP_FIELD | VA_PICTURE_H264_BOTTOM_FIELD);
@@ -611,7 +611,7 @@ static VAStatus h264_pair_fields(struct vareq_context *ctx, VAPictureParameterBu
     for (unsigned i = 0; i < 16; i++) {
         const VAPictureH264 *ref = &first->pic.ReferenceFrames[i];
         if ((ref->flags & VA_PICTURE_H264_INVALID) || !(ref->flags & (VA_PICTURE_H264_SHORT_TERM_REFERENCE | VA_PICTURE_H264_LONG_TERM_REFERENCE))) continue;
-        VAStatus status = vareq_validate_reference(ctx, ref->picture_id);
+        VAStatus status = vav4l2_validate_reference(ctx, ref->picture_id);
         if (status != VA_STATUS_SUCCESS) return status;
         uint64_t timestamp = h264_find_ref_timestamp(ctx->driver_data, ref->picture_id); int found = 0;
         for (unsigned j = 0; j < 16; j++)
@@ -657,25 +657,25 @@ static VAStatus h264_pair_fields(struct vareq_context *ctx, VAPictureParameterBu
     if (types & V4L2_H264_DECODE_PARAM_FLAG_BFRAME) dec->flags |= V4L2_H264_DECODE_PARAM_FLAG_BFRAME;
     else if (types & V4L2_H264_DECODE_PARAM_FLAG_PFRAME) dec->flags |= V4L2_H264_DECODE_PARAM_FLAG_PFRAME;
     *retained = first; ctx->h264_field = NULL;
-    vareq_decode_trace(ctx, "h264-field-pair", 0, *size);
+    vav4l2_decode_trace(ctx, "h264-field-pair", 0, *size);
     return VA_STATUS_SUCCESS;
 }
 
-static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPictureParameterBufferH264 *pic_param,
+static VAStatus h264_submit_picture(struct vav4l2_context *ctx, const VAPictureParameterBufferH264 *pic_param,
     struct v4l2_ctrl_h264_sps *sps, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec,
     struct v4l2_ctrl_h264_scaling_matrix *sm, int matrix, const uint8_t *paired, size_t total,
-    struct vareq_buffer **buffers, int num_buffers, int hold, int *field_capture);
+    struct vav4l2_buffer **buffers, int num_buffers, int hold, int *field_capture);
 
 /*
  * Main H.264 decode pipeline
  *
- * Called from vareq_end_picture when all VA-API buffers have been collected.
+ * Called from vav4l2_end_picture when all VA-API buffers have been collected.
  * Translates parameters, submits to V4L2, waits for result.
  *
  * This is the critical path: if this function works, H.264 decoding works.
  */
-VAStatus vareq_h264_translate(struct vareq_context *ctx,
-                               struct vareq_buffer **buffers,
+VAStatus vav4l2_h264_translate(struct vav4l2_context *ctx,
+                               struct vav4l2_buffer **buffers,
                                int num_buffers)
 {
     /* Parse collected buffers */
@@ -684,22 +684,22 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
     VASliceParameterBufferH264 *slice_param = NULL;
     /* A picture may consist of many slices — one VASliceDataBuffer each */
 
-    struct vareq_collected cb;
+    struct vav4l2_collected cb;
     int n_slice_data = 0;
 
-    vareq_collect_decode_buffers(buffers, num_buffers, &cb);
+    vav4l2_collect_decode_buffers(buffers, num_buffers, &cb);
     pic_param = cb.pic;
     iq_matrix = cb.iq;
     slice_param = cb.n_slice_params ? cb.slice_params[0] : NULL;
     n_slice_data = cb.n_slice_datas;
 
     if (!pic_param) {
-        fprintf(stderr, "v4l2request: H.264 decode missing picture params\n");
+        fprintf(stderr, "v4l2: H.264 decode missing picture params\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
     if (n_slice_data == 0) {
-        fprintf(stderr, "v4l2request: H.264 decode missing slice data\n");
+        fprintf(stderr, "v4l2: H.264 decode missing slice data\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
@@ -712,12 +712,12 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     /* Standard VA decode buffers omit the POC1 SPS cycle offsets. */
     if (pic_param->seq_fields.bits.pic_order_cnt_type == 1) {
-        fprintf(stderr, "v4l2request: H.264 POC1 requires original SPS cycle metadata\n");
+        fprintf(stderr, "v4l2: H.264 POC1 requires original SPS cycle metadata\n");
         return VA_STATUS_ERROR_UNIMPLEMENTED;
     }
     if (pic_param->pic_fields.bits.field_pic_flag && !ctx->current_surface) return VA_STATUS_ERROR_INVALID_SURFACE;
-    if (pic_param->pic_fields.bits.field_pic_flag && !vareq_h264_field_supported(ctx)) return VA_STATUS_ERROR_UNIMPLEMENTED;
-    if (!pic_param->pic_fields.bits.field_pic_flag && ctx->h264_field) vareq_h264_discard_field(ctx, 0);
+    if (pic_param->pic_fields.bits.field_pic_flag && !vav4l2_h264_field_supported(ctx)) return VA_STATUS_ERROR_UNIMPLEMENTED;
+    if (!pic_param->pic_fields.bits.field_pic_flag && ctx->h264_field) vav4l2_h264_discard_field(ctx, 0);
 
     for (unsigned i = 0; i < 16; i++) {
         const VAPictureH264 *ref = &pic_param->ReferenceFrames[i];
@@ -729,13 +729,13 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
         if (ref->frame_idx > UINT16_MAX || (active == VA_PICTURE_H264_SHORT_TERM_REFERENCE &&
             ref->frame_idx >= (1u << (pic_param->seq_fields.bits.log2_max_frame_num_minus4 + 4))))
             return VA_STATUS_ERROR_INVALID_PARAMETER;
-        if (pic_param->pic_fields.bits.field_pic_flag && vareq_h264_field_pending(ctx, ref->picture_id)) continue;
-        VAStatus status = vareq_validate_reference(ctx, ref->picture_id);
+        if (pic_param->pic_fields.bits.field_pic_flag && vav4l2_h264_field_pending(ctx, ref->picture_id)) continue;
+        VAStatus status = vav4l2_validate_reference(ctx, ref->picture_id);
         if (status != VA_STATUS_SUCCESS) return status;
     }
 
     size_t total = 0;
-    VAStatus packet_status = vareq_packetize_slices(VAREQ_CODEC_H264, buffers, num_buffers, NULL, UINT32_MAX, &total);
+    VAStatus packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_H264, buffers, num_buffers, NULL, UINT32_MAX, &total);
     if (packet_status != VA_STATUS_SUCCESS) return packet_status;
 
     /*
@@ -756,7 +756,7 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
     h264_fill_decode_params(&dec, pic_param, ctx->driver_data, slice_param);
     if (ctx->n_free_out == 0) return VA_STATUS_ERROR_OPERATION_FAILED;
     int out_buf_idx = ctx->free_out_bufs[ctx->n_free_out - 1];
-    if (out_buf_idx < 0 || out_buf_idx >= VAREQ_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx])
+    if (out_buf_idx < 0 || out_buf_idx >= VAV4L2_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx])
         return VA_STATUS_ERROR_OPERATION_FAILED;
     uint8_t *header_data = ctx->output_buf_ptr[out_buf_idx];
     int temporary = total > ctx->output_buf_size;
@@ -764,7 +764,7 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
         header_data = malloc(total); /* a larger SPS may resize OUTPUT only after its header is known */
         if (!header_data) return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
-    packet_status = vareq_packetize_slices(VAREQ_CODEC_H264, buffers, num_buffers,
+    packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_H264, buffers, num_buffers,
         header_data, temporary ? total : ctx->output_buf_size, &total);
     unsigned defaults = 0;
     int mmco5 = 0;
@@ -780,7 +780,7 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
         memset(&sm, 0, sizeof(sm));
 
     uint8_t *paired = NULL;
-    struct vareq_h264_field *first = NULL;
+    struct vav4l2_h264_field *first = NULL;
     struct v4l2_ctrl_h264_decode_params second_dec = dec;
     VAPictureParameterBufferH264 paired_picture = *pic_param;
     if (pic_param->pic_fields.bits.field_pic_flag)
@@ -801,7 +801,7 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
         if (packet_status == VA_STATUS_SUCCESS)
             packet_status = h264_submit_picture(ctx, pic_param, &sps, &pps, &second_dec, &sm,
                 iq_matrix != NULL, paired + first->size, total - first->size, buffers, num_buffers, 0, &capture);
-        if (packet_status != VA_STATUS_SUCCESS && capture >= 0) vareq_decode_reset(ctx);
+        if (packet_status != VA_STATUS_SUCCESS && capture >= 0) vav4l2_decode_reset(ctx);
         free(first);
     } else packet_status = h264_submit_picture(ctx, pic_param, &sps, &pps, &dec, &sm,
         iq_matrix != NULL, NULL, total, buffers, num_buffers, 0, NULL);
@@ -809,10 +809,10 @@ VAStatus vareq_h264_translate(struct vareq_context *ctx,
     return packet_status;
 }
 
-static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPictureParameterBufferH264 *pic_param,
+static VAStatus h264_submit_picture(struct vav4l2_context *ctx, const VAPictureParameterBufferH264 *pic_param,
     struct v4l2_ctrl_h264_sps *sps, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec,
     struct v4l2_ctrl_h264_scaling_matrix *sm, int matrix, const uint8_t *paired, size_t total,
-    struct vareq_buffer **buffers, int num_buffers, int hold, int *field_capture)
+    struct vav4l2_buffer **buffers, int num_buffers, int hold, int *field_capture)
 {
     int out_buf_idx;
     VAStatus packet_status;
@@ -832,7 +832,7 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
     int v4l2_fd = ctx->v4l2_fd;
 
     if (request_fd < 0) {
-        fprintf(stderr, "v4l2request: H.264 no request fd available\n");
+        fprintf(stderr, "v4l2: H.264 no request fd available\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -842,7 +842,7 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
     {
         int w = (pic_param->picture_width_in_mbs_minus1 + 1) * 16;
         int h = (pic_param->picture_height_in_mbs_minus1 + 1) * 16;
-        uint32_t cap = vareq_capture_fourcc_from_sps(
+        uint32_t cap = vav4l2_capture_fourcc_from_sps(
             pic_param->bit_depth_luma_minus8,
             pic_param->seq_fields.bits.chroma_format_idc);
         struct v4l2_ext_control g_sps_ctrl = { 0 };
@@ -857,9 +857,9 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
         _Static_assert(sizeof(*sps) <= sizeof(ctx->g_ctrl_payload), "grow cache");
         if (!ctx->g_ctrl_valid ||
             memcmp(ctx->g_ctrl_payload, sps, sizeof(*sps)) != 0) {
-            if (vareq_codec_controls(ctx, -1, &g_sps_ctrls) < 0) {
+            if (vav4l2_codec_controls(ctx, -1, &g_sps_ctrls) < 0) {
                 fprintf(stderr,
-                        "v4l2request: H.264 global SPS not accepted\n");
+                        "v4l2: H.264 global SPS not accepted\n");
                 if (ctx->capture_bufs_allocd <= 0)
                     return VA_STATUS_ERROR_OPERATION_FAILED;
                 ctx->g_ctrl_valid = 0;
@@ -869,14 +869,14 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
             }
         }
 
-        if (vareq_ensure_capture(ctx, w, h, cap) < 0) {
-            fprintf(stderr, "v4l2request: H.264 capture reconfig failed\n");
+        if (vav4l2_ensure_capture(ctx, w, h, cap) < 0) {
+            fprintf(stderr, "v4l2: H.264 capture reconfig failed\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         if (!ctx->streamed) {
-            if (vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
-                vareq_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
-                fprintf(stderr, "v4l2request: H.264 STREAMON failed\n");
+            if (vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
+                vav4l2_streamon(v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0) {
+                fprintf(stderr, "v4l2: H.264 STREAMON failed\n");
                 return VA_STATUS_ERROR_OPERATION_FAILED;
             }
             ctx->streamed = 1;
@@ -899,8 +899,8 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
     batch.controls = pic_ctrls;
     batch.count = 3;
 
-    if (vareq_codec_controls(ctx, request_fd, &batch) < 0) {
-        fprintf(stderr, "v4l2request: failed to set H.264 picture controls\n");
+    if (vav4l2_codec_controls(ctx, request_fd, &batch) < 0) {
+        fprintf(stderr, "v4l2: failed to set H.264 picture controls\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -915,8 +915,8 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
         sm_ctrls.controls = &sm_ctrl;
         sm_ctrls.count = 1;
 
-        if (vareq_codec_controls(ctx, request_fd, &sm_ctrls) < 0) {
-            fprintf(stderr, "v4l2request: failed to set H.264 scaling matrix\n");
+        if (vav4l2_codec_controls(ctx, request_fd, &sm_ctrls) < 0) {
+            fprintf(stderr, "v4l2: failed to set H.264 scaling matrix\n");
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
     }
@@ -935,12 +935,12 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
      * ownership unambiguous — the free pools in the context never lie.
      */
     if (ctx->n_free_out == 0) {
-        fprintf(stderr, "v4l2request: no free output buffer\n");
+        fprintf(stderr, "v4l2: no free output buffer\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     out_buf_idx = ctx->free_out_bufs[--ctx->n_free_out];
-    if (out_buf_idx < 0 || out_buf_idx >= VAREQ_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx]) {
-        vareq_out_pool_push(ctx, out_buf_idx);
+    if (out_buf_idx < 0 || out_buf_idx >= VAV4L2_NUM_OUTPUT_BUFS || !ctx->output_buf_ptr[out_buf_idx]) {
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
@@ -951,10 +951,10 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
     if (paired) {
         packet_status = total <= ctx->output_buf_size ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_OPERATION_FAILED;
         if (packet_status == VA_STATUS_SUCCESS) memcpy(ctx->output_buf_ptr[out_buf_idx], paired, total);
-    } else packet_status = vareq_packetize_slices(VAREQ_CODEC_H264, buffers, num_buffers,
+    } else packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_H264, buffers, num_buffers,
         ctx->output_buf_ptr[out_buf_idx], ctx->output_buf_size, &total);
     if (packet_status != VA_STATUS_SUCCESS) {
-        vareq_out_pool_push(ctx, out_buf_idx);
+        vav4l2_out_pool_push(ctx, out_buf_idx);
         return packet_status;
     }
 
@@ -962,8 +962,8 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
      * Submit synchronously. On failure decode_submit resets both queues so
      * nothing is left queued in the kernel — do NOT push out_buf_idx back.
      */
-    int done_cap = field_capture ? vareq_decode_submit_field(ctx, out_buf_idx, (uint32_t)total, timestamp, *field_capture, hold) :
-        vareq_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
+    int done_cap = field_capture ? vav4l2_decode_submit_field(ctx, out_buf_idx, (uint32_t)total, timestamp, *field_capture, hold) :
+        vav4l2_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
     if (done_cap == -2)
         return VA_STATUS_ERROR_DECODING_ERROR;
     if (done_cap < 0)
@@ -971,20 +971,20 @@ static VAStatus h264_submit_picture(struct vareq_context *ctx, const VAPicturePa
     if (hold) { *field_capture = done_cap; return VA_STATUS_SUCCESS; }
 
     /* Attach the decoded frame to the target surface */
-    struct vareq_surface *surf = ctx->current_surface;
+    struct vav4l2_surface *surf = ctx->current_surface;
     if (surf) {
-        if (vareq_surface_pull_capture(ctx, surf, done_cap) < 0) {
-            fprintf(stderr, "v4l2request: H.264 pull capture failed\n");
-            if (!vareq_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vareq_cap_pool_push(ctx, done_cap);
+        if (vav4l2_surface_pull_capture(ctx, surf, done_cap) < 0) {
+            fprintf(stderr, "v4l2: H.264 pull capture failed\n");
+            if (!vav4l2_surface_capture_matches(ctx, surf) || surf->buf_index != done_cap) vav4l2_cap_pool_push(ctx, done_cap);
             return VA_STATUS_ERROR_OPERATION_FAILED;
         }
         surf->h264_frame_num = pic_param->frame_num;
         surf->h264_frame_num_valid = 1;
     } else {
-        vareq_cap_pool_push(ctx, done_cap);
+        vav4l2_cap_pool_push(ctx, done_cap);
     }
 
     return VA_STATUS_SUCCESS;
 }
 
-const int vareq_has_h264 = 1;
+const int vav4l2_has_h264 = 1;

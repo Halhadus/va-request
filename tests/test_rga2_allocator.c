@@ -7,7 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 enum { BAD_CAP = 1, WRONG_CARD, WRONG_DRIVER, BAD_FORMAT, SHORT_IMAGE, MANY_PLANES,
     REQ_FAIL, ZERO_COUNT, NON_COHERENT, QUERY_FAIL, SHORT_QUERY, BAD_MEMORY,
     BAD_INDEX, EXP_FAIL, SHORT_OBJECT, EXCESS_OBJECT, NO_CLOEXEC, FORMAT_FAIL };
@@ -102,13 +102,13 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 static void exercise(unsigned bytes, unsigned rows, int provider)
 {
     request_size = bytes * rows; num_exported = num_contexts = 0; memset(source_exports, 0, sizeof(source_exports));
-    vareq_allocator_cleanup();
-    int fd = force_coherent ? vareq_alloc_coherent_storage(bytes, rows) : vareq_alloc_shared_storage(bytes, rows);
+    vav4l2_allocator_cleanup();
+    int fd = force_coherent ? vav4l2_alloc_coherent_storage(bytes, rows) : vav4l2_alloc_shared_storage(bytes, rows);
     expect((fd >= 0) == !!provider, "successful expected provider or truthful allocation failure");
     if (fd >= 0) {
         expect(fd < 1024 && exporters[fd] == provider, "returned FD belongs to the expected provider");
         uint32_t size = 0;
-        expect(vareq_export_fd_validate(fd, request_size, &size) == 0, "actual FD span validated");
+        expect(vav4l2_export_fd_validate(fd, request_size, &size) == 0, "actual FD span validated");
         if (provider == 1) expect(size <= (request_size + page_size - 1) / page_size * page_size && source_exports[1],
                                   "RGA2 storage adds no internal MMU pages");
         else expect(source_exports[2], "coherent provider selected on skip/rejection");
@@ -123,11 +123,11 @@ static void exercise(unsigned bytes, unsigned rows, int provider)
 }
 int main(void)
 {
-    unsetenv("VAREQ_ALLOC_TRACE"); unsetenv("VAREQ_SHARED_STORAGE");
+    unsetenv("VAV4L2_ALLOC_TRACE"); unsetenv("VAV4L2_SHARED_STORAGE");
     page_size = sysconf(_SC_PAGESIZE);
     if (!page_size || page_size > 65536) return 2;
     owner = memfd_create("rga-allocator-owner", MFD_CLOEXEC); if (owner < 0) return 2;
-    vareq_set_ioctl_hook(mock_ioctl);
+    vav4l2_set_ioctl_hook(mock_ioctl);
     unsigned scenarios = 0;
     const unsigned shapes[][2] = {{64, 96}, {256, 64}, {128, 128}, {128, 256}, {64, 512}, {128, 257}, {64, 20000}, {128, 192}, {512, 128}, {1920, 1620}, {64, 6}};
     for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) { exercise(shapes[i][0], shapes[i][1], 1); scenarios++; }
@@ -136,21 +136,21 @@ int main(void)
         exercise(64, 96, 2); rga3 = 0; exercise(64, 96, 0); rga3 = 1; scenarios += 2;
     }
     fault = 0; rga2 = 0; exercise(64, 96, 2); rga2 = 1; scenarios++;
-    setenv("VAREQ_SHARED_STORAGE", "coherent", 1); exercise(64, 96, 2); scenarios++;
-    unsetenv("VAREQ_SHARED_STORAGE"); exercise(64, 96, 1); scenarios++;
+    setenv("VAV4L2_SHARED_STORAGE", "coherent", 1); exercise(64, 96, 2); scenarios++;
+    unsetenv("VAV4L2_SHARED_STORAGE"); exercise(64, 96, 1); scenarios++;
     expect(requests && source_exports[1], "RGA2 MMAP EXPBUF allocation actually exercised");
     force_coherent = 1; exercise(64, 96, 2); scenarios++;
-    expect(!getenv("VAREQ_SHARED_STORAGE"), "per-call-coherent-policy-does-not-mutate-process-environment");
+    expect(!getenv("VAV4L2_SHARED_STORAGE"), "per-call-coherent-policy-does-not-mutate-process-environment");
     force_coherent = 0;
     unsigned before = opens;
-    expect(vareq_alloc_shared_storage(0, 1) < 0 && vareq_alloc_shared_storage(UINT32_MAX, 2) < 0 && opens == before,
+    expect(vav4l2_alloc_shared_storage(0, 1) < 0 && vav4l2_alloc_shared_storage(UINT32_MAX, 2) < 0 && opens == before,
            "zero/overflow allocation never opens nodes");
-    close(owner); vareq_set_ioctl_hook(NULL); vareq_allocator_cleanup();
+    close(owner); vav4l2_set_ioctl_hook(NULL); vav4l2_allocator_cleanup();
     printf("RGA2 allocator: %s (%u provider/geometry/fault scenarios)\n", failures ? "FAIL" : "PASS", scenarios);
     return failures != 0;
 }
 
-int __wrap_vareq_list_video_nodes(char (*paths)[64], unsigned capacity)
+int __wrap_vav4l2_list_video_nodes(char (*paths)[64], unsigned capacity)
 {
     unsigned count = capacity < 8 ? capacity : 8;
     for (unsigned i = 0; i < count; i++) snprintf(paths[i], 64, "/dev/video%u", i);

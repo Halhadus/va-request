@@ -12,10 +12,10 @@ import sys
 def main():
     output = Path(sys.argv[1]); output.mkdir(parents=True, exist_ok=True)
     record = {"kernel": platform.release(), "machine": platform.machine(), "page_size": os.sysconf("SC_PAGE_SIZE"),
-              "render_node": os.environ.get("VAREQ_RENDER_NODE", "/dev/dri/renderD128"), "dma_heaps": [], "commands": []}
+              "render_node": os.environ.get("VAV4L2_RENDER_NODE", "/dev/dri/renderD128"), "dma_heaps": [], "commands": []}
     build = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("builddir")
     record["binary_sha256"] = {name: hashlib.sha256((build / name).read_bytes()).hexdigest() if (build / name).is_file() else None
-        for name in ("v4l2request_drv_video.so", "va_feature_client", "prime_surface_interpose.so", "va_dmabuf_renderer", "vpp_dmabuf_probe")}
+        for name in ("v4l2_drv_video.so", "va_feature_client", "prime_surface_interpose.so", "va_dmabuf_renderer", "vpp_dmabuf_probe")}
     if Path(".git").exists():
         record["tree"] = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
         record["dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], text=True).strip())

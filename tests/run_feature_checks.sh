@@ -3,17 +3,17 @@
 set -uo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) || exit 2
 cd "$root" || exit 2
-build=${VAREQ_BUILD_DIR:-builddir}
-render=${VAREQ_RENDER_NODE:-/dev/dri/renderD128}
+build=${VAV4L2_BUILD_DIR:-builddir}
+render=${VAV4L2_RENDER_NODE:-/dev/dri/renderD128}
 if [[ "$build" != /* ]]; then build="$root/$build"; fi
-export LIBVA_DRIVER_NAME=v4l2request LIBVA_DRIVERS_PATH="$build" VAREQ_ADVERTISE_AV1=0
+export LIBVA_DRIVER_NAME=v4l2 LIBVA_DRIVERS_PATH="$build" VAV4L2_ADVERTISE_AV1=0
 mkdir -p verify/features || exit 2
 run=$(mktemp -d "$root/verify/features/run.XXXXXX") || exit 2
 if ! python3 tests/feature_source.py "$build" "$run/source.json"; then
   printf 'PASS=0 FAIL=1 COMPLETE=0 EXIT=1 STAGE=source\nRUN=%s\n' "$run" | tee verify/features/summary.txt
   exit 1
 fi
-export VAREQ_VPP_TRACE="$run/vpp-trace.tsv" VAREQ_DMABUF_TRACE="$run/dmabuf-trace.tsv"
+export VAV4L2_VPP_TRACE="$run/vpp-trace.tsv" VAV4L2_DMABUF_TRACE="$run/dmabuf-trace.tsv"
 "$build/va_feature_client" "$render" "$run/results.tsv" | tee "$run/client.log"
 statuses=("${PIPESTATUS[@]}")
 client_exit=${statuses[0]}

@@ -1,5 +1,5 @@
-#ifndef VAREQ_TEST_H264422_ANNEXB_H
-#define VAREQ_TEST_H264422_ANNEXB_H
+#ifndef VAV4L2_TEST_H264422_ANNEXB_H
+#define VAV4L2_TEST_H264422_ANNEXB_H
 #include <stddef.h>
 #include <limits.h>
 

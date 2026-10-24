@@ -10,12 +10,12 @@
 #include <sys/stat.h>
 #include <linux/dma-buf.h>
 #include <drm_fourcc.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
 struct prime_plane { unsigned object, offset, pitch; };
-struct vareq_prime_import {
+struct vav4l2_prime_import {
     VADRMPRIMESurfaceDescriptor desc;
-    struct vareq_prime_layout layout;
+    struct vav4l2_prime_layout layout;
     struct prime_plane planes[3];
     void *map[4];
     int dirty;
@@ -35,7 +35,7 @@ static int plane_rows_overlap(const struct prime_plane *a, unsigned aw, unsigned
     return 0;
 }
 
-int vareq_prime_layout(uint32_t f, unsigned w, unsigned h, struct vareq_prime_layout *l)
+int vav4l2_prime_layout(uint32_t f, unsigned w, unsigned h, struct vav4l2_prime_layout *l)
 {
     if (!w || !h || w > UINT16_MAX || h > UINT16_MAX) return -1;
     memset(l, 0, sizeof(*l)); l->planes = 1; l->row[0] = w; l->rows[0] = h;
@@ -74,11 +74,11 @@ int vareq_prime_layout(uint32_t f, unsigned w, unsigned h, struct vareq_prime_la
 
 /* Device DMA waits for reservation fences; CPU access additionally needs SYNC.
  * Neither operation serializes a client that submits new work concurrently. */
-int vareq_dmabuf_wait(int fd, int write)
+int vav4l2_dmabuf_wait(int fd, int write)
 {
     short events = write ? POLLOUT : POLLIN;
     struct pollfd pfd = {.fd = fd, .events = events};
-    int ret = vareq_poll_intr(&pfd, 1, 2000);
+    int ret = vav4l2_poll_intr(&pfd, 1, 2000);
     if (ret < 0) return -1;
     if (!ret) { errno = ETIMEDOUT; return -1; }
     if (!(pfd.revents & events) || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
@@ -87,14 +87,14 @@ int vareq_dmabuf_wait(int fd, int write)
     return 0;
 }
 
-int vareq_dmabuf_sync(int fd, uint64_t flags)
+int vav4l2_dmabuf_sync(int fd, uint64_t flags)
 {
-    if (!(flags & DMA_BUF_SYNC_END) && vareq_dmabuf_wait(fd, flags & DMA_BUF_SYNC_WRITE) < 0) return -1;
+    if (!(flags & DMA_BUF_SYNC_END) && vav4l2_dmabuf_wait(fd, flags & DMA_BUF_SYNC_WRITE) < 0) return -1;
     struct dma_buf_sync sync = {.flags = flags};
     struct timespec start, now, pause = {.tv_nsec = 1000000};
     if (clock_gettime(CLOCK_MONOTONIC, &start) < 0) return -1;
     for (;;) {
-        int ret = vareq_ioctl_once(fd, DMA_BUF_IOCTL_SYNC, &sync);
+        int ret = vav4l2_ioctl_once(fd, DMA_BUF_IOCTL_SYNC, &sync);
         if (ret >= 0 || (errno != EAGAIN && errno != EINTR)) return ret;
         if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) return -1;
         int64_t elapsed = (int64_t)(now.tv_sec - start.tv_sec) * 1000000000 + now.tv_nsec - start.tv_nsec;
@@ -103,19 +103,19 @@ int vareq_dmabuf_sync(int fd, uint64_t flags)
     }
 }
 
-void vareq_prime_device_written(struct vareq_surface *s, int success)
+void vav4l2_prime_device_written(struct vav4l2_surface *s, int success)
 {
     if (s->prime) s->prime->dirty = !success;
     if (s->gbm_bo) s->gbm_dirty = !success;
     s->prime_capture_valid = 0;
-    s->last_writer = VAREQ_WRITER_BO;
+    s->last_writer = VAV4L2_WRITER_BO;
     s->has_pic = success;
 }
 
-void vareq_prime_destroy(struct vareq_surface *s)
+void vav4l2_prime_destroy(struct vav4l2_surface *s)
 {
     if (!s || !s->prime) return;
-    struct vareq_prime_import *p = s->prime;
+    struct vav4l2_prime_import *p = s->prime;
     for (unsigned i = 0; i < p->desc.num_objects; i++) {
         if (p->map[i]) munmap(p->map[i], p->desc.objects[i].size);
         if (p->desc.objects[i].fd >= 0) close(p->desc.objects[i].fd);
@@ -123,10 +123,10 @@ void vareq_prime_destroy(struct vareq_surface *s)
     free(p); s->prime = NULL;
 }
 
-VAStatus vareq_prime_import(struct vareq_surface *s, const VADRMPRIMESurfaceDescriptor *d)
+VAStatus vav4l2_prime_import(struct vav4l2_surface *s, const VADRMPRIMESurfaceDescriptor *d)
 {
-    struct vareq_prime_layout l;
-    if (d->fourcc != s->format || vareq_prime_layout(d->fourcc, s->width, s->height, &l) < 0)
+    struct vav4l2_prime_layout l;
+    if (d->fourcc != s->format || vav4l2_prime_layout(d->fourcc, s->width, s->height, &l) < 0)
         return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     if (d->width != s->width || d->height != s->height || !d->num_objects || d->num_objects > l.planes ||
         (d->num_layers != 1 && d->num_layers != l.planes)) return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -160,7 +160,7 @@ VAStatus vareq_prime_import(struct vareq_surface *s, const VADRMPRIMESurfaceDesc
             plane_rows_overlap(&planes[i], l.row[i], l.rows[i], &planes[j], l.row[j], l.rows[j]))
             return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
-    struct vareq_prime_import *p = calloc(1, sizeof(*p));
+    struct vav4l2_prime_import *p = calloc(1, sizeof(*p));
     if (!p) return VA_STATUS_ERROR_ALLOCATION_FAILED;
     p->desc = *d; p->layout = l; memcpy(p->planes, planes, sizeof(planes));
     for (unsigned i = 0; i < d->num_objects; i++) p->desc.objects[i].fd = -1;
@@ -170,30 +170,30 @@ VAStatus vareq_prime_import(struct vareq_surface *s, const VADRMPRIMESurfaceDesc
         int fd = fcntl(d->objects[i].fd, F_DUPFD_CLOEXEC, 0); uint32_t actual;
         if (fd < 0) { status = errno == EBADF ? VA_STATUS_ERROR_INVALID_PARAMETER : VA_STATUS_ERROR_ALLOCATION_FAILED; goto fail; }
         p->desc.objects[i].fd = fd;
-        if (vareq_export_fd_validate(fd, d->objects[i].size, &actual) < 0) goto fail;
+        if (vav4l2_export_fd_validate(fd, d->objects[i].size, &actual) < 0) goto fail;
         /* Reject ordinary files and non-mappable exporters before publishing IDs. */
-        if (vareq_dmabuf_sync(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0) goto fail;
-        if (vareq_dmabuf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) < 0) goto fail;
+        if (vav4l2_dmabuf_sync(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ) < 0) goto fail;
+        if (vav4l2_dmabuf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ) < 0) goto fail;
         p->desc.objects[i].size = actual;
         void *map = mmap(NULL, actual, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (map == MAP_FAILED) { status = VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE; goto fail; }
         munmap(map, actual);
     }
-    s->has_pic = 1; s->last_writer = VAREQ_WRITER_CPU;
+    s->has_pic = 1; s->last_writer = VAV4L2_WRITER_CPU;
     return VA_STATUS_SUCCESS;
 fail:
-    vareq_prime_destroy(s); return status;
+    vav4l2_prime_destroy(s); return status;
 }
 
-static int prime_copy(struct vareq_surface *s, int write)
+static int prime_copy(struct vav4l2_surface *s, int write)
 {
-    struct vareq_prime_import *p = s->prime;
-    if (!p || (!write && p->dirty) || vareq_surface_ensure_cpu(s) < 0) return -1;
+    struct vav4l2_prime_import *p = s->prime;
+    if (!p || (!write && p->dirty) || vav4l2_surface_ensure_cpu(s) < 0) return -1;
     if (write) p->dirty = 1;
     unsigned started = 0; int ret = -1;
     uint64_t access = write ? DMA_BUF_SYNC_WRITE : DMA_BUF_SYNC_READ;
     for (; started < p->desc.num_objects; started++)
-        if (vareq_dmabuf_sync(p->desc.objects[started].fd, DMA_BUF_SYNC_START | access) < 0) goto end;
+        if (vav4l2_dmabuf_sync(p->desc.objects[started].fd, DMA_BUF_SYNC_START | access) < 0) goto end;
     /* Map only after the device fence and CPU-access transition. Do not
      * retain an earlier CPU mapping across external DMA ownership. */
     for (unsigned i = 0; i < p->desc.num_objects; i++) {
@@ -217,17 +217,17 @@ end:
     for (unsigned i = 0; i < p->desc.num_objects; i++) if (p->map[i]) {
         munmap(p->map[i], p->desc.objects[i].size); p->map[i] = NULL;
     }
-    while (started) if (vareq_dmabuf_sync(p->desc.objects[--started].fd, DMA_BUF_SYNC_END | access) < 0) ret = -1;
-    if (!ret) { if (write) p->dirty = 0; else s->last_writer = VAREQ_WRITER_CPU; }
+    while (started) if (vav4l2_dmabuf_sync(p->desc.objects[--started].fd, DMA_BUF_SYNC_END | access) < 0) ret = -1;
+    if (!ret) { if (write) p->dirty = 0; else s->last_writer = VAV4L2_WRITER_CPU; }
     return ret;
 }
 
-int vareq_prime_read(struct vareq_surface *s) { return prime_copy(s, 0); }
-int vareq_prime_write(struct vareq_surface *s) { s->prime_capture_valid = 0; return prime_copy(s, 1); }
+int vav4l2_prime_read(struct vav4l2_surface *s) { return prime_copy(s, 0); }
+int vav4l2_prime_write(struct vav4l2_surface *s) { s->prime_capture_valid = 0; return prime_copy(s, 1); }
 
-VAStatus vareq_prime_export_backing(struct vareq_surface *s, uint32_t flags, void *descriptor, int overwrite)
+VAStatus vav4l2_prime_export_backing(struct vav4l2_surface *s, uint32_t flags, void *descriptor, int overwrite)
 {
-    struct vareq_prime_import *p = s->prime;
+    struct vav4l2_prime_import *p = s->prime;
     if (!p || (p->dirty && !overwrite)) return VA_STATUS_ERROR_OPERATION_FAILED;
     VADRMPRIMESurfaceDescriptor d = p->desc;
     memset(d.layers, 0, sizeof(d.layers));
@@ -251,34 +251,34 @@ VAStatus vareq_prime_export_backing(struct vareq_surface *s, uint32_t flags, voi
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus vareq_prime_export(struct vareq_surface *s, uint32_t flags, void *descriptor)
+VAStatus vav4l2_prime_export(struct vav4l2_surface *s, uint32_t flags, void *descriptor)
 {
-    return vareq_prime_export_backing(s, flags, descriptor, 0);
+    return vav4l2_prime_export_backing(s, flags, descriptor, 0);
 }
 
-int vareq_prime_capture(struct vareq_surface *s, const void *src, uint32_t stride, uint32_t alh, uint32_t fcc, uint32_t size)
+int vav4l2_prime_capture(struct vav4l2_surface *s, const void *src, uint32_t stride, uint32_t alh, uint32_t fcc, uint32_t size)
 {
-    if (vareq_surface_ensure_cpu(s) < 0) return -1;
-    struct vareq_image_view to = {.data = s->cpu_ptr, .fourcc = s->format, .stride = s->cpu_stride,
+    if (vav4l2_surface_ensure_cpu(s) < 0) return -1;
+    struct vav4l2_image_view to = {.data = s->cpu_ptr, .fourcc = s->format, .stride = s->cpu_stride,
         .width = s->width, .height = s->height, .size = s->cpu_size};
-    struct vareq_image_view from = {.data = (void *)src, .fourcc = fcc, .stride = stride,
+    struct vav4l2_image_view from = {.data = (void *)src, .fourcc = fcc, .stride = stride,
         .width = s->width, .height = s->height, .alloc_height = alh, .size = size};
     int ret = -1;
     if (fcc == V4L2_PIX_FMT_NV12 || fcc == V4L2_PIX_FMT_NV16) {
         if (fcc == V4L2_PIX_FMT_NV12) from.fourcc = VA_FOURCC_NV12;
-        ret = vareq_copy_image_rect(&to, 0, 0, &from, 0, 0, s->width, s->height) == VA_STATUS_SUCCESS ? 0 : -1;
+        ret = vav4l2_copy_image_rect(&to, 0, 0, &from, 0, 0, s->width, s->height) == VA_STATUS_SUCCESS ? 0 : -1;
         if (ret && fcc == V4L2_PIX_FMT_NV16 && s->format == VA_FOURCC_YUY2) {
-            vareq_nv16_to_yuy2(s->cpu_ptr, s->cpu_stride, src, stride, alh, s->width, s->height); ret = 0;
+            vav4l2_nv16_to_yuy2(s->cpu_ptr, s->cpu_stride, src, stride, alh, s->width, s->height); ret = 0;
         }
     } else if (fcc == V4L2_PIX_FMT_NV15 && s->format == VA_FOURCC_P010) {
-        vareq_nv15_to_p010(s->cpu_ptr, s->cpu_stride, s->height, src, stride, alh, s->width, s->height); ret = 0;
+        vav4l2_nv15_to_p010(s->cpu_ptr, s->cpu_stride, s->height, src, stride, alh, s->width, s->height); ret = 0;
     } else if (fcc == V4L2_PIX_FMT_NV20) {
-        if (s->format == VA_FOURCC_Y210) ret = vareq_nv20_to_y210(s->cpu_ptr, s->cpu_stride, src, stride, alh, s->width, s->height);
-        else if (s->format == VA_FOURCC_YUY2) ret = vareq_nv20_to_yuy2(s->cpu_ptr, s->cpu_stride, src, stride, alh, s->width, s->height);
+        if (s->format == VA_FOURCC_Y210) ret = vav4l2_nv20_to_y210(s->cpu_ptr, s->cpu_stride, src, stride, alh, s->width, s->height);
+        else if (s->format == VA_FOURCC_YUY2) ret = vav4l2_nv20_to_yuy2(s->cpu_ptr, s->cpu_stride, src, stride, alh, s->width, s->height);
     }
     if (ret < 0) return -1;
-    if (s->prime) ret = vareq_prime_write(s);
-    else ret = vareq_gbm_surface_upload(s, s->cpu_ptr, s->cpu_stride, s->height);
+    if (s->prime) ret = vav4l2_prime_write(s);
+    else ret = vav4l2_gbm_surface_upload(s, s->cpu_ptr, s->cpu_stride, s->height);
     s->prime_capture_valid = ret == 0;
     return ret;
 }

@@ -1,4 +1,4 @@
-project('va-request', 'c', version: '0.1.0', license: 'LGPL-2.1-or-later', meson_version: '>= 0.63', default_options: ['c_std=c11', 'warning_level=2', 'buildtype=release', 'b_ndebug=false'])
+project('libva-v4l2', 'c', version: '0.1.0', license: 'LGPL-2.1-or-later', meson_version: '>= 0.63', default_options: ['c_std=c11', 'warning_level=2', 'buildtype=release', 'b_ndebug=false'])
 cc = meson.get_compiler('c')
 libva_dep = dependency('libva', version: '>= 1.23.0')
 libva_drm_dep = dependency('libva-drm', version: '>= 1.23.0')
@@ -36,46 +36,46 @@ core_sources = files(
 )
 subdir('src/compat')
 core_sources += compat_sources
-core = static_library('va_request_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps)
-shared_library('v4l2request_drv_video', [], link_whole: core, dependencies: core_deps, name_prefix: '', install: true, install_dir: driverdir)
+core = static_library('va_v4l2_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps)
+shared_library('v4l2_drv_video', [], link_whole: core, dependencies: core_deps, name_prefix: '', install: true, install_dir: driverdir)
 python = find_program('python3')
 dl_dep = cc.find_library('dl')
 if get_option('tests')
   # Linker wrapping requires calls to remain external to each translation unit.
   test_no_lto = cc.get_supported_arguments('-fno-lto')
-  test_core = static_library('va_request_test_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps, c_args: test_no_lto, override_options: ['b_lto=false'])
+  test_core = static_library('va_v4l2_test_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps, c_args: test_no_lto, override_options: ['b_lto=false'])
   metadata_adapter = shared_library('hevc_slice_interpose', 'tests/hevc_slice_interpose.c', name_prefix: '', install: false, dependencies: [libva_dep, threads_dep, dl_dep])
   units = {
-    'allocator': ['open', 'open64', 'vareq_list_video_nodes'],
-    'api_state': ['vareq_vp8_translate'],
+    'allocator': ['open', 'open64', 'vav4l2_list_video_nodes'],
+    'api_state': ['vav4l2_vp8_translate'],
     'av1_tiles': [],
     'buffer_info': [],
     'buffers': [],
     'capture_dmabuf': ['poll'],
-    'capture_pool': ['vareq_alloc_shared_storage', 'poll', 'mmap', 'mmap64', 'munmap'],
+    'capture_pool': ['vav4l2_alloc_shared_storage', 'poll', 'mmap', 'mmap64', 'munmap'],
     'capture_readback': ['realloc'],
     'codec_references': [],
-    'compatibility': ['vareq_compat_modules', 'open', 'open64', 'vareq_list_video_nodes'],
+    'compatibility': ['vav4l2_compat_modules', 'open', 'open64', 'vav4l2_list_video_nodes'],
     'decode_recovery': ['poll'],
     'decode_reference_state': [],
     'decode_trace': ['open', 'open64', 'write'],
     'discovery': ['ioctl', 'scandir', 'scandir64', 'opendir', 'readdir', 'readdir64', 'closedir', 'open', 'open64'],
     'dmabuf_complete_client': ['fork', '_exit', 'pread', 'pread64', 'ioctl', 'mmap', 'mmap64', 'munmap', 'opendir', 'readdir', 'readdir64', 'closedir', 'dirfd'],
     'dmabuf_wait': ['poll', 'clock_gettime'],
-    'export_recapture': ['vareq_open_device', 'vareq_open_media_for_device'],
+    'export_recapture': ['vav4l2_open_device', 'vav4l2_open_media_for_device'],
     'format': [],
-    'gbm_coherence': ['gbm_create_device', 'gbm_device_destroy', 'gbm_bo_create', 'gbm_bo_import', 'gbm_bo_map', 'gbm_bo_unmap', 'gbm_bo_get_stride_for_plane', 'gbm_bo_get_modifier', 'gbm_bo_get_fd_for_plane', 'gbm_bo_destroy', 'mmap', 'mmap64', 'vareq_alloc_shared_storage', 'vareq_alloc_coherent_storage'],
-    'h264_fields': ['vareq_decode_submit', 'vareq_decode_submit_field', 'vareq_ensure_capture', 'vareq_surface_pull_capture'],
+    'gbm_coherence': ['gbm_create_device', 'gbm_device_destroy', 'gbm_bo_create', 'gbm_bo_import', 'gbm_bo_map', 'gbm_bo_unmap', 'gbm_bo_get_stride_for_plane', 'gbm_bo_get_modifier', 'gbm_bo_get_fd_for_plane', 'gbm_bo_destroy', 'mmap', 'mmap64', 'vav4l2_alloc_shared_storage', 'vav4l2_alloc_coherent_storage'],
+    'h264_fields': ['vav4l2_decode_submit', 'vav4l2_decode_submit_field', 'vav4l2_ensure_capture', 'vav4l2_surface_pull_capture'],
     'hevc_submission': [],
-    'image_coherence': ['vareq_gbm_surface_sync'],
+    'image_coherence': ['vav4l2_gbm_surface_sync'],
     'image_transfers': [],
     'jpeg420': [],
     'jpeg_dmabuf': ['poll'],
     'm2m_safety': [],
     'prime_layouts': ['poll', 'mmap', 'mmap64'],
     'reference_headers': [],
-    'rga2_allocator': ['open', 'open64', 'vareq_list_video_nodes'],
-    'slice_packetization': ['vareq_decode_submit', 'vareq_ensure_capture'],
+    'rga2_allocator': ['open', 'open64', 'vav4l2_list_video_nodes'],
+    'slice_packetization': ['vav4l2_decode_submit', 'vav4l2_ensure_capture'],
     'surface_ownership': [],
     'video_probe': [],
     'vp8_mpeg2_fill': [],
@@ -100,7 +100,7 @@ if get_option('tests')
       if cc.get_id() == 'gcc' and get_option('b_sanitize').contains('address')
         preload = run_command(cc.cmd_array() + ['-print-file-name=libasan.so'], check: true).stdout().strip() + ':' + preload
       endif
-      test('hevc_metadata_dispatch', exe, args: ['--adapter'], suite: 'unit', env: ['LD_PRELOAD=' + preload, 'VAREQ_HEVC_PACKET_MODE=whole', 'VAREQ_HEVC_PACKET_LOG=' + meson.current_build_dir() / 'hevc-metadata-dispatch.tsv'])
+      test('hevc_metadata_dispatch', exe, args: ['--adapter'], suite: 'unit', env: ['LD_PRELOAD=' + preload, 'VAV4L2_HEVC_PACKET_MODE=whole', 'VAV4L2_HEVC_PACKET_LOG=' + meson.current_build_dir() / 'hevc-metadata-dispatch.tsv'])
     endif
   endforeach
   test('capture_trace', python, args: files('tests/test_capture_trace.py'), suite: 'unit', timeout: 120)

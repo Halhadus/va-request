@@ -8,7 +8,7 @@
 #include <sys/mman.h>
 #include <va/va.h>
 #include <va/va_enc_jpeg.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
 static int failures, fallback, fault, calls, setups, submitted;
 static struct v4l2_format raw;
@@ -87,24 +87,24 @@ static void run_case(int route, int broken)
 {
     fallback = route; fault = broken; calls = setups = submitted = 0;
     unsigned char pixels[48], saved[48], payload[64]; memset(payload, 0x9b, sizeof(payload));
-    struct vareq_surface src = {.width = 4, .height = 4, .cpu_ptr = pixels, .cpu_stride = 8,
-        .cpu_size = sizeof(pixels), .last_writer = VAREQ_WRITER_CPU, .memfd_fd = -1};
-    struct vareq_context ctx = {.codec = VAREQ_CODEC_JPEG_ENC, .current_surface = &src};
+    struct vav4l2_surface src = {.width = 4, .height = 4, .cpu_ptr = pixels, .cpu_stride = 8,
+        .cpu_size = sizeof(pixels), .last_writer = VAV4L2_WRITER_CPU, .memfd_fd = -1};
+    struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_JPEG_ENC, .current_surface = &src};
     ctx.v4l2_fd = memfd_create("jpeg420-queues", MFD_CLOEXEC);
     if (ctx.v4l2_fd < 0 || ftruncate(ctx.v4l2_fd, 16384) || pwrite(ctx.v4l2_fd, payload, 64, 12288) != 64) exit(1);
-    struct vareq_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = 64, .num_elements = 1};
+    struct vav4l2_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = 64, .num_elements = 1};
     coded.data = calloc(1, sizeof(VACodedBufferSegment) + 64); if (!coded.data) exit(1); ctx.buffers = &coded;
     VAEncPictureParameterBufferJPEG pic = {.coded_buf = 1, .picture_width = 4, .picture_height = 4, .quality = 50};
-    struct vareq_buffer params = {.type = VAEncPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
-    struct vareq_buffer *buffers[] = {&params};
+    struct vav4l2_buffer params = {.type = VAEncPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
+    struct vav4l2_buffer *buffers[] = {&params};
     const unsigned formats[] = {VA_FOURCC_I420, VA_FOURCC_YV12, VA_FOURCC_NV21, VA_FOURCC_NV12};
-    vareq_set_ioctl_hook(jpeg_ioctl);
+    vav4l2_set_ioctl_hook(jpeg_ioctl);
     for (unsigned frame = 0; frame < (broken ? 1u : 4u); frame++) {
         src.format = formats[frame]; source_pixels(pixels, src.format, frame); memcpy(saved, pixels, sizeof(saved));
         if (broken == 6) src.cpu_size--;
         if (broken == 7) { src.format = VA_FOURCC_BGRA; src.has_pic = 1; src.cap_fourcc = V4L2_PIX_FMT_NV12; src.cap_view = payload; src.buf_index = 0; src.stride = src.aligned_h = 4; }
         if (broken == 8) src.format = VA_FOURCC_P010;
-        VAStatus result = vareq_jpeg_encode(&ctx, buffers, 1);
+        VAStatus result = vav4l2_jpeg_encode(&ctx, buffers, 1);
         if (broken) {
             expect(result == (broken >= 6 ? VA_STATUS_ERROR_INVALID_SURFACE : VA_STATUS_ERROR_OPERATION_FAILED), "bad-420-source-or-negotiated-plane-is-rejected");
             expect(!submitted, "invalid-layout-never-submits-output");
@@ -114,7 +114,7 @@ static void run_case(int route, int broken)
         }
         expect(result == VA_STATUS_SUCCESS, "jpeg420-native-or-fallback-encode");
         if (result) break;
-        struct vareq_m2m_state *q = &ctx.jpeg_q;
+        struct vav4l2_m2m_state *q = &ctx.jpeg_q;
         unsigned n = route == 2 ? 1 : !route && frame < 2 ? 3 : 2;
         expect((unsigned)q->out_planes == n && !memcmp(pixels, saved, sizeof(saved)), "native-plane-count-and-source-ownership");
         uint8_t *yplane = q->out_map[0], *u = n > 1 ? q->out_map[1] : yplane + 48;
@@ -129,7 +129,7 @@ static void run_case(int route, int broken)
         expect(segment->size == 44 && !segment->status && ((uint8_t *)segment->buf)[43] == 0x9b, "coded-buffer-completion-contract-is-preserved");
     }
     if (!broken) expect(setups == 2 && submitted == 4, "warm-family-cache-reuses-planes-and-refreshes-current-source-pixels");
-    vareq_m2m_teardown(&ctx, &ctx.jpeg_q); vareq_set_ioctl_hook(NULL);
+    vav4l2_m2m_teardown(&ctx, &ctx.jpeg_q); vav4l2_set_ioctl_hook(NULL);
     free(coded.data); if (ctx.v4l2_fd >= 0) close(ctx.v4l2_fd);
 }
 int main(void)

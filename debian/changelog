@@ -1,4 +1,4 @@
-va-request (0.1.0) UNRELEASED; urgency=medium
+libva-v4l2 (0.1.0) UNRELEASED; urgency=medium
 
   * Initial distribution with capability-based discovery, codec translators,
     LINEAR PRIME transport and hardware-free regression tests.

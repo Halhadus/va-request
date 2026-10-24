@@ -7,7 +7,7 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <gbm.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 static int fake_open(const char *, int, ...);
 static int fake_close(int);
 static int fake_ioctl(int, unsigned long, ...);
@@ -23,11 +23,11 @@ static int fake_validate(int, uint64_t, uint32_t *);
 #define ioctl fake_ioctl
 #define mmap fake_mmap
 #define munmap fake_munmap
-#define vareq_dmabuf_sync fake_sync
-#define vareq_dmabuf_wait fake_wait
-#define vareq_poll_intr fake_poll
-#define vareq_alloc_shared_storage fake_alloc
-#define vareq_export_fd_validate fake_validate
+#define vav4l2_dmabuf_sync fake_sync
+#define vav4l2_dmabuf_wait fake_wait
+#define vav4l2_poll_intr fake_poll
+#define vav4l2_alloc_shared_storage fake_alloc
+#define vav4l2_export_fd_validate fake_validate
 #define main hardware_probe_main
 #include "vpp_dmabuf_probe.c"
 #undef main

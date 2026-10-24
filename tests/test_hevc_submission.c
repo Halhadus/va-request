@@ -1,13 +1,13 @@
 #include <dlfcn.h>
 #include <unistd.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 static void *fixture_resolve(void *handle, const char *name);
 #define dlsym fixture_resolve
 #include "hevc_slice_interpose.c"
 #undef dlsym
 
-static struct vareq_buffer fixture[512];
-static struct vareq_buffer *submitted[256];
+static struct vav4l2_buffer fixture[512];
+static struct vav4l2_buffer *submitted[256];
 static unsigned next_id, submitted_count, creations, destructions, ended, context_destroyed;
 static int failures, fail_create, fail_map, fail_unmap, fail_render, fail_end, wrong_vendor;
 static VASliceParameterBufferHEVC original[2];
@@ -24,7 +24,7 @@ VAStatus vaCreateBuffer(VADisplay display, VAContextID context, VABufferType typ
     (void)display; (void)context;
     if (++creations == (unsigned)fail_create || next_id >= 511) return VA_STATUS_ERROR_ALLOCATION_FAILED;
     *id = ++next_id;
-    fixture[*id] = (struct vareq_buffer){.type = type, .size = size, .num_elements = elements,
+    fixture[*id] = (struct vav4l2_buffer){.type = type, .size = size, .num_elements = elements,
         .allocated_elements = elements, .data = malloc((size_t)size * elements)};
     if (!fixture[*id].data) return VA_STATUS_ERROR_ALLOCATION_FAILED;
     memcpy(fixture[*id].data, data, (size_t)size * elements);
@@ -58,7 +58,7 @@ VAStatus vaDestroyBuffer(VADisplay display, VABufferID id)
 }
 const char *vaQueryVendorString(VADisplay display)
 {
-    (void)display; return wrong_vendor ? "another-driver" : "va-request 0.1.0";
+    (void)display; return wrong_vendor ? "another-driver" : "libva-v4l2 0.1.0";
 }
 static VAStatus fixture_render(VADisplay display, VAContextID context, VABufferID *ids, int count)
 {
@@ -94,7 +94,7 @@ static VAStatus fixture_end(VADisplay display, VAContextID context)
     if (vp8_fixture) {
         uint8_t out[32], want[] = {0, 0, 1, 0xaa, 0xbb}; size_t bytes = 0;
         if (vp8_fixture == 2) want[3] = 1;
-        expect(vareq_packetize_slices(vp8_fixture == 2 ? VAREQ_CODEC_MPEG2 : VAREQ_CODEC_VP8, submitted, submitted_count, out, sizeof(out), &bytes) == VA_STATUS_SUCCESS &&
+        expect(vav4l2_packetize_slices(vp8_fixture == 2 ? VAV4L2_CODEC_MPEG2 : VAV4L2_CODEC_VP8, submitted, submitted_count, out, sizeof(out), &bytes) == VA_STATUS_SUCCESS &&
             bytes == sizeof(want) && !memcmp(out, want, sizeof(want)), "vp8-adapter-preserves-raw-payload-even-when-it-resembles-annexb");
         expect(!destructions, "vp8-generated-buffers-stay-live-through-end");
         return VA_STATUS_SUCCESS;
@@ -106,7 +106,7 @@ static VAStatus fixture_end(VADisplay display, VAContextID context)
         memcpy(want + size, prefix + 4 - len, len); size += len;
         memcpy(want + size, body[i], 4); size += 4;
     }
-    expect(vareq_packetize_slices(VAREQ_CODEC_HEVC, submitted, submitted_count, out, sizeof(out), &bytes) == VA_STATUS_SUCCESS &&
+    expect(vav4l2_packetize_slices(VAV4L2_CODEC_HEVC, submitted, submitted_count, out, sizeof(out), &bytes) == VA_STATUS_SUCCESS &&
            bytes == size && !memcmp(out, want, size), "adapter-submission-reassembles-original-nals-exactly");
     expect(!destructions, "generated-buffers-stay-alive-through-real-EndPicture");
     return fail_end ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS;
@@ -128,7 +128,7 @@ static void scenario(const char *name, int fault)
     vp8_fixture = 0;
     char path[] = "hevc-adapter.XXXXXX"; int fd = mkstemp(path);
     expect(fd >= 0, "trace-fixture"); if (fd < 0) return; close(fd);
-    setenv("VAREQ_HEVC_PACKET_MODE", name, 1); setenv("VAREQ_HEVC_PACKET_LOG", path, 1);
+    setenv("VAV4L2_HEVC_PACKET_MODE", name, 1); setenv("VAV4L2_HEVC_PACKET_LOG", path, 1);
     initialize_once = (pthread_once_t)PTHREAD_ONCE_INIT; mode = -1; trace = NULL; pending = NULL;
     next_id = submitted_count = creations = destructions = ended = context_destroyed = picture_number = 0;
     fail_create = fail_map = fail_unmap = fail_render = fail_end = wrong_vendor = 0;
@@ -174,7 +174,7 @@ static void aborted_context(void)
     scenario("fragments", 0);
     /* A client may abandon a partially rendered picture without EndPicture. */
     char path[] = "hevc-abort.XXXXXX"; int fd = mkstemp(path); if (fd < 0) { failures++; return; } close(fd);
-    setenv("VAREQ_HEVC_PACKET_MODE", "offset", 1); setenv("VAREQ_HEVC_PACKET_LOG", path, 1);
+    setenv("VAV4L2_HEVC_PACKET_MODE", "offset", 1); setenv("VAV4L2_HEVC_PACKET_LOG", path, 1);
     initialize_once = (pthread_once_t)PTHREAD_ONCE_INIT; mode = -1; trace = NULL;
     uint8_t payload[] = {0x26, 1, 0xaa}; VASliceParameterBufferHEVC sp = {.slice_data_size = sizeof(payload)};
     original[0] = sp;
@@ -190,7 +190,7 @@ static void raw_scenario(const char *name, int mpeg2)
 {
     char path[] = "vp8-adapter.XXXXXX"; int fd = mkstemp(path);
     expect(fd >= 0, "vp8-trace-fixture"); if (fd < 0) return; close(fd);
-    setenv("VAREQ_HEVC_PACKET_MODE", name, 1); setenv("VAREQ_HEVC_PACKET_LOG", path, 1);
+    setenv("VAV4L2_HEVC_PACKET_MODE", name, 1); setenv("VAV4L2_HEVC_PACKET_LOG", path, 1);
     initialize_once = (pthread_once_t)PTHREAD_ONCE_INIT; mode = -1; trace = NULL; pending = NULL; vp8_fixture = mpeg2 ? 2 : 1;
     next_id = submitted_count = creations = destructions = ended = context_destroyed = picture_number = 0;
     fail_create = fail_map = fail_unmap = fail_render = fail_end = wrong_vendor = 0;

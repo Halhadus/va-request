@@ -124,8 +124,8 @@ int main(int argc, char **argv)
     display = vaGetDisplayDRM(fd);
     if (!display || !status(vaInitialize(display, &major, &minor), "row initialize")) { close(fd); fclose(results); return 2; }
     const char *vendor = vaQueryVendorString(display);
-    if (!vareq_test_driver_identity(vendor)) { fprintf(stderr, "Unexpected VA driver\n"); vaTerminate(display); close(fd); fclose(results); return 2; }
-    setenv("VAREQ_VPP_DMABUF", "auto", 1);
+    if (!vav4l2_test_driver_identity(vendor)) { fprintf(stderr, "Unexpected VA driver\n"); vaTerminate(display); close(fd); fclose(results); return 2; }
+    setenv("VAV4L2_VPP_DMABUF", "auto", 1);
     for (unsigned i = 0; i < sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]); i++) if (dmabuf_formats[i].planes > 1)
         for (unsigned variant = 0; variant < 4; variant++) row_check(&dmabuf_formats[i], variant);
     vaTerminate(display); close(fd); fprintf(results, "COMPLETE\t1\n"); if (fclose(results)) return 2;

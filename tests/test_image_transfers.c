@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 static int failures;
 static void expect(int ok, const char *tag)
@@ -112,7 +112,7 @@ static void conversion(VADriverContextP ctx, unsigned in_fcc, unsigned surface_f
 }
 static void decoded_partial(VADriverContextP ctx)
 {
-    struct vareq_driver_data *dd = ctx->pDriverData;
+    struct vav4l2_driver_data *dd = ctx->pDriverData;
     VASurfaceID sid;
     VAImage in, out;
     VAImageFormat format = {.fourcc = VA_FOURCC_NV12};
@@ -121,9 +121,9 @@ static void decoded_partial(VADriverContextP ctx)
         ctx->vtable->vaCreateImage(ctx, &format, 2, 2, &in) || ctx->vtable->vaCreateImage(ctx, &format, 6, 6, &out)) {
         expect(0, "partial-decode-setup"); return;
     }
-    struct vareq_surface *s = dd->surfaces[sid];
+    struct vav4l2_surface *s = dd->surfaces[sid];
     s->has_pic = 1; s->buf_index = 0; s->cap_view = capture; s->cap_fourcc = V4L2_PIX_FMT_NV12;
-    s->stride = 16; s->aligned_h = 8; s->last_writer = VAREQ_WRITER_MEMFD;
+    s->stride = 16; s->aligned_h = 8; s->last_writer = VAV4L2_WRITER_MEMFD;
     unsigned char *ip, *op;
     ctx->vtable->vaMapBuffer(ctx, in.buf, (void **)&ip); memset(ip, 0x77, in.data_size);
     expect(ctx->vtable->vaPutImage(ctx, sid, in.image_id, 0, 0, 2, 2, 2, 2, 2, 2) == VA_STATUS_SUCCESS,
@@ -144,8 +144,8 @@ static void overlapping_readback(VADriverContextP ctx)
 {
     VASurfaceID sid; VAImage derived;
     if (ctx->vtable->vaCreateSurfaces(ctx, 8, 4, VA_RT_FORMAT_YUV420, 1, &sid)) { failures++; return; }
-    struct vareq_surface *s = ((struct vareq_driver_data *)ctx->pDriverData)->surfaces[sid];
-    if (vareq_surface_ensure_cpu(s) || ctx->vtable->vaDeriveImage(ctx, sid, &derived)) { failures++; return; }
+    struct vav4l2_surface *s = ((struct vav4l2_driver_data *)ctx->pDriverData)->surfaces[sid];
+    if (vav4l2_surface_ensure_cpu(s) || ctx->vtable->vaDeriveImage(ctx, sid, &derived)) { failures++; return; }
     unsigned char *data, *before = malloc(derived.data_size);
     if (!before || ctx->vtable->vaMapBuffer(ctx, derived.buf, (void **)&data)) { failures++; free(before); return; }
     for (unsigned i = 0; i < derived.data_size; i++) data[i] = (i * 13 + 7) % 251;
@@ -157,23 +157,23 @@ static void overlapping_readback(VADriverContextP ctx)
     unsigned char rows[96], saved_rows[96];
     for (unsigned i = 0; i < sizeof(rows); i++) rows[i] = i;
     memcpy(saved_rows, rows, sizeof(rows));
-    struct vareq_image_view alias = {.data = rows, .fourcc = VA_FOURCC_NV12, .width = 8, .height = 8, .stride = 8, .size = 96};
-    expect(vareq_copy_image_rect(&alias, 0, 2, &alias, 0, 0, 8, 6) == VA_STATUS_SUCCESS &&
+    struct vav4l2_image_view alias = {.data = rows, .fourcc = VA_FOURCC_NV12, .width = 8, .height = 8, .stride = 8, .size = 96};
+    expect(vav4l2_copy_image_rect(&alias, 0, 2, &alias, 0, 0, 8, 6) == VA_STATUS_SUCCESS &&
            !memcmp(rows + 16, saved_rows, 48) && !memcmp(rows + 72, saved_rows + 64, 24),
            "downward-alias-copy-does-not-overwrite-future-source-rows");
     unsigned char storage[48], original[48];
     for (unsigned i = 0; i < sizeof(storage); i++) storage[i] = i;
     memcpy(original, storage, sizeof(storage));
-    struct vareq_image_view nv12 = {.data = storage, .fourcc = VA_FOURCC_NV12, .width = 8, .height = 4, .stride = 8, .size = 48};
-    struct vareq_image_view planar = nv12; planar.fourcc = VA_FOURCC_I420;
-    expect(vareq_copy_image_rect(&planar, 0, 0, &nv12, 0, 0, 8, 4) == VA_STATUS_SUCCESS,
+    struct vav4l2_image_view nv12 = {.data = storage, .fourcc = VA_FOURCC_NV12, .width = 8, .height = 4, .stride = 8, .size = 48};
+    struct vav4l2_image_view planar = nv12; planar.fourcc = VA_FOURCC_I420;
+    expect(vav4l2_copy_image_rect(&planar, 0, 0, &nv12, 0, 0, 8, 4) == VA_STATUS_SUCCESS,
            "same-storage-nv12-i420-conversion");
     for (unsigned i = 0; i < 8; i++) expect(storage[32 + i] == original[32 + 2 * i] &&
         storage[40 + i] == original[33 + 2 * i], "overlapping-chroma-repack-uses-unmodified-source");
 }
 /* Logical component address from public layout definitions, independent of
  * the production repacker. Exercise every ordered pair, including aliases. */
-static uint8_t *component(struct vareq_image_view *view, unsigned plane, unsigned x, unsigned y)
+static uint8_t *component(struct vav4l2_image_view *view, unsigned plane, unsigned x, unsigned y)
 {
     uint8_t *base = view->data;
     unsigned rows = view->alloc_height;
@@ -196,9 +196,9 @@ static void layout_oracle(void)
         uint8_t original[144], output[72], expected[144], alias[144];
         memset(original, 0x93, sizeof(original)); memset(output, 0xa5, sizeof(output));
         memset(expected, 0xa5, sizeof(expected));
-        struct vareq_image_view src = {.data = original, .fourcc = formats[a], .width = 7, .height = 5,
+        struct vav4l2_image_view src = {.data = original, .fourcc = formats[a], .width = 7, .height = 5,
             .stride = 12, .alloc_height = 8, .size = sizeof(original)};
-        struct vareq_image_view dst = {.data = output, .fourcc = formats[b], .width = 5, .height = 3,
+        struct vav4l2_image_view dst = {.data = output, .fourcc = formats[b], .width = 5, .height = 3,
             .stride = 8, .alloc_height = 6, .size = sizeof(output)}, wanted = dst;
         wanted.data = expected;
         for (unsigned p = 0; p < 3; p++)
@@ -209,7 +209,7 @@ static void layout_oracle(void)
             for (unsigned y = 0; y < (p ? 2u : 3u); y++)
                 for (unsigned x = 0; x < (p ? 3u : 5u); x++)
                     *component(&wanted, p, x, y) = *component(&src, p, x + (p ? 1 : 2), y + (p ? 1 : 2));
-        expect(vareq_copy_image_rect(&dst, 0, 0, &src, 2, 2, 5, 3) == VA_STATUS_SUCCESS &&
+        expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 2, 2, 5, 3) == VA_STATUS_SUCCESS &&
                !memcmp(output, expected, sizeof(output)), "all-420-layout-pairs-independent-crop-oracle-and-padding");
         memcpy(alias, original, sizeof(alias)); memcpy(expected, original, sizeof(original));
         dst = src; dst.data = alias; dst.fourcc = formats[b]; wanted = dst; wanted.data = expected;
@@ -218,7 +218,7 @@ static void layout_oracle(void)
                 for (unsigned x = 0; x < (p ? 4u : 7u); x++)
                     *component(&wanted, p, x, y) = *component(&src, p, x, y);
         src.data = alias;
-        expect(vareq_copy_image_rect(&dst, 0, 0, &src, 0, 0, 7, 5) == VA_STATUS_SUCCESS &&
+        expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 0, 0, 7, 5) == VA_STATUS_SUCCESS &&
                !memcmp(alias, expected, sizeof(alias)), "all-420-layout-pairs-overlapping-storage-oracle");
     }
 }
@@ -228,9 +228,9 @@ static void planar422_oracle(void)
     for (unsigned a = 0; a < 4; a++) for (unsigned b = 0; b < 4; b++) {
         unsigned char original[192], output[96], expected[192], alias[192];
         memset(original, 0x93, sizeof(original)); memset(output, 0xa5, sizeof(output)); memset(expected, 0xa5, sizeof(expected));
-        struct vareq_image_view src = {.data = original, .fourcc = formats[a], .width = 7, .height = 5,
+        struct vav4l2_image_view src = {.data = original, .fourcc = formats[a], .width = 7, .height = 5,
             .stride = 12, .alloc_height = 8, .size = sizeof(original)};
-        struct vareq_image_view dst = {.data = output, .fourcc = formats[b], .width = 5, .height = 3,
+        struct vav4l2_image_view dst = {.data = output, .fourcc = formats[b], .width = 5, .height = 3,
             .stride = 8, .alloc_height = 6, .size = sizeof(output)}, wanted = dst;
         wanted.data = expected;
         for (unsigned p = 0; p < 3; p++) for (unsigned y = 0; y < 5; y++)
@@ -238,23 +238,23 @@ static void planar422_oracle(void)
         for (unsigned p = 0; p < 3; p++) for (unsigned y = 0; y < 3; y++)
             for (unsigned x = 0; x < (p ? 3u : 5u); x++)
                 *component(&wanted, p, x, y) = *component(&src, p, x + (p ? 1 : 2), y + 1);
-        expect(vareq_copy_image_rect(&dst, 0, 0, &src, 2, 1, 5, 3) == VA_STATUS_SUCCESS &&
+        expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 2, 1, 5, 3) == VA_STATUS_SUCCESS &&
                !memcmp(output, expected, sizeof(output)), "422-full-height-chroma-odd-row-crop-and-padding-oracle");
-        expect(vareq_copy_image_rect(&dst, 0, 0, &src, 1, 1, 4, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+        expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 1, 1, 4, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
                !memcmp(output, expected, sizeof(output)), "422-invalid-chroma-origin-keeps-output-unchanged");
         dst.size--;
-        expect(vareq_copy_image_rect(&dst, 0, 0, &src, 2, 1, 5, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+        expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 2, 1, 5, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
                !memcmp(output, expected, sizeof(output)), "422-short-backing-keeps-output-unchanged");
         memcpy(alias, original, sizeof(alias)); memcpy(expected, original, sizeof(expected));
         dst = src; dst.data = alias; dst.fourcc = formats[b]; wanted = dst; wanted.data = expected;
         for (unsigned p = 0; p < 3; p++) for (unsigned y = 0; y < 5; y++)
             for (unsigned x = 0; x < (p ? 4u : 7u); x++) *component(&wanted, p, x, y) = *component(&src, p, x, y);
         src.data = alias;
-        expect(vareq_copy_image_rect(&dst, 0, 0, &src, 0, 0, 7, 5) == VA_STATUS_SUCCESS &&
+        expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 0, 0, 7, 5) == VA_STATUS_SUCCESS &&
                !memcmp(alias, expected, sizeof(alias)), "422-all-layout-permutations-preserve-overlapping-source");
     }
-    expect(vareq_va_image_size(VA_FOURCC_422H, 7, 5) == 75 &&
-           vareq_va_image_size(VA_FOURCC_YV16, UINT_MAX, 1) == 0,
+    expect(vav4l2_va_image_size(VA_FOURCC_422H, 7, 5) == 75 &&
+           vav4l2_va_image_size(VA_FOURCC_YV16, UINT_MAX, 1) == 0,
            "planar422-odd-stride-and-overflow-geometry");
 }
 static void packed422_rectangles(unsigned fourcc)
@@ -268,9 +268,9 @@ static void packed422_rectangles(unsigned fourcc)
         else if (fourcc == VA_FOURCC_YVYU) { p[0] = y0; p[1] = v; p[2] = y0 + 1; p[3] = u; }
         else { p[0] = u; p[1] = y0; p[2] = v; p[3] = y0 + 1; }
     }
-    struct vareq_image_view src = {.data = packed, .fourcc = fourcc, .width = 6, .height = 5,
+    struct vav4l2_image_view src = {.data = packed, .fourcc = fourcc, .width = 6, .height = 5,
         .stride = 16, .alloc_height = 8, .size = sizeof(packed)};
-    struct vareq_image_view dst = {.data = output, .fourcc = fourcc, .width = 4, .height = 4,
+    struct vav4l2_image_view dst = {.data = output, .fourcc = fourcc, .width = 4, .height = 4,
         .stride = 12, .alloc_height = 6, .size = sizeof(output)};
     for (unsigned y = 0; y < 3; y++) {
         unsigned char *p = expected + y * 12;
@@ -278,22 +278,22 @@ static void packed422_rectangles(unsigned fourcc)
         else if (fourcc == VA_FOURCC_YVYU) { p[0] = 80 + y * 7; p[1] = 182 + y; p[2] = 81 + y * 7; p[3] = 44; }
         else { p[0] = 44; p[1] = 80 + y * 7; p[2] = 182 + y; p[3] = 81 + y * 7; }
     }
-    expect(vareq_copy_image_rect(&dst, 0, 0, &src, 2, 1, 2, 3) == VA_STATUS_SUCCESS &&
+    expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 2, 1, 2, 3) == VA_STATUS_SUCCESS &&
            !memcmp(output, expected, sizeof(output)), "packed422-offset-odd-row-crop-byte-order-and-padding");
-    expect(vareq_copy_image_rect(&dst, 0, 0, &src, 1, 1, 2, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+    expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 1, 1, 2, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
            !memcmp(output, expected, sizeof(output)), "packed422-odd-x-is-rejected-before-writing");
-    expect(vareq_copy_image_rect(&dst, 0, 0, &src, 2, 1, 1, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+    expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 2, 1, 1, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
            !memcmp(output, expected, sizeof(output)), "packed422-interior-odd-width-is-rejected-before-writing");
     dst.size = 47;
-    expect(vareq_copy_image_rect(&dst, 0, 0, &src, 2, 1, 2, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+    expect(vav4l2_copy_image_rect(&dst, 0, 0, &src, 2, 1, 2, 3) == VA_STATUS_ERROR_INVALID_PARAMETER &&
            !memcmp(output, expected, sizeof(output)), "packed422-short-allocation-is-not-a-valid-destination");
-    expect(vareq_default_image_stride(fourcc, 33) == 128, "packed422-odd-width-reserves-the-complete-pixel-pair");
+    expect(vav4l2_default_image_stride(fourcc, 33) == 128, "packed422-odd-width-reserves-the-complete-pixel-pair");
 }
 int main(void)
 {
     struct VADriverVTable v = {0};
     struct VADriverContext ctx = {.vtable = &v};
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1); setenv("VAREQ_EXPBUF_EXPORT", "1", 1);
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1); setenv("VAV4L2_EXPBUF_EXPORT", "1", 1);
     if (__vaDriverInit_1_20(&ctx)) return 1;
     static const struct { unsigned rt, fcc; } formats[] = {
         {VA_RT_FORMAT_YUV420, VA_FOURCC_NV12}, {VA_RT_FORMAT_YUV420, VA_FOURCC_I420},
@@ -318,7 +318,7 @@ int main(void)
     packed422_rectangles(VA_FOURCC_UYVY);
     packed422_rectangles(VA_FOURCC_VYUY);
     packed422_rectangles(VA_FOURCC_YVYU);
-    expect(vareq_va_image_size(VA_FOURCC_I420, UINT_MAX, 1) == 0, "i420-chroma-stride-overflow");
+    expect(vav4l2_va_image_size(VA_FOURCC_I420, UINT_MAX, 1) == 0, "i420-chroma-stride-overflow");
     v.vaTerminate(&ctx);
     return failures != 0;
 }

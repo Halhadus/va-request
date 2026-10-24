@@ -40,8 +40,8 @@ static void initialize(void)
     next_render = dlsym(RTLD_NEXT, "vaRenderPicture");
     next_end = dlsym(RTLD_NEXT, "vaEndPicture");
     next_destroy = dlsym(RTLD_NEXT, "vaDestroyContext");
-    mode_name = getenv("VAREQ_HEVC_PACKET_MODE");
-    const char *path = getenv("VAREQ_HEVC_PACKET_LOG");
+    mode_name = getenv("VAV4L2_HEVC_PACKET_MODE");
+    const char *path = getenv("VAV4L2_HEVC_PACKET_LOG");
     const char *names[] = {"whole", "offset", "fragments", "array", "split-prefix"};
     if (!mode_name || !path || !next_render || !next_end || !next_destroy) return;
     for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
@@ -198,14 +198,14 @@ VAStatus vaEndPicture(VADisplay display, VAContextID context)
     VAStatus status = p ? p->error : VA_STATUS_ERROR_INVALID_PARAMETER;
     if (p && !p->slices && status == VA_STATUS_SUCCESS) status = VA_STATUS_ERROR_INVALID_PARAMETER;
     const char *vendor = vaQueryVendorString(display);
-    if (!vareq_test_driver_identity(vendor)) status = VA_STATUS_ERROR_OPERATION_FAILED;
+    if (!vav4l2_test_driver_identity(vendor)) status = VA_STATUS_ERROR_OPERATION_FAILED;
     if (status == VA_STATUS_SUCCESS) status = next_end(display, context);
     unsigned slices = p ? p->slices : 0, segments = p ? p->segments : 0;
     if (p) {
         VAStatus cleanup = release_picture(p);
         if (status == VA_STATUS_SUCCESS) status = cleanup;
     }
-    const char *export_mode = getenv("VAREQ_EXPBUF_EXPORT");
+    const char *export_mode = getenv("VAV4L2_EXPBUF_EXPORT");
     if (fprintf(trace, "%s\t%u\t%u\t%u\t%d\t%s\t%s\n", mode_name, picture_number++,
         slices, segments, status, vendor ? vendor : "unknown", export_mode ? export_mode : "default") < 0 || fflush(trace))
         status = VA_STATUS_ERROR_OPERATION_FAILED;

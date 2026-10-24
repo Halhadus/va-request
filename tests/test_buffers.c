@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include "va_request.h"
+#include "va_v4l2.h"
 
 extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
 static int failures;
@@ -17,22 +17,22 @@ static void collector(void)
 {
     VASliceParameterBufferAV1 tiles[33] = {0};
     uint8_t data[6] = {0};
-    struct vareq_buffer params = {.type = VASliceParameterBufferType, .size = sizeof(tiles[0]), .num_elements = 4, .data = tiles};
-    struct vareq_buffer payload = {.type = VASliceDataBufferType, .size = 2, .num_elements = 3, .data = data};
-    struct vareq_buffer *b[] = {&params, &payload};
-    struct vareq_collected c;
-    vareq_collect_decode_buffers(b, 2, &c);
+    struct vav4l2_buffer params = {.type = VASliceParameterBufferType, .size = sizeof(tiles[0]), .num_elements = 4, .data = tiles};
+    struct vav4l2_buffer payload = {.type = VASliceDataBufferType, .size = 2, .num_elements = 3, .data = data};
+    struct vav4l2_buffer *b[] = {&params, &payload};
+    struct vav4l2_collected c;
+    vav4l2_collect_decode_buffers(b, 2, &c);
     expect(c.n_slice_params == 4 && c.slice_params[3] == &tiles[3] && c.largest_size == 6, "element-array-and-byte-count");
     params.num_elements = 33;
-    vareq_collect_decode_buffers(b, 2, &c);
+    vav4l2_collect_decode_buffers(b, 2, &c);
     expect(c.n_slice_params == 32 && c.n_slice_params_seen == 33, "untruncated-seen-count");
     params.allocated_elements = 33; params.num_elements = 0;
-    vareq_collect_decode_buffers(b, 2, &c);
+    vav4l2_collect_decode_buffers(b, 2, &c);
     expect(c.n_slice_params == 0, "zero-valid-elements");
 }
 static void capture_after_context(VADriverContextP driver)
 {
-    struct vareq_driver_data *dd = driver->pDriverData;
+    struct vav4l2_driver_data *dd = driver->pDriverData;
     uint8_t pixels[24];
 
     for (unsigned i = 0; i < sizeof(pixels); i++) pixels[i] = (uint8_t)(i + 17);
@@ -41,7 +41,7 @@ static void capture_after_context(VADriverContextP driver)
         VAImage derived = {0}, image = {0};
         VAImageFormat format = {.fourcc = VA_FOURCC_NV12};
         void *borrowed = NULL, *output = NULL;
-        struct vareq_context *decode = calloc(1, sizeof(*decode));
+        struct vav4l2_context *decode = calloc(1, sizeof(*decode));
         void *capture = mmap(NULL, sizeof(pixels), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
         if (!decode || capture == MAP_FAILED ||
@@ -60,7 +60,7 @@ static void capture_after_context(VADriverContextP driver)
         decode->capture_buf_size = sizeof(pixels);
         decode->next = dd->contexts;
         dd->contexts = decode;
-        struct vareq_surface *surface = dd->surfaces[surface_id];
+        struct vav4l2_surface *surface = dd->surfaces[surface_id];
         surface->has_pic = 1;
         surface->buf_index = 0;
         surface->cap_view = capture;
@@ -146,24 +146,24 @@ static int capture_ioctl(int fd, unsigned long request, void *arg)
 }
 static void av1_capture_pool(void)
 {
-    struct vareq_context c = {.codec = VAREQ_CODEC_AV1, .v4l2_fd = 99,
+    struct vav4l2_context c = {.codec = VAV4L2_CODEC_AV1, .v4l2_fd = 99,
         .media_fd = -1, .request_fd = -1};
-    vareq_set_ioctl_hook(capture_ioctl);
-    expect(vareq_ensure_capture(&c, 1280, 720, V4L2_PIX_FMT_NV12) == 0 &&
+    vav4l2_set_ioctl_hook(capture_ioctl);
+    expect(vav4l2_ensure_capture(&c, 1280, 720, V4L2_PIX_FMT_NV12) == 0 &&
            requested_cap_count == 40 && c.capture_bufs_allocd == 40 &&
            c.n_free_cap == 40 && c.free_cap_bufs[39] == 39, "av1-forty-capture-slots");
-    expect(vareq_ensure_capture(&c, 3840, 2160, V4L2_PIX_FMT_NV12) == 0 &&
-           requested_cap_count == VAREQ_NUM_CAPTURE_BUFS_AV1_4K &&
-           c.n_free_cap == VAREQ_NUM_CAPTURE_BUFS_AV1_4K, "av1-4k-cma-budget");
-    vareq_set_ioctl_hook(NULL);
+    expect(vav4l2_ensure_capture(&c, 3840, 2160, V4L2_PIX_FMT_NV12) == 0 &&
+           requested_cap_count == VAV4L2_NUM_CAPTURE_BUFS_AV1_4K &&
+           c.n_free_cap == VAV4L2_NUM_CAPTURE_BUFS_AV1_4K, "av1-4k-cma-budget");
+    vav4l2_set_ioctl_hook(NULL);
     {
-        struct vareq_context teardown = {.v4l2_fd = -1, .media_fd = -1, .request_fd = -1};
+        struct vav4l2_context teardown = {.v4l2_fd = -1, .media_fd = -1, .request_fd = -1};
         void *last = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         expect(last != MAP_FAILED, "last-capture-map-setup");
         if (last != MAP_FAILED) {
             teardown.capture_buf_ptr[39] = last;
             teardown.capture_buf_size = 4096;
-            vareq_release_context_device(&teardown);
+            vav4l2_release_context_device(&teardown);
             expect(!teardown.capture_buf_ptr[39], "last-capture-map-cleanup");
             if (teardown.capture_buf_ptr[39]) munmap(last, 4096);
         }
@@ -172,8 +172,8 @@ static void av1_capture_pool(void)
 
 static void buffer_lifetime(VADriverContextP driver)
 {
-    struct vareq_driver_data *dd = driver->pDriverData;
-    struct vareq_context *c = calloc(1, sizeof(*c));
+    struct vav4l2_driver_data *dd = driver->pDriverData;
+    struct vav4l2_context *c = calloc(1, sizeof(*c));
     VABufferID ids[2];
     VASurfaceID sid;
     VAImage image;
@@ -198,9 +198,9 @@ static void buffer_lifetime(VADriverContextP driver)
            "context-owned-buffer");
     expect(driver->vtable->vaDestroyContext(driver, c->context_id) == VA_STATUS_SUCCESS, "context-frees-buffers");
     expect(driver->vtable->vaMapBuffer(driver, ids[0], &data) == VA_STATUS_ERROR_INVALID_BUFFER, "context-buffer-id-released");
-    struct vareq_surface *surf = dd->surfaces[sid];
+    struct vav4l2_surface *surf = dd->surfaces[sid];
     surf->status = VASurfaceReady;
-    expect(vareq_surface_ensure_cpu(surf) == 0, "derive-cpu-alloc");
+    expect(vav4l2_surface_ensure_cpu(surf) == 0, "derive-cpu-alloc");
     expect(driver->vtable->vaDeriveImage(driver, sid, &image) == VA_STATUS_SUCCESS, "derive-cpu-lifetime");
     expect(driver->vtable->vaDestroySurfaces(driver, &sid, 1) == VA_STATUS_ERROR_SURFACE_BUSY, "live-image-protects-surface");
     expect(driver->vtable->vaDestroyBuffer(driver, image.buf) == VA_STATUS_SUCCESS && !surf->memfd_borrows,
@@ -209,14 +209,14 @@ static void buffer_lifetime(VADriverContextP driver)
 }
 static void memfd_growth(void)
 {
-    struct vareq_surface s = {.width = 4, .height = 4, .format = VA_FOURCC_NV12, .memfd_fd = -1};
-    expect(vareq_surface_alloc_export_fd(&s) == 0, "growth-memfd");
-    void *first = vareq_surface_map_memfd(&s, 4096);
+    struct vav4l2_surface s = {.width = 4, .height = 4, .format = VA_FOURCC_NV12, .memfd_fd = -1};
+    expect(vav4l2_surface_alloc_export_fd(&s) == 0, "growth-memfd");
+    void *first = vav4l2_surface_map_memfd(&s, 4096);
     expect(first != NULL, "growth-first-map");
     if (first) {
         memset(first, 0x73, 4096); s.memfd_borrows = 1;
-        expect(vareq_surface_map_memfd(&s, 8192) != NULL, "growth-with-borrow");
-        expect(vareq_surface_map_memfd(&s, 16384) == NULL && ((uint8_t *)first)[0] == 0x73,
+        expect(vav4l2_surface_map_memfd(&s, 8192) != NULL, "growth-with-borrow");
+        expect(vav4l2_surface_map_memfd(&s, 16384) == NULL && ((uint8_t *)first)[0] == 0x73,
                "second-growth-keeps-old-borrow-valid");
     }
     if (s.memfd_map) munmap(s.memfd_map, s.memfd_map_size);
@@ -226,7 +226,7 @@ static void memfd_growth(void)
 
 static void image_geometry(VADriverContextP driver)
 {
-    struct vareq_driver_data *dd = driver->pDriverData;
+    struct vav4l2_driver_data *dd = driver->pDriverData;
     VAImageFormat formats[18] = {0}, nv12 = {.fourcc = VA_FOURCC_NV12};
     int count = -1;
     VASurfaceID sid;
@@ -260,7 +260,7 @@ static void image_geometry(VADriverContextP driver)
     memset(pixels + input.offsets[1], 0x7a, input.data_size - input.offsets[1]);
     expect(driver->vtable->vaPutImage(driver, sid, input.image_id, 0, 0, 2, 2, 0, 0, 2, 2) == VA_STATUS_SUCCESS,
            "upload-subrectangle");
-    struct vareq_surface *surf = dd->surfaces[sid];
+    struct vav4l2_surface *surf = dd->surfaces[sid];
     expect(((uint8_t *)surf->cpu_ptr)[surf->cpu_stride * 4] == 0x7a &&
            ((uint8_t *)surf->cpu_ptr)[surf->cpu_stride * 2] == 0, "upload-uses-image-and-surface-uv-offsets");
     expect(driver->vtable->vaCreateImage(driver, &nv12, 4, 4, &output) == VA_STATUS_SUCCESS, "download-image");
@@ -293,22 +293,22 @@ static void image_geometry(VADriverContextP driver)
     driver->vtable->vaDestroyImage(driver, derived.image_id);
     expect(driver->vtable->vaGetImage(driver, sid, 0, 0, 2, 2, output.image_id) == VA_STATUS_SUCCESS &&
            copy[0] == 0x33, "direct-cpu-image-writes-reach-surface");
-    surf->has_pic = 1; surf->last_writer = VAREQ_WRITER_MEMFD; surf->cap_fourcc = V4L2_PIX_FMT_NV15;
+    surf->has_pic = 1; surf->last_writer = VAV4L2_WRITER_MEMFD; surf->cap_fourcc = V4L2_PIX_FMT_NV15;
     expect(driver->vtable->vaDeriveImage(driver, sid, &derived) == VA_STATUS_ERROR_OPERATION_FAILED,
            "packed-nv15-is-not-p010-image");
     driver->vtable->vaDestroyImage(driver, tiny.image_id);
     driver->vtable->vaDestroyImage(driver, input.image_id);
     driver->vtable->vaDestroyImage(driver, output.image_id);
     driver->vtable->vaDestroySurfaces(driver, &sid, 1);
-    expect(vareq_capture_plane_size(V4L2_PIX_FMT_NV12, 64, 3) == 320 &&
-           vareq_va_image_size(VA_FOURCC_NV12, 64, 3) == 320, "odd-height-includes-final-chroma-row");
-    expect(vareq_capture_plane_size(V4L2_PIX_FMT_NV12, UINT_MAX, UINT_MAX) == 0 &&
-           vareq_va_image_size(VA_FOURCC_P010, UINT_MAX, UINT_MAX) == 0, "image-size-overflow-rejected");
+    expect(vav4l2_capture_plane_size(V4L2_PIX_FMT_NV12, 64, 3) == 320 &&
+           vav4l2_va_image_size(VA_FOURCC_NV12, 64, 3) == 320, "odd-height-includes-final-chroma-row");
+    expect(vav4l2_capture_plane_size(V4L2_PIX_FMT_NV12, UINT_MAX, UINT_MAX) == 0 &&
+           vav4l2_va_image_size(VA_FOURCC_P010, UINT_MAX, UINT_MAX) == 0, "image-size-overflow-rejected");
 }
 
 static void surface_contracts(VADriverContextP driver)
 {
-    struct vareq_driver_data *dd = driver->pDriverData;
+    struct vav4l2_driver_data *dd = driver->pDriverData;
     VASurfaceID sid = VA_INVALID_ID;
     VASurfaceAttrib pixel = {.type = VASurfaceAttribPixelFormat,
         .flags = VA_SURFACE_ATTRIB_SETTABLE,
@@ -346,7 +346,7 @@ static void surface_contracts(VADriverContextP driver)
         .min_input_width = 34, .min_input_height = 48, .min_output_width = 128, .min_output_height = 64,
         .max_input_width = 8192, .max_input_height = 4096, .max_output_width = 8128, .max_output_height = 8176};
     for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++) {
-        struct vareq_config config = {.config_id = ++dd->next_config_id, .rt_format = pairs[i].rt,
+        struct vav4l2_config config = {.config_id = ++dd->next_config_id, .rt_format = pairs[i].rt,
             .entrypoint = pairs[i].rt == VA_RT_FORMAT_YUV420_10 || pairs[i].rt == VA_RT_FORMAT_YUV422_10
                 ? VAEntrypointVLD : VAEntrypointVideoProc, .next = dd->configs};
         VASurfaceAttrib attrs[16];
@@ -401,7 +401,7 @@ static void surface_contracts(VADriverContextP driver)
                VA_STATUS_SUCCESS && dd->surfaces[sid]->format == pairs[i].fourcc, "compatible-surface-format");
         driver->vtable->vaDestroySurfaces(driver, &sid, 1);
     }
-    struct vareq_config combined = {.config_id = ++dd->next_config_id,
+    struct vav4l2_config combined = {.config_id = ++dd->next_config_id,
         .rt_format = VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV422 | VA_RT_FORMAT_RGB32,
         .entrypoint = VAEntrypointVideoProc, .next = dd->configs};
     VASurfaceAttrib combined_attrs[18], untouched[18]; unsigned combined_count = 17;
@@ -416,7 +416,7 @@ static void surface_contracts(VADriverContextP driver)
     uint32_t only_nv21 = VA_FOURCC_NV21;
     dd->vpp_caps.num_input_pixel_formats = dd->vpp_caps.num_output_pixel_formats = 1;
     dd->vpp_caps.input_pixel_format = dd->vpp_caps.output_pixel_format = &only_nv21;
-    struct vareq_config narrow = {.config_id = ++dd->next_config_id, .rt_format = VA_RT_FORMAT_YUV420,
+    struct vav4l2_config narrow = {.config_id = ++dd->next_config_id, .rt_format = VA_RT_FORMAT_YUV420,
         .entrypoint = VAEntrypointVideoProc, .next = dd->configs};
     VASurfaceAttrib narrow_attrs[16]; unsigned narrow_count = 16;
     dd->configs = &narrow;
@@ -455,7 +455,7 @@ static void surface_contracts(VADriverContextP driver)
 
 static void api_contracts(VADriverContextP driver)
 {
-    struct vareq_driver_data *dd = driver->pDriverData;
+    struct vav4l2_driver_data *dd = driver->pDriverData;
     VAConfigID config = VA_INVALID_ID;
     VAConfigAttrib attr = {.type = VAConfigAttribRTFormat};
     VAProfile profiles[32];
@@ -516,9 +516,9 @@ static void api_contracts(VADriverContextP driver)
     dd->dev_jpeg_enc[0] = 0;
     driver->vtable->vaDestroyConfig(driver, config);
     dd->dev_h264[0] = 0;
-    struct vareq_context *c = calloc(1, sizeof(*c));
+    struct vav4l2_context *c = calloc(1, sizeof(*c));
     if (!c) { expect(0, "validation-context"); return; }
-    c->context_id = ++dd->next_context_id; c->codec = VAREQ_CODEC_H264;
+    c->context_id = ++dd->next_context_id; c->codec = VAV4L2_CODEC_H264;
     c->v4l2_fd = c->media_fd = c->request_fd = -1;
     c->next = dd->contexts; dd->contexts = c;
     VASurfaceID sid;
@@ -542,8 +542,8 @@ int main(void)
     VABufferID id = VA_INVALID_ID;
     void *data = NULL, *saved;
     unsigned char input[8] = {1,2,3,4,5,6,7,8};
-    setenv("VAREQ_PROBE_NOCACHE", "1", 1);
-    setenv("VAREQ_EXPBUF_EXPORT", "1", 1); /* Mock capture fixture uses the EXPBUF path. */
+    setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
+    setenv("VAV4L2_EXPBUF_EXPORT", "1", 1); /* Mock capture fixture uses the EXPBUF path. */
     if (__vaDriverInit_1_20(&ctx) != VA_STATUS_SUCCESS)
         return 1;
     expect(v.vaCreateBuffer(&ctx, 0, VASliceDataBufferType, UINT_MAX, 2, NULL, &id) == VA_STATUS_ERROR_INVALID_PARAMETER && id == VA_INVALID_ID, "allocation-overflow");
@@ -569,10 +569,10 @@ int main(void)
     expect(seg->buf == (uint8_t *)data + sizeof(*seg) && seg->size == 0, "coded-wrapper");
     expect(v.vaBufferSetNumElements(&ctx, id, 2) == VA_STATUS_ERROR_INVALID_PARAMETER && seg->buf == (uint8_t *)data + sizeof(*seg), "coded-resize-safe");
     v.vaDestroyBuffer(&ctx, id);
-    struct vareq_driver_data *dd = ctx.pDriverData;
+    struct vav4l2_driver_data *dd = ctx.pDriverData;
     uint8_t small[6] = {0};
-    struct vareq_surface surface = {.width = 4, .height = 4, .cpu_ptr = small,
-        .cpu_stride = 2, .cpu_size = sizeof(small), .memfd_fd = -1, .buf_index = -1, .last_writer = VAREQ_WRITER_CPU};
+    struct vav4l2_surface surface = {.width = 4, .height = 4, .cpu_ptr = small,
+        .cpu_stride = 2, .cpu_size = sizeof(small), .memfd_fd = -1, .buf_index = -1, .last_writer = VAV4L2_WRITER_CPU};
     VAImage image;
     VAImageFormat format = {.fourcc = VA_FOURCC_NV12};
     dd->surfaces[1] = &surface;
@@ -591,7 +591,7 @@ int main(void)
     expect(v.vaCreateImage(&ctx, &format, 2, 2, &image) == VA_STATUS_SUCCESS, "undecoded-image");
     expect(v.vaGetImage(&ctx, 1, 0, 0, 2, 2, image.image_id) == VA_STATUS_ERROR_INVALID_SURFACE,
            "readback-rejects-undecoded-zero-backing");
-    struct vareq_context decode = {.context_id = 99, .codec = VAREQ_CODEC_HEVC,
+    struct vav4l2_context decode = {.context_id = 99, .codec = VAV4L2_CODEC_HEVC,
         .v4l2_fd = -1, .media_fd = -1, .request_fd = -1, .current_surface = &surface};
     dd->contexts = &decode;
     expect(v.vaEndPicture(&ctx, 99) == VA_STATUS_ERROR_OPERATION_FAILED, "missing-request-is-not-success");
