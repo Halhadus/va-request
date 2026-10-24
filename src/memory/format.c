@@ -497,10 +497,11 @@ uint32_t vav4l2_default_image_stride(uint32_t va_fourcc, int width)
         stride = (uint32_t)width;
         break;
     }
-    /* 64-byte alignment keeps every row copy (put/get_image, VPP, gbm
-     * upload) on NEON-friendly aligned rows. Allocation sizes and the
-     * pitches reported to clients derive from this same value. */
-    stride = (stride + 63) & ~UINT64_C(63);
+    /* Keep every plane's rows 64-byte aligned, including half-width chroma.
+     * Allocation sizes and client pitches derive from the same stride. */
+    uint64_t alignment = va_fourcc == VA_FOURCC_I420 || va_fourcc == VA_FOURCC_YV12 ||
+                         va_fourcc == VA_FOURCC_422H || va_fourcc == VA_FOURCC_YV16 ? 128 : 64;
+    stride = (stride + alignment - 1) & ~(alignment - 1);
     return stride <= UINT32_MAX ? (uint32_t)stride : 0;
 }
 

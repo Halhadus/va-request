@@ -3,6 +3,7 @@
  */
 
 #include <stdio.h>
+#include <limits.h>
 #include <string.h>
 #include <stdint.h>
 #include <va/va.h>
@@ -52,6 +53,12 @@ static void test_fourcc_map(void)
                 "image-nv12");
     expect_true(vav4l2_va_image_size(VA_FOURCC_YUY2, 640, 240) == 640 * 240,
                 "image-yuy2");
+    const uint32_t planar[] = {VA_FOURCC_I420, VA_FOURCC_YV12, VA_FOURCC_422H, VA_FOURCC_YV16};
+    for (unsigned i = 0; i < sizeof(planar) / sizeof(planar[0]); i++) {
+        expect_true(vav4l2_default_image_stride(planar[i], 64) == 128, "planar-half-width-chroma-row-alignment");
+        expect_true(vav4l2_default_image_stride(planar[i], 129) == 256, "planar-chroma-alignment-across-boundary");
+        expect_true(vav4l2_default_image_stride(planar[i], INT_MAX) == 2147483648u, "planar-stride-without-signed-overflow");
+    }
     expect_true(vav4l2_default_image_stride(VA_FOURCC_P010, 128) == 256,
                 "stride-p010");
     expect_true(vav4l2_default_image_stride(VA_FOURCC_NV12, 128) == 128,
