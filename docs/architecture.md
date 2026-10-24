@@ -3,10 +3,12 @@
 | Module | Responsibility |
 | --- | --- |
 | `src/api/` | Typed libva callbacks; config/context/surface/buffer lifecycle, separate Image transfer and unsupported-operation modules, shared frontend serialization and API validation |
-| `src/codecs/` | Decode and encode parameter translation, packet assembly, input handling and retained-reference validation |
+| `src/codecs/` | Decode/encode parameter translation, packet assembly and reference validation |
+| `src/codecs/bytestream.c` | H.264/HEVC Annex-B parameter sets reconstructed from VA decode buffers |
 | `src/v4l2/codec.c` | Codec descriptors, required-control policy and queue capability classification |
 | `src/v4l2/probe.c` | Numeric video-node enumeration, profile/format discovery, exact media-interface matching and cache validation |
-| `src/v4l2/device.c` | Request allocation/submission, queues, capture geometry, failure recovery and timestamps |
+| `src/v4l2/device.c` | Common queues, capture geometry, storage attachment and synchronous Request submission |
+| `src/v4l2/stateful.c` | Independent bytestream OUTPUT/CAPTURE, source changes, timestamp routing, drain/resume and pending surface lifetime |
 | `src/compat/` | Runtime module matching, processing exceptions and additional storage providers |
 | `src/memory/` | Capture pools, format conversion, LINEAR PRIME validation, FD ownership, synchronization and generic GBM storage |
 | `src/vpp/` | Per-job raw-node selection, controls, TRY_FMT geometry, crop/compose and MMAP/DMABUF sessions |
@@ -17,11 +19,11 @@
 
 Discovery naturally sorts numeric `/dev/video*` paths, including indices above 63. It holds up to 64 candidate nodes, 64 formats per queue and 16 VPP candidates. Node enumeration returns EOVERFLOW when more than 64 nodes are present.
 
-The opened node's `device_caps` is authoritative when V4L2_CAP_DEVICE_CAPS is present. Both M2M_MPLANE and STREAMING are required. Decoder discovery checks the stateless parsed-frame/slice FourCCs.
+The opened node's `device_caps` is authoritative when V4L2_CAP_DEVICE_CAPS is present. Both M2M_MPLANE and STREAMING are required. Decoder discovery distinguishes stateful bytestream FourCCs from stateless parsed-frame/slice FourCCs.
 
-Each decoder requires a compiled translator, its coded OUTPUT format and mandatory writable stateless controls. H.264/HEVC additionally require frame-based mode and Annex-B start-code menu entries. The OUTPUT queue must expose SUPPORTS_REQUESTS via nonallocating CREATE_BUFS(count=0), and the associated media node must allocate a request. Media association uses the graph's V4L video interface major/minor pair.
+Each decoder requires a compiled translator and its coded OUTPUT format. Stateless paths require mandatory writable controls. Stateless H.264/HEVC additionally require frame-based mode and Annex-B start-code menu entries. For Request decoding, the OUTPUT queue must expose SUPPORTS_REQUESTS via nonallocating CREATE_BUFS(count=0), and the associated media node must allocate a request. Media association uses the graph's V4L video interface major/minor pair.
 
-H.264 candidates are ranked by advertised extended profiles and frame area. Available H.264/HEVC profile menus constrain VA profile advertisement; sequence setup validates each stream. Each codec selects one node. Incompatible context or stream reconfiguration returns an error.
+Stateful candidates require SOURCE_CHANGE subscription and decoder STOP command support; they do not require a media node or request controls. H.264 candidates are ranked by advertised extended profiles and frame area. Available H.264/HEVC profile menus constrain VA profile advertisement; sequence setup validates each stream. Each codec selects one node. Incompatible context or stream reconfiguration returns an error. Stateful CAPTURE is configured after sequence parsing; its OUTPUT stays streaming during CAPTURE reconfiguration. See [stateful decoding](stateful.md).
 
 Raw M2M processing is detected from implemented input/output formats independently of transform controls. Every job checks its actual format pair, dimensions, requested controls and compatibility restrictions; exact TRY_FMT may reject a candidate. Capabilities are checked on the selected node.
 

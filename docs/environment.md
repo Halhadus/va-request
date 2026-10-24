@@ -26,6 +26,8 @@ Normal use requires only driver selection. Decode, encode, processing and eligib
 | `VAV4L2_SHARED_STORAGE` | `auto` | `coherent`: restrict compatibility allocation to the coherent-provider policy; other values: normal provider ranking |
 | `VAV4L2_VPP_DMABUF_SESSION` | Retain compatible sessions | `reconfigure`: rebuild queues for each direct job; `isolated`: reopen the node for each direct job; other values: normal session reuse |
 
+The two decoder CAPTURE import/pool overrides apply to Request decoding. Stateful decoding uses fixed native MMAP slots with eligible EXPBUF export; it rejects `required` capture import/pool modes.
+
 `required` modes are diagnostic constraints and return errors instead of staging. Direct transport still requires the negotiated format, stride, object span and ownership. See [memory and fallback](memory.md).
 
 ## Trace files

@@ -7,7 +7,7 @@ export LIBVA_DRIVER_NAME=v4l2
 vainfo --display drm --device /dev/dri/renderD128
 ```
 
-Use the render node for your system. For an uninstalled build, also set `LIBVA_DRIVERS_PATH="$PWD/build"`. The application needs access to the render, media and video devices. Restart it after changing the driver selection.
+Use the render node for your system. For an uninstalled build, also set `LIBVA_DRIVERS_PATH="$PWD/build"`. The application needs access to render and video devices; Request decoding also needs the associated media device. Restart it after changing the driver selection.
 
 | Application | Enable / select | Keep at default | Check |
 | --- | --- | --- | --- |

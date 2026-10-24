@@ -9,6 +9,7 @@ List the commands run and their results. Attach test report archives for hardwar
 ## Review
 
 - [ ] Tests cover changed behavior and relevant failure paths.
+- [ ] Stateful/stateless queue ownership and completion remain correct where affected.
 - [ ] Capability reporting and fallback behavior match the implementation.
 - [ ] User or interface documentation is updated where needed.
 - [ ] Existing copyright and license notices are preserved.

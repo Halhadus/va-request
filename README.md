@@ -1,6 +1,6 @@
 # libva-v4l2
 
-libva-v4l2 bridges VA-API and Linux V4L2 for hardware decoding, encoding, video processing and DMA-BUF sharing. Decoding uses the Request API; encoding and processing use V4L2 memory-to-memory interfaces. Available operations are discovered at runtime.
+libva-v4l2 bridges VA-API and Linux V4L2 for hardware decoding, encoding, video processing and DMA-BUF sharing. Decoding uses stateful V4L2 memory-to-memory or stateless Request API interfaces; encoding and processing use memory-to-memory queues. Available operations are discovered at runtime.
 
 See the [support matrix](docs/support.md) for codecs, formats and limitations, and the [hardware reports](docs/hardware/README.md) for results on tested devices.
 
@@ -42,6 +42,7 @@ The hardware suite checks available decode profiles, JPEG encoding, video proces
 - [Memory and DMA-BUF](docs/memory.md)
 - [Environment variables](docs/environment.md)
 - [Architecture](docs/architecture.md)
+- [Stateful decoding](docs/stateful.md)
 - [Compatibility modules](docs/compatibility.md)
 - [Tested hardware](docs/hardware/README.md)
 - [Contributing](CONTRIBUTING.md)

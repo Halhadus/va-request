@@ -14,7 +14,7 @@ Use the Hardware report form to propose a device entry. Report working, failing 
 
 Keep each pull request focused on one behavior or related feature. Explain the trigger, resulting behavior and validation. Avoid unrelated formatting changes. Preserve license notices and credit code imported from other projects.
 
-Shared V4L2 formats, controls and queue semantics belong in the common implementation. A compatibility module needs a narrowly identified implementation, an observed exception and regression coverage. New codecs or layouts need capability checks, parameter/layout validation, ownership handling and tests.
+Shared V4L2 formats, controls and queue semantics belong in the common implementation. A compatibility module needs a narrowly identified implementation, an observed exception and regression coverage. Stateful event/drain semantics and stateless Request semantics belong in their respective common backends. New codecs or layouts need capability checks, parameter/layout validation, ownership handling and tests.
 
 ## Validation
 

@@ -28,7 +28,7 @@ The shared storage allocator tries eligible providers by descending score, retai
 
 ## Codec integration
 
-Decoder discovery checks the standard coded format, required controls and Request API before applying module preference. Encoder discovery checks the coded CAPTURE and raw OUTPUT contract first. A restriction can remove an affected candidate or VA profile; it cannot advertise an absent kernel capability. Cached selections are checked against current module restrictions.
+Decoder discovery checks the standard coded format and the corresponding stateful or Request protocol before applying module preference. Stateful paths require source-change events and decoder commands; stateless paths require their controls and Request API. Encoder discovery checks the coded CAPTURE and raw OUTPUT contract first. A restriction can remove an affected candidate or VA profile; it cannot advertise an absent kernel capability. Cached selections are checked against current module restrictions.
 
 A codec context resolves modules from its opened node's identity. Its source API version is `VAV4L2_COMPAT_API_VERSION` (currently 2). Each matching module has separate context state; there is no process-wide device-state override. A failed setup calls finish for that module and all earlier setups. The shared backend owns the video/media/request FDs, queue lifetime and buffer mappings.
 

@@ -1,5 +1,5 @@
 /*
- * Pick a V4L2 stateless decoder node by OUTPUT_MPLANE fourcc.
+ * Pick a V4L2 decoder node by OUTPUT_MPLANE fourcc.
  * Matching is path-agnostic so /dev/videoN can move after reboot.
  */
 
@@ -31,7 +31,7 @@ int vav4l2_codec_coded_fourcc(enum vav4l2_codec codec, uint32_t *fourcc_out);
 const char *vav4l2_codec_name(enum vav4l2_codec codec);
 void vav4l2_fourcc_to_str(uint32_t fourcc, char out[5]);
 
-/* Matching OUTPUT fourcc and a usable request API are mandatory. H.264
+/* Matching OUTPUT fourcc and its stateful/Request protocol are mandatory. H.264
  * candidates use compatibility preference, then advertised extended profiles and frame area.
  * Returns NULL if none match. Does not open devices. */
 const char *vav4l2_pick_device_for_codec(enum vav4l2_codec codec,
@@ -42,6 +42,7 @@ const char *vav4l2_pick_device_for_codec(enum vav4l2_codec codec,
 int vav4l2_find_media_path(const char *video_path, char *out, unsigned out_len);
 /* 1 if MEDIA_IOC_REQUEST_ALLOC works on the sibling media node. */
 int vav4l2_video_has_request_api(const char *video_path);
+int vav4l2_queue_has_requests(int fd);
 
 int vav4l2_enum_output_fourccs(int fd, uint32_t *out, unsigned max);
 int vav4l2_query_h264_profiles(const char *path, uint32_t *profiles);

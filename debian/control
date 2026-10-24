@@ -13,7 +13,7 @@ Package: libva-v4l2
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, libva2 (>= 2.23.0)
 Description: VA-API driver for Linux V4L2
- Provides VA-API decoding through the Linux V4L2 Request API, encoding
- and video processing through memory-to-memory interfaces, and LINEAR
+ Provides VA-API decoding through stateful V4L2 memory-to-memory and
+ stateless Request API interfaces, encoding and video processing, and LINEAR
  DRM PRIME buffer sharing. Available operations are discovered at runtime.
  See the support matrix for implemented codecs, formats and limitations.

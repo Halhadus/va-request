@@ -1,5 +1,5 @@
 /*
- * v4l2 — VA-API to V4L2 Request API bridge driver
+ * v4l2 — VA-API to Linux V4L2 bridge driver
  *
  * Copyright 2026 — MIT License
  *
@@ -30,12 +30,9 @@
 #include "probe.h"
 #include "internal.h"
 
-/* Global driver-wide lock — statically initialized, immune to struct-layout
- * or init-order issues. libva dispatches to the backend without serializing
- * client threads (its threading model makes thread safety a backend
- * requirement), so every stateful vtable entry takes this lock. Decode
- * (vaEndPicture) holds it across the synchronous request — callers on other
- * threads may block up to the 3 s decode timeout. */
+/* libva does not serialize client threads. Callbacks hold this lock while
+ * accessing driver state, including synchronous jobs and stateful waits.
+ * Timed sync includes lock acquisition in its timeout budget. */
 pthread_mutex_t vav4l2_api_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned g_driver_instances;
 
@@ -165,12 +162,14 @@ static int profile_available(const struct vav4l2_driver_data *dd, VAProfile prof
     int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return 0;
     struct v4l2_capability cap = {0};
-    int result = vav4l2_xioctl(fd, VIDIOC_QUERYCAP, &cap); close(fd);
+    int result = vav4l2_xioctl(fd, VIDIOC_QUERYCAP, &cap);
+    uint32_t coded = V4L2_PIX_FMT_JPEG;
+    if (result == 0 && kind != VAV4L2_CODEC_JPEG_ENC && vav4l2_decoder_select(fd, kind, &coded) < 0) result = -1;
+    close(fd);
     if (result < 0) return 0;
     struct vav4l2_compat_identity identity; vav4l2_compat_identity(&cap, &identity);
     struct vav4l2_compat_codec codec = {.direction = kind == VAV4L2_CODEC_JPEG_ENC ? VAV4L2_COMPAT_ENCODE : VAV4L2_COMPAT_DECODE,
-        .coded_format = V4L2_PIX_FMT_JPEG, .va_profile = profile, .profile_known = 1};
-    if (kind != VAV4L2_CODEC_JPEG_ENC && vav4l2_codec_coded_fourcc(kind, &codec.coded_format) < 0) return 0;
+        .coded_format = coded, .va_profile = profile, .profile_known = 1};
     return vav4l2_compat_codec_score(&identity, &codec) >= 0;
 }
 
@@ -467,7 +466,7 @@ vav4l2_create_config(VADriverContextP ctx,
         else
             memcpy(fcc, "????", 5);
         fprintf(stderr,
-                "v4l2: no V4L2 stateless decoder advertises %s "
+                "v4l2: no V4L2 decoder advertises %s "
                 "(OUTPUT fourcc %s)\n",
                 vav4l2_codec_name(codec), fcc);
         return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -1077,6 +1076,9 @@ vav4l2_destroy_surfaces(VADriverContextP ctx,
             pthread_mutex_unlock(&vav4l2_api_lock);
             return VA_STATUS_ERROR_INVALID_SURFACE;
         }
+        for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, surfaces[i])) {
+            pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_SURFACE_BUSY;
+        }
         if (surface && surface->memfd_borrows) {
             pthread_mutex_unlock(&vav4l2_api_lock);
             return VA_STATUS_ERROR_SURFACE_BUSY;
@@ -1240,7 +1242,18 @@ vav4l2_create_context(VADriverContextP ctx,
         goto fail;
     }
 
+    int stateful = 0;
+    if (context->codec <= VAV4L2_CODEC_MPEG2) {
+        stateful = vav4l2_decoder_select(context->v4l2_fd, context->codec, &context->coded_format);
+        if (stateful < 0) goto fail;
+    }
     if (vav4l2_codec_backend_init(context) < 0) goto fail;
+    if (stateful) {
+        if (vav4l2_stateful_init(context) < 0) goto fail;
+        *context_id = ++driver_data->next_context_id;
+        context->context_id = *context_id; context->next = driver_data->contexts; driver_data->contexts = context;
+        pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_SUCCESS;
+    }
 
     /* Encoding and raw processing use M2M queues without decode requests. */
     if (context->codec == VAV4L2_CODEC_JPEG_ENC ||
@@ -1664,6 +1677,9 @@ vav4l2_begin_picture(VADriverContextP ctx,
         goto out;
     }
 
+    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, render_target)) {
+        st = VA_STATUS_ERROR_SURFACE_BUSY; goto out;
+    }
     int field_continue = vav4l2_h264_field_pending(context, render_target);
 
     if ((surface->prime || surface->gbm_imported) && context->codec != VAV4L2_CODEC_VPP && context->codec != VAV4L2_CODEC_JPEG_ENC &&
@@ -1717,7 +1733,7 @@ vav4l2_begin_picture(VADriverContextP ctx,
             st = VA_STATUS_ERROR_SURFACE_BUSY;
             goto out;
         }
-        if (owner != context || !vav4l2_expbuf_export_wanted()) {
+        if (owner->stateful || owner != context || !vav4l2_expbuf_export_wanted()) {
             if (!av1_model)
                 vav4l2_cap_pool_push(owner, surface->buf_index);
             surface->buf_index = -1;
@@ -1937,7 +1953,7 @@ vav4l2_end_picture(VADriverContextP ctx,
         return va_status;
     }
 
-    if (context->v4l2_fd < 0 || context->request_fd < 0) {
+    if (context->v4l2_fd < 0 || (!context->stateful && context->request_fd < 0)) {
         vav4l2_h264_discard_field(context, 1);
         fprintf(stderr, "v4l2: decode device or request unavailable\n");
         context->current_surface->status = VASurfaceSkipped;
@@ -1951,8 +1967,9 @@ vav4l2_end_picture(VADriverContextP ctx,
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
-    /* Call codec-specific translation */
-    switch (context->codec) {
+    /* Bytestream and Request translators share VA buffer validation. */
+    if (context->stateful) va_status = vav4l2_stateful_translate(context, context->pending_buffers, context->num_pending_buffers);
+    else switch (context->codec) {
     case VAV4L2_CODEC_H264:
         va_status = vav4l2_h264_translate(context,
                                           context->pending_buffers,
@@ -2001,8 +2018,8 @@ vav4l2_end_picture(VADriverContextP ctx,
         return va_status;
     }
 
-    /* The synchronous decoder has already dequeued both queues. */
-    context->current_surface->status = context->h264_field ? VASurfaceRendering : VASurfaceReady;
+    /* Request decoding completes here; stateful pictures may still be pending. */
+    if (!context->stateful) context->current_surface->status = context->h264_field ? VASurfaceRendering : VASurfaceReady;
     context->current_surface = NULL;
     context->num_pending_buffers = 0;
 
@@ -2030,9 +2047,12 @@ vav4l2_sync_surface(VADriverContextP ctx, VASurfaceID render_target)
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
-    /* Decoding runs synchronously inside vaEndPicture (single request in
-     * flight), so by the time the client syncs, the frame — if it decoded —
-     * is already attached to the surface as a capture-buffer DMA-BUF. */
+    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, render_target)) {
+        VAStatus result = vav4l2_stateful_sync(c, surface, UINT64_C(5000000000));
+        pthread_mutex_unlock(&vav4l2_api_lock); return result;
+    }
+    /* Request decoding has already completed in vaEndPicture. Pending
+     * stateful pictures are handled by the wait above. */
     if (surface->status == VASurfaceSkipped) {
         pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_DECODING_ERROR;
@@ -2047,8 +2067,7 @@ vav4l2_sync_surface(VADriverContextP ctx, VASurfaceID render_target)
     return VA_STATUS_SUCCESS;
 }
 
-/* Timed APIs must not block on the global lock beyond the requested timeout.
- * EndPicture owns that lock while the synchronous V4L2 request runs. */
+/* Include time spent waiting for the global lock in the timeout budget. */
 static VAStatus vav4l2_sync_object(VADriverContextP ctx, unsigned int id, uint64_t timeout, int buffer)
 {
     struct timespec start, now;
@@ -2077,7 +2096,15 @@ static VAStatus vav4l2_sync_object(VADriverContextP ctx, unsigned int id, uint64
             } else {
                 struct vav4l2_surface *s = vav4l2_surface_by_id(dd, id);
                 if (!s) status = VA_STATUS_ERROR_INVALID_SURFACE;
-                else if (s->status == VASurfaceRendering) status = VA_STATUS_ERROR_TIMEDOUT;
+                else if (s->status == VASurfaceRendering) {
+                    status = VA_STATUS_ERROR_TIMEDOUT;
+                    for (struct vav4l2_context *c = dd->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, id)) {
+                        if (clock_gettime(CLOCK_MONOTONIC, &now)) { status = VA_STATUS_ERROR_OPERATION_FAILED; break; }
+                        uint64_t spent = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + now.tv_nsec - start.tv_nsec;
+                        uint64_t left = timeout == VA_TIMEOUT_INFINITE ? timeout : spent >= timeout ? 0 : timeout - spent;
+                        status = vav4l2_stateful_sync(c, s, left); break;
+                    }
+                }
                 else if (s->status == VASurfaceSkipped) status = VA_STATUS_ERROR_DECODING_ERROR;
             }
             pthread_mutex_unlock(&vav4l2_api_lock);
@@ -2118,6 +2145,8 @@ vav4l2_query_surface_status(VADriverContextP ctx,
     pthread_mutex_lock(&vav4l2_api_lock);
     surface = vav4l2_surface_by_id(driver_data, render_target);
     if (surface) {
+        for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next)
+            if (vav4l2_stateful_pending(c, render_target)) (void)vav4l2_stateful_pump(c);
         *status = surface->status;
         st = VA_STATUS_SUCCESS;
     }

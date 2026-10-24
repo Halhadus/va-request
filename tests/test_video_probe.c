@@ -100,6 +100,11 @@ static int run_unit(void)
     struct vav4l2_node_fmts none[] = {
         { "/dev/video0", rga, 1, VAV4L2_REQAPI_UNKNOWN, 0, 0, .identity = {.driver = ""} },
     };
+    const uint32_t stream_formats[] = {V4L2_PIX_FMT_H264, V4L2_PIX_FMT_HEVC};
+    struct vav4l2_node_fmts stream[] = {{.path = "/dev/video2048", .fourccs = stream_formats, .n_fourccs = 2, .request_api = VAV4L2_REQAPI_NO}};
+    expect_eq(vav4l2_pick_device_for_codec(VAV4L2_CODEC_H264, stream, 1), "/dev/video2048", "stateful-h264-needs-no-media-request");
+    expect_eq(vav4l2_pick_device_for_codec(VAV4L2_CODEC_HEVC, stream, 1), "/dev/video2048", "stateful-hevc-needs-no-media-request");
+    expect_eq(vav4l2_pick_device_for_codec(VAV4L2_CODEC_VP8, stream, 1), NULL, "unimplemented-stateful-codec-is-not-advertised");
     uint32_t fcc;
     char tag[8];
 
@@ -230,7 +235,9 @@ static int run_live(void)
         print_live_node(stdout, codecs[i], paths[i]);
         if (!paths[i][0]) { printf("SKIP %s: no usable node\n", vav4l2_codec_name(codecs[i])); continue; }
         found++;
-        if (vav4l2_codec_coded_fourcc(codecs[i], &fcc) < 0 || !node_has_fourcc(paths[i], fcc)) g_fail++;
+        uint32_t stream = vav4l2_stateful_fourcc(codecs[i]);
+        if (vav4l2_codec_coded_fourcc(codecs[i], &fcc) < 0 ||
+            (!node_has_fourcc(paths[i], fcc) && !(stream && node_has_fourcc(paths[i], stream)))) g_fail++;
         else printf("OK %s %s\n", vav4l2_codec_name(codecs[i]), paths[i]);
     }
     return g_fail ? 1 : found ? 0 : 77;

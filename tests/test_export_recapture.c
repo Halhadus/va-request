@@ -119,6 +119,15 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 {
     (void)fd;
 
+    if (request == VIDIOC_ENUM_FMT) {
+        struct v4l2_fmtdesc *f = arg;
+        if (!f->index) { f->pixelformat = V4L2_PIX_FMT_HEVC_SLICE; return 0; }
+        errno = EINVAL; return -1;
+    }
+    if (request == VIDIOC_CREATE_BUFS) { ((struct v4l2_create_buffers *)arg)->capabilities = V4L2_BUF_CAP_SUPPORTS_REQUESTS; return 0; }
+    if (request == VIDIOC_QUERY_EXT_CTRL) return 0;
+    if (request == VIDIOC_QUERYCTRL) { ((struct v4l2_queryctrl *)arg)->maximum = 4; return 0; }
+    if (request == VIDIOC_QUERYMENU) return 0;
     if (request == VIDIOC_STREAMOFF) {
         g_streamoff++;
         log_op("STREAMOFF");

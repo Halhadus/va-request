@@ -19,8 +19,10 @@ core_sources = files(
   'src/api/driver.c', 'src/api/images.c', 'src/api/unsupported.c',
   'src/v4l2/device.c',
   'src/v4l2/probe.c',
+  'src/v4l2/stateful.c',
   'src/codecs/h264.c',
   'src/codecs/hevc.c',
+  'src/codecs/bytestream.c',
   'src/codecs/av1.c',
   'src/codecs/vp8.c',
   'src/codecs/mpeg2.c',
@@ -62,6 +64,12 @@ if get_option('tests')
   # Linker wrapping requires calls to remain external to each translation unit.
   test_no_lto = cc.get_supported_arguments('-fno-lto')
   test_core = static_library('va_v4l2_test_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps, c_args: test_no_lto, override_options: ['b_lto=false'])
+  packet_oracle = shared_library('stateful_oracle', 'tests/stateful_oracle.c', name_prefix: '', install: false, link_with: test_core, include_directories: inc, dependencies: core_deps + [dl_dep])
+  oracle_env = []
+  if cc.get_id() == 'gcc' and get_option('b_sanitize').contains('address')
+    oracle_env += 'VAV4L2_ORACLE_ASAN=' + run_command(cc.cmd_array() + ['-print-file-name=libasan.so'], check: true).stdout().strip()
+  endif
+  test('stateful_oracle', python, args: [files('tests/test_stateful_oracle.py'), meson.current_build_dir(), packet_oracle.full_path()], env: oracle_env, suite: 'unit', timeout: 120)
   metadata_adapter = shared_library('hevc_slice_interpose', 'tests/hevc_slice_interpose.c', name_prefix: '', install: false, dependencies: [libva_dep, threads_dep, dl_dep])
   units = {
     'allocator': ['open', 'open64', 'vav4l2_list_video_nodes'],
@@ -93,6 +101,8 @@ if get_option('tests')
     'prime_layouts': ['poll', 'mmap', 'mmap64'],
     'reference_headers': [],
     'rga2_allocator': ['open', 'open64', 'vav4l2_list_video_nodes'],
+    'stateful_packet': [],
+    'stateful_queue': ['poll', 'ioctl'],
     'slice_packetization': ['vav4l2_decode_submit', 'vav4l2_ensure_capture'],
     'surface_ownership': [],
     'video_probe': [],

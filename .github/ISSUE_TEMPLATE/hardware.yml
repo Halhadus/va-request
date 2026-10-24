@@ -41,6 +41,6 @@ body:
     id: operations
     attributes:
       label: Observed operation
-      description: List tested decode/encode/processing operations, formats, applications, failures and untested paths. Include codec profiles, bit depths and dimensions where known.
+      description: List the operations and applications tested, including codec profiles, formats and dimensions. Describe failures and untested paths. Include the decoder backend if known.
     validations:
       required: true

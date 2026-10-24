@@ -45,6 +45,14 @@ class Inventory(unittest.TestCase):
         self.assertEqual(result["nodes"][0]["roles"], ["raw M2M candidate"])
         self.assertTrue(result["complete"])
 
+    def test_stateful_nodes_are_codecs_not_raw_processors(self):
+        def query(executable, node, option):
+            return {"option": option, "exit": 0, "stdout": "'H264' 'HEVC'" if 'out' in option else "'NV12'"}
+        with patch.object(caps, "query", side_effect=query): result = caps.collect("tool", ["/dev/video2048"])
+        self.assertEqual(result['nodes'][0]['roles'], ['H264', 'HEVC'])
+        self.assertNotIn('raw M2M candidate', result['nodes'][0]['roles'])
+        self.assertEqual([entry['api'] for entry in result['nodes'][0]['decoder_interfaces']], ['stateful', 'stateful'])
+
     def test_empty_inventory_is_not_success(self):
         self.assertFalse(caps.collect("tool", [])["complete"])
 

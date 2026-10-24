@@ -61,6 +61,7 @@ meson test -C build --suite unit --print-errorlogs
 | `summary.txt` | PASS/FAIL/SKIP counts, COMPLETE and EXIT |
 | `configure.log`, `build.log`, `unit.log` | Build and test output |
 | `testlog.json`, `testlog.txt`, `testlog.junit.xml` | Meson's individual test diagnostics |
+| `<codec>-decode.tsv` | Basic hardware decode queue, source-change, timestamp and completion evidence |
 | `hardware.tar.gz` | Extended-profile pixel results, traces, generated images and layout diagnostics, when applicable |
 
 The JSON format is defined by [report.schema.json](../tools/report.schema.json), with identifier `libva-v4l2.test-report/v1`. Source identity includes the commit, tracked tree, dirty state and driver SHA256 when available. Source archives without `.git` have null Git fields. Shared Meson logs omit the inherited environment dump; their JSON environment retains only driver, libva and test instrumentation settings. Test output and failure diagnostics remain included.
@@ -68,6 +69,8 @@ The JSON format is defined by [report.schema.json](../tools/report.schema.json),
 `complete=false` indicates an interrupted run. A nonzero exit code indicates failure even if a report was created. SKIP records unavailable coverage. Successful diagnostic retries retain earlier failures in the report.
 
 ## Regression checks
+
+Stateful queue tests use mocked ioctls to check source changes, timestamps, drain/resume, pending surfaces and failure cleanup. Run the hardware profile to check actual H.264/HEVC decoding and DMA-BUF behavior on a device.
 
 Codec checks cover frame order, reference lifetime, fragmented buffers, slice arrays and field pairing. PAFF fixtures check 16 field submissions for eight output pictures, held CAPTURE ownership and reference pixels. MPEG-2 extended checks also use a same-kernel IDCT reference.
 

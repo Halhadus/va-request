@@ -1,5 +1,5 @@
 /*
- * v4l2 — locate decoder nodes by OUTPUT_MPLANE fourcc
+ * v4l2 — locate stateful and stateless decoder nodes by OUTPUT_MPLANE fourcc
  */
 
 #include <stdio.h>
@@ -34,6 +34,7 @@ const char *vav4l2_pick_device_for_codec(enum vav4l2_codec codec,
                                          unsigned n_nodes)
 {
     uint32_t want;
+    uint32_t stream = vav4l2_stateful_fourcc(codec);
     unsigned i, j;
     const struct vav4l2_node_fmts *best = NULL;
     unsigned best_profiles = 0;
@@ -45,12 +46,16 @@ const char *vav4l2_pick_device_for_codec(enum vav4l2_codec codec,
     for (i = 0; i < n_nodes; i++) {
         if (!nodes[i].path || !nodes[i].fourccs)
             continue;
-        if (nodes[i].request_api == VAV4L2_REQAPI_NO)
-            continue;
         for (j = 0; j < nodes[i].n_fourccs; j++) {
-            if (nodes[i].fourccs[j] != want)
+            uint32_t format = nodes[i].fourccs[j];
+            if (!((format == want && nodes[i].request_api != VAV4L2_REQAPI_NO) || (stream && format == stream)))
                 continue;
-            struct vav4l2_compat_codec job = {.direction = VAV4L2_COMPAT_DECODE, .coded_format = want};
+            if (format == stream && nodes[i].request_api != VAV4L2_REQAPI_NO) {
+                int parsed = 0;
+                for (unsigned k = 0; k < nodes[i].n_fourccs; k++) parsed |= nodes[i].fourccs[k] == want;
+                if (parsed) continue;
+            }
+            struct vav4l2_compat_codec job = {.direction = VAV4L2_COMPAT_DECODE, .coded_format = format};
             int score = vav4l2_compat_codec_score(&nodes[i].identity, &job);
             if (score < 0) continue;
             unsigned profiles = codec == VAV4L2_CODEC_H264 ?
@@ -101,10 +106,10 @@ int vav4l2_find_media_path(const char *video_path, char *out, unsigned out_len)
     closedir(directory); return found;
 }
 
-static int queue_has_requests(int fd)
+int vav4l2_queue_has_requests(int fd)
 {
     struct v4l2_create_buffers buffers = {.format.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, .memory = V4L2_MEMORY_MMAP};
-    return ioctl(fd, VIDIOC_G_FMT, &buffers.format) == 0 && ioctl(fd, VIDIOC_CREATE_BUFS, &buffers) == 0 && (buffers.capabilities & V4L2_BUF_CAP_SUPPORTS_REQUESTS);
+    return vav4l2_xioctl(fd, VIDIOC_G_FMT, &buffers.format) == 0 && vav4l2_xioctl(fd, VIDIOC_CREATE_BUFS, &buffers) == 0 && (buffers.capabilities & V4L2_BUF_CAP_SUPPORTS_REQUESTS);
 }
 
 int vav4l2_video_has_request_api(const char *video_path)
@@ -114,7 +119,7 @@ int vav4l2_video_has_request_api(const char *video_path)
 
     int video = open(video_path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (video < 0) return 0;
-    int usable = queue_has_requests(video);
+    int usable = vav4l2_queue_has_requests(video);
     close(video); if (!usable) return 0;
     if (vav4l2_find_media_path(video_path, media_path, sizeof(media_path)) < 0)
         return 0;
@@ -133,7 +138,8 @@ int vav4l2_video_has_request_api(const char *video_path)
 
 static int fourcc_is_coded(uint32_t fcc)
 {
-    return fcc == V4L2_PIX_FMT_H264_SLICE ||
+    return fcc == V4L2_PIX_FMT_H264 || fcc == V4L2_PIX_FMT_HEVC || fcc == V4L2_PIX_FMT_VP8 ||
+           fcc == V4L2_PIX_FMT_H264_SLICE ||
            fcc == V4L2_PIX_FMT_HEVC_SLICE ||
            fcc == V4L2_PIX_FMT_AV1_FRAME ||
            fcc == V4L2_PIX_FMT_VP8_FRAME ||
@@ -151,7 +157,7 @@ int vav4l2_enum_output_fourccs(int fd, uint32_t *out, unsigned max)
     memset(&fmt, 0, sizeof(fmt));
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
     for (fmt.index = 0; n < max; fmt.index++) {
-        if (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) < 0)
+        if (vav4l2_xioctl(fd, VIDIOC_ENUM_FMT, &fmt) < 0)
             break;
         out[n++] = fmt.pixelformat;
     }
@@ -205,8 +211,11 @@ static void probe_h264_caps(int fd, struct scan_node *node)
 
     node->h264_max_area = 0;
     node->h264_profiles = 0;
-    if (!fourcc_in(node->out_fcc, (unsigned)node->nout, V4L2_PIX_FMT_H264_SLICE))
-        return;
+    if (!fourcc_in(node->out_fcc, (unsigned)node->nout, V4L2_PIX_FMT_H264_SLICE)) {
+        if (!fourcc_in(node->out_fcc, (unsigned)node->nout, V4L2_PIX_FMT_H264)) return;
+        size.pixel_format = V4L2_PIX_FMT_H264;
+        if (!vav4l2_stateful_usable(fd, VAV4L2_CODEC_H264)) return;
+    }
     if (ioctl(fd, VIDIOC_QUERYCTRL, &ctrl) == 0 && !(ctrl.flags & V4L2_CTRL_FLAG_DISABLED) &&
         ctrl.minimum >= 0 && ctrl.maximum < 32) {
         for (int i = ctrl.minimum; i <= ctrl.maximum; i++) {
@@ -237,6 +246,9 @@ int vav4l2_query_profiles(const char *path, uint32_t control, uint32_t *profiles
     if (!path || !profiles) return -1;
     int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return -1;
+    enum vav4l2_codec codec = control == V4L2_CID_MPEG_VIDEO_HEVC_PROFILE ? VAV4L2_CODEC_HEVC : VAV4L2_CODEC_H264;
+    uint32_t format;
+    int stateful = vav4l2_decoder_select(fd, codec, &format) == 1;
     struct v4l2_queryctrl ctrl = {.id = control};
     if (ioctl(fd, VIDIOC_QUERYCTRL, &ctrl) < 0 || (ctrl.flags & V4L2_CTRL_FLAG_DISABLED) ||
         ctrl.minimum < 0 || ctrl.maximum >= 32 || ctrl.minimum > ctrl.maximum) { close(fd); return -1; }
@@ -244,6 +256,12 @@ int vav4l2_query_profiles(const char *path, uint32_t control, uint32_t *profiles
     for (int i = ctrl.minimum; i <= ctrl.maximum; i++) {
         struct v4l2_querymenu menu = {.id = ctrl.id, .index = i};
         if (ioctl(fd, VIDIOC_QUERYMENU, &menu) == 0) mask |= 1u << i;
+    }
+    if (stateful) {
+        if (codec == VAV4L2_CODEC_H264) mask &= (1u << V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE) |
+            (1u << V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE) | (1u << V4L2_MPEG_VIDEO_H264_PROFILE_MAIN) |
+            (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH);
+        else mask &= 1u << V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN;
     }
     close(fd); *profiles = mask;
     return 0;
@@ -323,7 +341,11 @@ static int scan_nodes(struct scan_node *nodes, int max_nodes)
         for (unsigned codec = VAV4L2_CODEC_H264; codec <= VAV4L2_CODEC_MPEG2; codec++) {
             uint32_t fcc;
             if (vav4l2_codec_coded_fourcc(codec, &fcc) < 0) continue;
-            for (int j = 0; j < nodes[n].nout; j++) if (nodes[n].out_fcc[j] == fcc && !vav4l2_codec_controls_usable(fd, codec)) nodes[n].out_fcc[j] = 0;
+            uint32_t stream = vav4l2_stateful_fourcc(codec);
+            for (int j = 0; j < nodes[n].nout; j++) {
+                if (nodes[n].out_fcc[j] == fcc && !vav4l2_codec_controls_usable(fd, codec)) nodes[n].out_fcc[j] = 0;
+                if (stream && nodes[n].out_fcc[j] == stream && !vav4l2_stateful_usable(fd, codec)) nodes[n].out_fcc[j] = 0;
+            }
         }
         nodes[n].ncap = vav4l2_enum_capture_fourccs(fd, nodes[n].cap_fcc,
                                                     VAV4L2_PROBE_MAX_FOURCCS);
@@ -434,10 +456,6 @@ int vav4l2_scan_decoder_paths_ex(char *h264_out, char *hevc_out, char *av1_out,
         if (raw[i].has_jpeg_cap || !node_has_coded_output(&raw[i]))
             continue; /* JPEG encoders and raw converters are not decoders */
         fill_decoder_node(&nodes[n_nodes], &raw[i]);
-        if (nodes[n_nodes].request_api == VAV4L2_REQAPI_NO)
-            fprintf(stderr,
-                    "v4l2: skip %s (coded fourcc, no media request)\n",
-                    raw[i].path);
         n_nodes++;
     }
 
@@ -466,7 +484,7 @@ int vav4l2_enum_capture_fourccs(int fd, uint32_t *out, unsigned max)
     memset(&fmt, 0, sizeof(fmt));
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     for (fmt.index = 0; n < max; fmt.index++) {
-        if (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) < 0)
+        if (vav4l2_xioctl(fd, VIDIOC_ENUM_FMT, &fmt) < 0)
             break;
         out[n++] = fmt.pixelformat;
     }
@@ -489,7 +507,7 @@ static void probe_cache_path(char *out, unsigned len)
     const char *dir = getenv("XDG_RUNTIME_DIR"); struct stat st;
     out[0] = 0;
     if (!dir || dir[0] != '/' || lstat(dir, &st) < 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 0077)) return;
-    snprintf(out, len, "%s/libva-v4l2-probe-v1.cache", dir);
+    snprintf(out, len, "%s/libva-v4l2-probe-v2.cache", dir);
 }
 static uint64_t topology_key(void)
 {
@@ -523,7 +541,8 @@ static int validate_cached_node(const char *path, enum vav4l2_codec codec)
     int valid = ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0 && vav4l2_node_is_m2m(&cap);
     int count = valid ? vav4l2_enum_output_fourccs(fd, formats, VAV4L2_PROBE_MAX_FOURCCS) : -1;
     if (codec <= VAV4L2_CODEC_MPEG2) {
-        valid = count > 0 && vav4l2_codec_coded_fourcc(codec, &want) == 0 && fourcc_in(formats, count, want) && vav4l2_codec_controls_usable(fd, codec) && queue_has_requests(fd);
+        int api = valid ? vav4l2_decoder_select(fd, codec, &want) : -1;
+        valid = api >= 0 && (api == 1 || vav4l2_queue_has_requests(fd));
     } else {
         int nc = valid ? vav4l2_enum_capture_fourccs(fd, capture, VAV4L2_PROBE_MAX_FOURCCS) : -1;
         valid = nc > 0 && (codec == VAV4L2_CODEC_JPEG_ENC ? fourcc_in(capture, nc, V4L2_PIX_FMT_JPEG) && jpeg_encoder_usable(fd) : count > 0 && vav4l2_vpp_formats_usable(formats, count, capture, nc));
@@ -532,7 +551,7 @@ static int validate_cached_node(const char *path, enum vav4l2_codec codec)
         struct vav4l2_compat_identity identity; vav4l2_compat_identity(&cap, &identity);
         struct vav4l2_compat_codec job = {.direction = codec == VAV4L2_CODEC_JPEG_ENC ? VAV4L2_COMPAT_ENCODE : VAV4L2_COMPAT_DECODE,
             .coded_format = V4L2_PIX_FMT_JPEG};
-        if (codec != VAV4L2_CODEC_JPEG_ENC) valid = vav4l2_codec_coded_fourcc(codec, &job.coded_format) == 0;
+        if (codec != VAV4L2_CODEC_JPEG_ENC) job.coded_format = want;
         if (valid) valid = vav4l2_compat_codec_score(&identity, &job) >= 0;
     }
     close(fd); return valid;

@@ -40,7 +40,7 @@ Separate DRM layers use R8 for 8-bit Y/U/V, GR88 for interleaved 8-bit chroma, R
 
 The current decoder backend handles one physical CAPTURE plane. NV12M and other multiplanar capture, tiled formats, native P010 capture and new codec-native layouts require explicit capture/readback implementations. Their presence in a kernel menu does not cause an NV12 guess. Unrecognized FourCC, unsupported bit depth/chroma or changed negotiated format returns an error. The application's software decode path may then take over.
 
-SPS-dependent formats are negotiated after sequence controls. Width/height, physical plane count, bytesperline, sizeimage, QUERYBUF lengths and completion bytes are validated. A default CAPTURE menu from a fresh fd is not used to exclude NV15/NV16/NV20 before an appropriate SPS is set.
+Stateless SPS-dependent formats are negotiated after sequence controls. Stateful formats are enumerated and selected after SOURCE_CHANGE; the implemented bytestream path selects LINEAR NV12 and rejects opaque QC08C/UBWC and other unsupported layouts. Width/height, physical plane count, bytesperline, sizeimage, QUERYBUF lengths and completion bytes are validated. A default CAPTURE menu from a fresh fd is not used to exclude NV15/NV16/NV20 before an appropriate SPS is set.
 
 ## VPP and JPEG transport
 

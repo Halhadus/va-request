@@ -146,6 +146,7 @@ int vav4l2_codec_backend_init(struct vav4l2_context *ctx)
     struct vav4l2_compat_codec codec = {.direction = ctx->codec == VAV4L2_CODEC_JPEG_ENC ? VAV4L2_COMPAT_ENCODE : VAV4L2_COMPAT_DECODE,
         .va_profile = ctx->profile, .profile_known = 1};
     if (codec.direction == VAV4L2_COMPAT_ENCODE) codec.coded_format = V4L2_PIX_FMT_JPEG;
+    else if (ctx->coded_format) codec.coded_format = ctx->coded_format;
     else if (vav4l2_codec_coded_fourcc(ctx->codec, &codec.coded_format) < 0) { errno = ENOTSUP; return -1; }
     return vav4l2_compat_backend_init(&ctx->compat_backend, &identity, &codec, ctx->v4l2_fd);
 }
@@ -257,6 +258,8 @@ static int setup_output_queue(struct vav4l2_context *ctx, int fd, uint32_t codec
         coded_size = (uint64_t)width * (uint64_t)height;
     else if (codec_format == V4L2_PIX_FMT_H264_SLICE)
         coded_size = (uint64_t)width * (uint64_t)height * 15 / 8;
+    else if (codec_format == V4L2_PIX_FMT_H264 || codec_format == V4L2_PIX_FMT_HEVC)
+        coded_size = (uint64_t)width * (uint64_t)height * 2 + 8192;
     if (coded_size > UINT32_MAX) return -1;
     fmt.fmt.pix_mp.plane_fmt[0].sizeimage = coded_size;
 
@@ -497,6 +500,7 @@ void vav4l2_release_context_device(struct vav4l2_context *ctx)
     if (!ctx)
         return;
 
+    vav4l2_stateful_finish(ctx);
     /* Persistent M2M queues hold V4L2 MMAP mappings — release them while
      * the device fd is still open. */
     vav4l2_m2m_teardown(ctx, &ctx->vpp_q);
@@ -559,7 +563,7 @@ static void release_ctx_capture_surfaces(struct vav4l2_context *ctx)
         }
         if (s->has_pic && s->cap_view && !s->prime && !s->gbm_imported && !s->gbm_writable && s->last_writer != VAV4L2_WRITER_CPU) {
             uint32_t size = vav4l2_capture_plane_size(s->cap_fourcc, s->stride, s->aligned_h);
-            void *snapshot = size && size <= ctx->capture_buf_size
+            void *snapshot = size && size <= ctx->capture_buf_size && vav4l2_surface_grow_memfd(s, size) == 0
                 ? vav4l2_surface_map_memfd(s, size) : NULL;
 
             if (snapshot) {
@@ -576,6 +580,17 @@ static void release_ctx_capture_surfaces(struct vav4l2_context *ctx)
         s->cap_view = NULL;
         s->capture_ctx = NULL;
     }
+}
+
+/* CAPTURE-only reconfiguration keeps stateful OUTPUT and its DPB protocol alive. */
+int vav4l2_release_decoder_capture(struct vav4l2_context *ctx)
+{
+    release_ctx_capture_surfaces(ctx);
+    vav4l2_unmap_capture_buffers(ctx);
+    if (ctx->capture_bufs_allocd && reqbufs_zero_memory(ctx->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, ctx->capture_memory) < 0) return -1;
+    ctx->capture_bufs_allocd = ctx->n_free_cap = 0;
+    ctx->cap_width = ctx->cap_height = ctx->cap_stride = ctx->cap_sizeimage = ctx->cap_pixelformat = 0;
+    return 0;
 }
 
 /* Rebuild both free pools from scratch. Capture indices still claimed by a
@@ -1685,7 +1700,7 @@ int vav4l2_claim_capture_for_export(struct vav4l2_context *ctx,
     int idx, w, h;
     uint32_t fourcc;
 
-    if (!ctx || !surf || ctx->v4l2_fd < 0)
+    if (!ctx || !surf || ctx->v4l2_fd < 0 || ctx->stateful)
         return -1;
     w = ctx->width > 0 ? ctx->width : (int)surf->width;
     h = ctx->height > 0 ? ctx->height : (int)surf->height;

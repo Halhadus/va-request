@@ -1,5 +1,5 @@
 /*
- * v4l2 — VA-API to V4L2 Request API bridge
+ * v4l2 — VA-API to Linux V4L2 bridge
  * Internal data structures and function declarations
  */
 
@@ -30,6 +30,7 @@
 
 struct vav4l2_prime_import;
 struct vav4l2_h264_field;
+struct vav4l2_stateful;
 struct gbm_bo;   /* opaque — only gbm.c includes <gbm.h> */
 
 /* Codec identifiers */
@@ -203,6 +204,8 @@ struct vav4l2_context {
     int v4l2_fd;                 /* V4L2 video device fd */
     int media_fd;                /* V4L2 media device fd (for request alloc) */
     int request_fd;              /* Current V4L2 request */
+    uint32_t coded_format;
+    struct vav4l2_stateful *stateful; /* independent bytestream queue state */
     unsigned vpp_controls;
     unsigned vpp_behaviors;
 
@@ -426,6 +429,18 @@ void vav4l2_h264_discard_field(struct vav4l2_context *ctx, int failed);
 /* Optional decoder evidence;does not redirect stderr or change errno. */
 void vav4l2_decode_trace(const struct vav4l2_context *ctx, const char *stage, int status, uint64_t argument);
 
+/* Stateful M2M decoders; Request API contexts leave stateful NULL. */
+uint32_t vav4l2_stateful_fourcc(enum vav4l2_codec codec);
+int vav4l2_stateful_usable(int fd, enum vav4l2_codec codec);
+int vav4l2_stateful_init(struct vav4l2_context *ctx);
+int vav4l2_release_decoder_capture(struct vav4l2_context *ctx);
+void vav4l2_stateful_finish(struct vav4l2_context *ctx);
+int vav4l2_stateful_pending(const struct vav4l2_context *ctx, VASurfaceID id);
+VAStatus vav4l2_stateful_translate(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count);
+VAStatus vav4l2_stateful_sync(struct vav4l2_context *ctx, struct vav4l2_surface *s, uint64_t timeout);
+int vav4l2_stateful_pump(struct vav4l2_context *ctx);
+VAStatus vav4l2_stateful_packet(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count, uint8_t *dst, size_t capacity, size_t *size);
+int vav4l2_decoder_select(int fd, enum vav4l2_codec codec, uint32_t *format);
 /* Device helpers (device.c) */
 int vav4l2_open_device(const char *path);
 int vav4l2_codec_backend_init(struct vav4l2_context *ctx);

@@ -109,8 +109,9 @@ def run_hardware(run, output, build, render_node, extended=True):
         cpu = run(name + "-reference", ["ffmpeg", "-nostdin", "-v", "error", "-hwaccel", "none", "-i", str(clip),
             "-pix_fmt", "nv12", "-f", "rawvideo", "-y", str(reference)], env)
         if cpu["status"] != "PASS": cases.append(cpu); continue
+        decode_env = dict(env, VAV4L2_DECODE_TRACE=str(output / (codec + "-decode.tsv")))
         hardware = run(name, ["ffmpeg", "-nostdin", "-v", "error", "-hwaccel", "vaapi", "-hwaccel_device", render_node,
-            "-hwaccel_output_format", "vaapi", "-i", str(clip), "-vf", "hwdownload,format=nv12", "-f", "rawvideo", "-y", str(actual)], env)
+            "-hwaccel_output_format", "vaapi", "-i", str(clip), "-vf", "hwdownload,format=nv12", "-f", "rawvideo", "-y", str(actual)], decode_env)
         if hardware["status"] == "PASS":
             try: compare_pixels(actual.read_bytes(), reference.read_bytes(), codec)
             except (OSError, ValueError) as error:

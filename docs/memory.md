@@ -10,13 +10,15 @@ DeriveImage borrows writable surface backing. GetImage/PutImage handle detached 
 
 ## Decoder queues
 
-Compressed OUTPUT is MMAP-backed and bound to a media request; CAPTURE is queued independently. Sequence controls, request controls and queue completion are separate responsibilities. OUTPUT is dequeued before synchronous submission returns. Initial allocation pressure may reduce the spare OUTPUT slot count from four to two to one while preserving coded-buffer size and retained references. Non-memory errors stop immediately.
+Compressed OUTPUT is MMAP-backed. Stateless submissions bind OUTPUT to a media request; stateful submissions queue a bytestream without a request. CAPTURE is queued independently. Sequence controls, request controls and queue completion are separate responsibilities. Request OUTPUT is dequeued before synchronous submission returns. Stateful OUTPUT completion only releases coded storage; a surface becomes Ready after matching CAPTURE completion. Initial allocation pressure may reduce the spare OUTPUT slot count from four to two to one while preserving coded-buffer size and retained references. Non-memory errors stop immediately.
 
-Native CAPTURE allocation may return fewer buffers than requested. Eligible codecs can fall back to an independently allocated DMA-BUF pool before accepting a smaller native pool. Negotiated decoder sizeimage, including auxiliary storage, determines capacity. Pool transport uses MEMORY_DMABUF; its capacity is checked against decoder requirements.
+Stateful native CAPTURE slots retain a fixed index/backing association while streaming. Surfaces retain dequeued pixels until reuse or destruction; queued slots are never exposed as completed. Stateful setup requires the reported decoder minimum plus spare slots and does not remap a client surface onto an arbitrary queue index.
+
+For Request decoding, native CAPTURE allocation may return fewer buffers than requested. Eligible codecs can fall back to an independently allocated DMA-BUF pool before accepting a smaller native pool. Negotiated decoder sizeimage, including auxiliary storage, determines capacity. Pool transport uses MEMORY_DMABUF; its capacity is checked against decoder requirements.
 
 Internal pools currently allocate through registered V4L2 storage providers. Without an eligible provider, decoding uses the available native CAPTURE buffers; streams requiring a larger reference pool may fail setup.
 
-External direct decoder targets are selected automatically for compatible declared pools: canonical, LINEAR, compatible single-object NV12, exact negotiated pitch/aligned height/full sizeimage, and safe ownership are required. Packed NV15/NV20, incompatible imported layouts and undeclared dynamic pools use native storage and transfer. Explicit direct mode is available for clients that guarantee homogeneous dynamic targets. Reconfiguration releases buffers only after ownership is resolved; uncertain STREAMOFF/REQBUFS cleanup closes the device and requires context recreation.
+For Request decoding, external direct decoder targets are selected automatically for compatible declared pools: canonical, LINEAR, compatible single-object NV12, exact negotiated pitch/aligned height/full sizeimage, and safe ownership are required. Packed NV15/NV20, incompatible imported layouts and undeclared dynamic pools use native storage and transfer. Explicit direct mode is available for clients that guarantee homogeneous dynamic targets. Reconfiguration releases buffers only after ownership is resolved; uncertain STREAMOFF/REQBUFS cleanup closes the device and requires context recreation.
 
 ## Export and processing
 

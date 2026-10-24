@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-DECODERS = {"S264": "H264", "S265": "HEVC", "VP8F": "VP8", "MG2S": "MPEG2", "AV1F": "AV1", "AV01": "AV1", "VP9F": "VP9", "VP90": "VP9"}
+DECODERS = {"H264": "H264", "HEVC": "HEVC", "VP80": "VP8", "MPG2": "MPEG2", "S264": "H264", "S265": "HEVC", "VP8F": "VP8", "MG2S": "MPEG2", "AV1F": "AV1", "AV01": "AV1", "VP9F": "VP9", "VP90": "VP9"}
 EXCLUDED = {"AV1F", "AV01", "VP9F", "VP90"}
 RAW_FORMATS = {"NV12", "NV21", "YU12", "YV12", "NV16", "NV61", "422P", "YUYV", "UYVY", "VYUY", "YVYU", "RGBP", "AB24", "XB24", "BA24", "AR24", "XR24", "NM12", "NM21", "YM12"}
 
@@ -55,6 +55,9 @@ def collect(executable, nodes):
         sections.extend(query(executable, node, option) for option in
                         ["--all", "--list-ctrls-menus", "--list-formats-out-ext", "--list-formats-ext"])
         entry = {"node": node, "roles": roles, "sections": sections}
+        entry["decoder_interfaces"] = [{"fourcc": code, "codec": DECODERS[code],
+            "api": "stateless" if code in {"S264", "S265", "VP8F", "MG2S", "AV1F", "VP9F"} else "stateful"}
+            for code in sorted(codes & set(DECODERS))]
         # Optional selection queries failing can mean unsupported targets.
         if "raw M2M candidate" in roles:
             entry["selection_queries"] = [query(executable, node, option) for option in
