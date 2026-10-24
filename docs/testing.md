@@ -72,7 +72,7 @@ The JSON format is defined by [report.schema.json](../tools/report.schema.json),
 
 The optional `stateful_oracle` test checks Annex-B reconstruction without hardware. A test-only VA shim writes the reconstructed packets. FFmpeg decodes the original and reconstructed streams, and the test compares all eight frames of each stream. Cases cover H.264 Baseline/Main/High, scaling matrices, multiple slices, MBAFF and HEVC PPS identities. It requires FFmpeg with libx264/libx265, which CI installs.
 
-Stateful queue tests use mocked ioctls to check source changes, timestamps, drain/resume, pending surfaces and failure cleanup. Run the hardware profile to check actual H.264/HEVC decoding and DMA-BUF behavior on a device.
+Stateless queue tests cover request completion, held CAPTURE, capture reconfiguration and recovery after submission failures. Stateful queue tests cover source changes, timestamps, drain/resume, pending surfaces and failure cleanup. Both use mocked ioctls. Run the hardware profile to check actual H.264/HEVC decoding and DMA-BUF behavior on a device.
 
 Codec checks cover frame order, reference lifetime, fragmented buffers, slice arrays and field pairing. PAFF fixtures check 16 field submissions for eight output pictures, held CAPTURE ownership and reference pixels. MPEG-2 extended checks also use a same-kernel IDCT reference.
 

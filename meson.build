@@ -20,6 +20,7 @@ core_sources = files(
   'src/v4l2/device.c',
   'src/v4l2/probe.c',
   'src/v4l2/stateful.c',
+  'src/v4l2/stateless.c',
   'src/codecs/h264.c',
   'src/codecs/hevc.c',
   'src/codecs/bytestream.c',

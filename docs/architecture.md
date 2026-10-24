@@ -7,7 +7,8 @@
 | `src/codecs/bytestream.c` | H.264/HEVC Annex-B parameter sets reconstructed from VA decode buffers |
 | `src/v4l2/codec.c` | Codec descriptors, required-control policy and queue capability classification |
 | `src/v4l2/probe.c` | Numeric video-node enumeration, profile/format discovery, exact media-interface matching and cache validation |
-| `src/v4l2/device.c` | Common queues, capture geometry, storage attachment and synchronous Request submission |
+| `src/v4l2/device.c` | Shared device access, queue allocation, capture geometry and storage attachment |
+| `src/v4l2/stateless.c` | Request initialization, codec dispatch, synchronous submission, capture reconfiguration and recovery |
 | `src/v4l2/stateful.c` | Independent bytestream OUTPUT/CAPTURE, source changes, timestamp routing, drain/resume and pending surface lifetime |
 | `src/compat/` | Runtime module matching, processing exceptions and additional storage providers |
 | `src/memory/` | Capture pools, format conversion, LINEAR PRIME validation, FD ownership, synchronization and generic GBM storage |
@@ -23,7 +24,7 @@ The opened node's `device_caps` is authoritative when V4L2_CAP_DEVICE_CAPS is pr
 
 Each decoder requires a compiled translator and its coded OUTPUT format. Stateless paths require mandatory writable controls. Stateless H.264/HEVC additionally require frame-based mode and Annex-B start-code menu entries. For Request decoding, the OUTPUT queue must expose SUPPORTS_REQUESTS via nonallocating CREATE_BUFS(count=0), and the associated media node must allocate a request. Media association uses the graph's V4L video interface major/minor pair.
 
-Stateful candidates require SOURCE_CHANGE subscription and decoder STOP command support; they do not require a media node or request controls. H.264 candidates are ranked by advertised extended profiles and frame area. Available H.264/HEVC profile menus constrain VA profile advertisement; sequence setup validates each stream. Each codec selects one node. Incompatible context or stream reconfiguration returns an error. Stateful CAPTURE is configured after sequence parsing; its OUTPUT stays streaming during CAPTURE reconfiguration. See [stateful decoding](stateful.md).
+Stateful candidates require SOURCE_CHANGE subscription and decoder STOP command support; they do not require a media node or request controls. H.264 candidates are ranked by advertised extended profiles and frame area. Available H.264/HEVC profile menus constrain VA profile advertisement; sequence setup validates each stream. Each codec selects one node. Incompatible context or stream reconfiguration returns an error. Stateful CAPTURE is configured after sequence parsing; its OUTPUT stays streaming during CAPTURE reconfiguration. See [decoding](decoding.md).
 
 Raw M2M processing is detected from implemented input/output formats independently of transform controls. Every job checks its actual format pair, dimensions, requested controls and compatibility restrictions; exact TRY_FMT may reject a candidate. Capabilities are checked on the selected node.
 
@@ -47,7 +48,7 @@ Codec, memory and processing modules are built into the driver. EGL/GLES accepta
 
 GBM backing is scoped to each libva display and uses an owned duplicate of its DRM FD. For displays without a DRM connection, render nodes are enumerated through libdrm. An explicit render-node override applies only to storage selection. Storage allocation tries eligible V4L2 providers and generic GBM backing.
 
-Direct external decoder capture is selected automatically for a declared pool whose targets all match the negotiated allocation. An unknown dynamic pool keeps independent native DPB storage, because a later target may have another layout. The diagnostic direct mode allows clients with a guaranteed uniform dynamic pool to exercise that path.
+For stateless decoding, direct external decoder capture is selected automatically for a declared pool whose targets all match the negotiated allocation. An unknown dynamic pool keeps independent native DPB storage, because a later target may have another layout. The diagnostic direct mode allows clients with a guaranteed uniform dynamic pool to exercise that path.
 
 ## Compatibility handling
 

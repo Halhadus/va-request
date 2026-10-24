@@ -42,7 +42,7 @@ The hardware suite checks available decode profiles, JPEG encoding, video proces
 - [Memory and DMA-BUF](docs/memory.md)
 - [Environment variables](docs/environment.md)
 - [Architecture](docs/architecture.md)
-- [Stateful decoding](docs/stateful.md)
+- [Decoding](docs/decoding.md)
 - [Compatibility modules](docs/compatibility.md)
 - [Tested hardware](docs/hardware/README.md)
 - [Contributing](CONTRIBUTING.md)

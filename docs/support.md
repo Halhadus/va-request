@@ -30,7 +30,7 @@ Codec, memory-transport and processing capabilities are probed independently. VP
 
 Unsupported profiles are omitted from VA queries. Software codec fallback is handled by the application.
 
-Stateless H.264/HEVC require frame-based Annex-B submission. Stateful H.264 and HEVC use reconstructed Annex-B parameter sets and coded slices, independent queues and timestamp-matched completion. The stateful backend currently negotiates single-plane LINEAR NV12 for 8-bit 4:2:0; H.264 field pictures/POC1 and HEVC SPS reference-set arrays or temporal sublayers are outside its reconstructible syntax. See [stateful decoding](stateful.md) for exact bounds. Slice-only Request submission and additional native layouts require backend support.
+Stateless H.264/HEVC require frame-based Annex-B submission. Stateful H.264 and HEVC use reconstructed Annex-B parameter sets and coded slices, independent queues and timestamp-matched completion. The stateful backend currently negotiates single-plane LINEAR NV12 for 8-bit 4:2:0; H.264 field pictures/POC1 and HEVC SPS reference-set arrays or temporal sublayers are outside its reconstructible syntax. See [decoding](decoding.md) for exact bounds. Slice-only Request submission and additional native layouts require backend support.
 
 Binary packages follow the CPU architecture and distribution ABI. Device capabilities are negotiated at runtime.
 

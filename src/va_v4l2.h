@@ -421,63 +421,33 @@ static inline int vav4l2_surface_capture_matches(const struct vav4l2_context *ct
     return 0;
 }
 
-/* A hardware reference must retain decoded CAPTURE storage in this context. */
-VAStatus vav4l2_validate_reference(const struct vav4l2_context *ctx, VASurfaceID id);
 int vav4l2_h264_field_pending(const struct vav4l2_context *ctx, VASurfaceID surface);
 void vav4l2_h264_discard_field(struct vav4l2_context *ctx, int failed);
 
 /* Optional decoder evidence;does not redirect stderr or change errno. */
 void vav4l2_decode_trace(const struct vav4l2_context *ctx, const char *stage, int status, uint64_t argument);
 
-/* Stateful M2M decoders; Request API contexts leave stateful NULL. */
+/* Decoder protocol selection (v4l2/codec.c). */
 uint32_t vav4l2_stateful_fourcc(enum vav4l2_codec codec);
 int vav4l2_stateful_usable(int fd, enum vav4l2_codec codec);
+int vav4l2_decoder_select(int fd, enum vav4l2_codec codec, uint32_t *format);
+
+/* Stateful decoder backend (v4l2/stateful.c). */
 int vav4l2_stateful_init(struct vav4l2_context *ctx);
-int vav4l2_release_decoder_capture(struct vav4l2_context *ctx);
 void vav4l2_stateful_finish(struct vav4l2_context *ctx);
 int vav4l2_stateful_pending(const struct vav4l2_context *ctx, VASurfaceID id);
 VAStatus vav4l2_stateful_translate(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count);
 VAStatus vav4l2_stateful_sync(struct vav4l2_context *ctx, struct vav4l2_surface *s, uint64_t timeout);
 int vav4l2_stateful_pump(struct vav4l2_context *ctx);
-VAStatus vav4l2_stateful_packet(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count, uint8_t *dst, size_t capacity, size_t *size);
-int vav4l2_decoder_select(int fd, enum vav4l2_codec codec, uint32_t *format);
-/* Device helpers (device.c) */
-int vav4l2_open_device(const char *path);
-int vav4l2_codec_backend_init(struct vav4l2_context *ctx);
-void vav4l2_close_context_device(struct vav4l2_context *ctx);
-int vav4l2_codec_format(struct vav4l2_context *ctx, struct v4l2_format *format);
-int vav4l2_codec_control(struct vav4l2_context *ctx, struct v4l2_control *control);
-int vav4l2_codec_prepare_controls(struct vav4l2_context *ctx, int request_fd, struct v4l2_ext_controls *controls);
-int vav4l2_codec_controls(struct vav4l2_context *ctx, int request_fd, struct v4l2_ext_controls *controls);
-int vav4l2_setup_codec_output(struct vav4l2_context *ctx, uint32_t codec_format, int width, int height);
-int vav4l2_setup_codec_capture(struct vav4l2_context *ctx, int width, int height, uint32_t pixelformat, int count);
-int vav4l2_open_media_for_device(const char *video_path);
+
+/* Stateless decoder backend (v4l2/stateless.c). */
+int vav4l2_stateless_init(struct vav4l2_context *ctx);
+VAStatus vav4l2_stateless_translate(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count);
 int vav4l2_request_alloc(int media_fd);
-int vav4l2_setup_output_queue(int fd, uint32_t codec_format, int width, int height);
-int vav4l2_capture_pool_allowed(const struct vav4l2_context *ctx);
-int vav4l2_capture_pool_setup(struct vav4l2_context *ctx, unsigned width, unsigned height, uint32_t fourcc, unsigned count);
-int vav4l2_capture_pool_bind(struct vav4l2_context *ctx, int index);
-int vav4l2_capture_pool_complete(struct vav4l2_context *ctx, struct vav4l2_surface *s, int index);
-int vav4l2_surface_store_capture(struct vav4l2_context *ctx, struct vav4l2_surface *s, int index, void *src, uint32_t size, int live_view);
-int vav4l2_capture_dma_setup(struct vav4l2_context *ctx, unsigned width, unsigned height, uint32_t fourcc, unsigned count);
-int vav4l2_capture_dma_bind(struct vav4l2_context *ctx, int index);
-int vav4l2_capture_dma_queue(struct vav4l2_context *ctx, int index);
-int vav4l2_capture_dma_dequeue(struct vav4l2_context *ctx, int *error);
-int vav4l2_capture_dma_complete(struct vav4l2_context *ctx, struct vav4l2_surface *s, int index);
-void vav4l2_capture_dma_release(struct vav4l2_context *ctx);
-int vav4l2_setup_capture_queue(int fd, int width, int height, uint32_t pixelformat);
-int vav4l2_setup_capture_queue_count(int fd, int width, int height,
-                                     uint32_t pixelformat, int count);
-int vav4l2_streamon(int fd, enum v4l2_buf_type type);
-int vav4l2_streamoff(int fd, enum v4l2_buf_type type);
-void vav4l2_release_context_device(struct vav4l2_context *ctx);
-int vav4l2_get_capture_geometry(int fd, uint32_t *w, uint32_t *h,
-                                uint32_t *stride, uint32_t *sizeimage);
 int vav4l2_ensure_capture(struct vav4l2_context *ctx, int width, int height,
                           uint32_t pixelformat);
 int vav4l2_queue_output(struct vav4l2_context *ctx, int buf_index,
                         uint32_t size, uint64_t timestamp);
-int vav4l2_queue_capture(int fd, int buf_index, int request_fd);
 /*
  * Submit one synchronous decode: pops a capture buffer, QBUFs the given
  * OUTPUT buffer (caller already memcpy'd the bitstream into it), queues the
@@ -497,6 +467,44 @@ int vav4l2_decode_submit_field(struct vav4l2_context *ctx, int out_buf_idx,
  * recover from decode timeouts so a wedged job is never left in the kernel
  * (rkvdec returns every queued buffer in ERROR state on STREAMOFF). */
 void vav4l2_decode_reset(struct vav4l2_context *ctx);
+int vav4l2_set_request_controls(int request_fd, int v4l2_fd, struct v4l2_ext_controls *ctrls);
+int vav4l2_submit_request(int request_fd);
+/* A hardware reference must retain decoded CAPTURE storage in this context. */
+VAStatus vav4l2_validate_reference(const struct vav4l2_context *ctx, VASurfaceID id);
+
+/* Common device and storage helpers (v4l2/device.c). */
+int vav4l2_open_device(const char *path);
+int vav4l2_open_media_for_device(const char *video_path);
+int vav4l2_codec_backend_init(struct vav4l2_context *ctx);
+void vav4l2_close_context_device(struct vav4l2_context *ctx);
+int vav4l2_codec_format(struct vav4l2_context *ctx, struct v4l2_format *format);
+int vav4l2_codec_control(struct vav4l2_context *ctx, struct v4l2_control *control);
+int vav4l2_codec_prepare_controls(struct vav4l2_context *ctx, int request_fd, struct v4l2_ext_controls *controls);
+int vav4l2_codec_controls(struct vav4l2_context *ctx, int request_fd, struct v4l2_ext_controls *controls);
+int vav4l2_setup_codec_output(struct vav4l2_context *ctx, uint32_t codec_format, int width, int height);
+int vav4l2_setup_codec_capture(struct vav4l2_context *ctx, int width, int height, uint32_t pixelformat, int count);
+int vav4l2_setup_output_queue(int fd, uint32_t codec_format, int width, int height);
+int vav4l2_capture_pool_allowed(const struct vav4l2_context *ctx);
+int vav4l2_capture_pool_setup(struct vav4l2_context *ctx, unsigned width, unsigned height, uint32_t fourcc, unsigned count);
+int vav4l2_capture_pool_bind(struct vav4l2_context *ctx, int index);
+int vav4l2_capture_pool_complete(struct vav4l2_context *ctx, struct vav4l2_surface *s, int index);
+int vav4l2_surface_store_capture(struct vav4l2_context *ctx, struct vav4l2_surface *s, int index, void *src, uint32_t size, int live_view);
+int vav4l2_capture_dma_setup(struct vav4l2_context *ctx, unsigned width, unsigned height, uint32_t fourcc, unsigned count);
+int vav4l2_capture_dma_bind(struct vav4l2_context *ctx, int index);
+int vav4l2_capture_dma_queue(struct vav4l2_context *ctx, int index);
+int vav4l2_capture_dma_dequeue(struct vav4l2_context *ctx, int *error);
+int vav4l2_capture_dma_complete(struct vav4l2_context *ctx, struct vav4l2_surface *s, int index);
+void vav4l2_capture_dma_release(struct vav4l2_context *ctx);
+int vav4l2_setup_capture_queue(int fd, int width, int height, uint32_t pixelformat);
+int vav4l2_setup_capture_queue_count(int fd, int width, int height,
+                                     uint32_t pixelformat, int count);
+int vav4l2_streamon(int fd, enum v4l2_buf_type type);
+int vav4l2_streamoff(int fd, enum v4l2_buf_type type);
+void vav4l2_release_context_device(struct vav4l2_context *ctx);
+int vav4l2_release_decoder_capture(struct vav4l2_context *ctx);
+int vav4l2_get_capture_geometry(int fd, uint32_t *w, uint32_t *h,
+                                uint32_t *stride, uint32_t *sizeimage);
+int vav4l2_queue_capture(int fd, int buf_index, int request_fd);
 int vav4l2_surface_alloc_export_fd(struct vav4l2_surface *s);
 int vav4l2_surface_grow_memfd(struct vav4l2_surface *s, uint32_t size);
 /* Persistent per-surface mapping of memfd_fd (RW shared, grow-only; the
@@ -557,14 +565,14 @@ typedef int (*vav4l2_ioctl_fn)(int fd, unsigned long request, void *arg);
 void vav4l2_set_ioctl_hook(vav4l2_ioctl_fn fn);
 int vav4l2_dequeue_buffer(int fd, enum v4l2_buf_type type, int *flag_error);
 int vav4l2_mmap_output_buffers(int fd, int count, void **ptrs, uint32_t *size_out);
-int vav4l2_set_request_controls(int request_fd, int v4l2_fd, struct v4l2_ext_controls *ctrls);
 int vav4l2_set_global_controls(int v4l2_fd, struct v4l2_ext_controls *ctrls);
-int vav4l2_submit_request(int request_fd);
 /* Full teardown of a persistent M2M queue (STREAMOFF + REQBUFS(0) both
  * directions + drop the plane mappings). Safe no-op on an unused queue;
  * call before the context's device fd goes away. */
 int vav4l2_m2m_finish_output(struct vav4l2_context *ctx, const struct vav4l2_m2m_state *q);
 void vav4l2_m2m_teardown(struct vav4l2_context *ctx, struct vav4l2_m2m_state *q);
+/* Annex-B reconstruction (codecs/bytestream.c). */
+VAStatus vav4l2_stateful_packet(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count, uint8_t *dst, size_t capacity, size_t *size);
 /* One-pass decode-buffer collection shared by every codec translate. */
 void vav4l2_collect_decode_buffers(struct vav4l2_buffer **buffers, int n,
                                    struct vav4l2_collected *cb);

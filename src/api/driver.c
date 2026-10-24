@@ -1248,113 +1248,10 @@ vav4l2_create_context(VADriverContextP ctx,
         if (stateful < 0) goto fail;
     }
     if (vav4l2_codec_backend_init(context) < 0) goto fail;
-    if (stateful) {
-        if (vav4l2_stateful_init(context) < 0) goto fail;
-        *context_id = ++driver_data->next_context_id;
-        context->context_id = *context_id; context->next = driver_data->contexts; driver_data->contexts = context;
-        pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_SUCCESS;
+    if (context->codec <= VAV4L2_CODEC_MPEG2) {
+        int result = stateful ? vav4l2_stateful_init(context) : vav4l2_stateless_init(context);
+        if (result < 0) goto fail;
     }
-
-    /* Encoding and raw processing use M2M queues without decode requests. */
-    if (context->codec == VAV4L2_CODEC_JPEG_ENC ||
-        context->codec == VAV4L2_CODEC_VPP) {
-        *context_id = ++driver_data->next_context_id;
-        context->context_id = *context_id;
-        context->next = driver_data->contexts;
-        driver_data->contexts = context;
-        pthread_mutex_unlock(&vav4l2_api_lock);
-        return VA_STATUS_SUCCESS;
-    }
-
-    /* Open media device for request API (sysfs, not /dev/mediaN == videoN) */
-    context->media_fd = vav4l2_open_media_for_device(context->device_path);
-    if (context->media_fd < 0) {
-        fprintf(stderr, "v4l2: no media request node for %s\n",
-                context->device_path);
-        goto fail;
-    }
-
-    /* Determine V4L2 codec format */
-    uint32_t v4l2_format;
-    switch (context->codec) {
-    case VAV4L2_CODEC_H264:  v4l2_format = V4L2_PIX_FMT_H264_SLICE; break;
-    case VAV4L2_CODEC_HEVC:  v4l2_format = V4L2_PIX_FMT_HEVC_SLICE; break;
-    case VAV4L2_CODEC_AV1:   v4l2_format = V4L2_PIX_FMT_AV1_FRAME; break;
-    case VAV4L2_CODEC_VP8:   v4l2_format = V4L2_PIX_FMT_VP8_FRAME; break;
-    case VAV4L2_CODEC_MPEG2: v4l2_format = V4L2_PIX_FMT_MPEG2_SLICE; break;
-    default: v4l2_format = V4L2_PIX_FMT_H264_SLICE; break;
-    }
-
-    /* Setup output queue (compressed input) */
-    int n_out = vav4l2_setup_codec_output(context, v4l2_format,
-                                          picture_width, picture_height);
-    if (n_out <= 0) {
-        fprintf(stderr, "v4l2: failed to setup output queue\n");
-        goto fail;
-    }
-    context->output_bufs_allocd = n_out;
-    /* Mmap the output buffers for writing compressed data */
-    if (vav4l2_mmap_output_buffers(context->v4l2_fd, n_out,
-                                   context->output_buf_ptr,
-                                   &context->output_buf_size) < 0) {
-        fprintf(stderr, "v4l2: failed to mmap output buffers\n");
-        goto fail;
-    }
-
-    /* Capture: S_FMT + REQBUFS (degrades the buffer count under CMA
-     * pressure). Failing the context outright beats a zombie fd that
-     * errors on every frame — ffmpeg/Chrome fall back to software.
-     *
-     * H.264 and HEVC defer capture until the first picture: rkvdec's
-     * SPS control selects the capture format and returns EBUSY if capture
-     * buffers already exist. Set SPS before capture S_FMT/REQBUFS. */
-    const char *capture_dma = getenv("VAV4L2_CAPTURE_DMABUF");
-    int dynamic_dma = capture_dma && strcmp(capture_dma, "0") && !num_render_targets &&
-        (context->codec == VAV4L2_CODEC_VP8 || context->codec == VAV4L2_CODEC_MPEG2);
-    if (context->codec != VAV4L2_CODEC_H264 && context->codec != VAV4L2_CODEC_HEVC && !dynamic_dma) {
-        uint32_t cap = vav4l2_capture_fourcc_from_rt(context->rt_format);
-        int ok = vav4l2_ensure_capture(context, picture_width, picture_height,
-                                       cap) == 0;
-
-        if (!ok && cap != V4L2_PIX_FMT_NV12) {
-            /* SPS not set yet — fall back to NV12, first picture will
-             * renegotiate once bit depth is known. */
-            ok = vav4l2_ensure_capture(context, picture_width, picture_height,
-                                       V4L2_PIX_FMT_NV12) == 0;
-        }
-        if (!ok) {
-            fprintf(stderr, "v4l2: capture queue setup failed\n");
-            goto fail;
-        }
-    }
-
-    /*
-     * Start streaming on both queues — QBUF is EPERM before this.
-     * HEVC/AV1/MPEG-2 defer STREAMON until the first picture: rkvdec
-     * wants the SPS (global) first. H.264 High10 must do the same —
-     * STREAMON on NV12 then renegotiating to NV15 leaves rkvdec
-     * producing empty 10-bit frames.
-     */
-    if (context->codec != VAV4L2_CODEC_HEVC &&
-        context->codec != VAV4L2_CODEC_AV1 &&
-        context->codec != VAV4L2_CODEC_MPEG2 &&
-        context->codec != VAV4L2_CODEC_H264 &&
-        context->output_bufs_allocd > 0 &&
-        context->capture_bufs_allocd > 0) {
-        if (vav4l2_streamon(context->v4l2_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0 ||
-            vav4l2_streamon(context->v4l2_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) < 0)
-            fprintf(stderr, "v4l2: warning: STREAMON failed, decode will not work\n");
-        else
-            context->streamed = 1;
-    }
-
-    /* All output buffers start free. Capture free list is filled by
-     * vav4l2_ensure_capture. */
-    for (int i = 0; i < context->output_bufs_allocd &&
-                    i < VAV4L2_NUM_OUTPUT_BUFS; i++)
-        vav4l2_out_pool_push(context, i);
-
-    vav4l2_av1_dpb_model_reset(context);
     *context_id = ++driver_data->next_context_id;
     context->context_id = *context_id;
     context->next = driver_data->contexts;
@@ -1811,11 +1708,7 @@ vav4l2_render_picture(VADriverContextP ctx,
     return st;
 }
 
-/*
- * Decode pipeline — the per-frame V4L2 submit/poll/DQBUF lives in
- * vav4l2_decode_submit (device.c); vaEndPicture calls it via
- * the codec translators.
- */
+/* Validate VA decode buffers before dispatching to either queue backend. */
 static int valid_parameter_buffer(enum vav4l2_codec codec, const struct vav4l2_buffer *b)
 {
     size_t need = 0;
@@ -1969,36 +1862,7 @@ vav4l2_end_picture(VADriverContextP ctx,
 
     /* Bytestream and Request translators share VA buffer validation. */
     if (context->stateful) va_status = vav4l2_stateful_translate(context, context->pending_buffers, context->num_pending_buffers);
-    else switch (context->codec) {
-    case VAV4L2_CODEC_H264:
-        va_status = vav4l2_h264_translate(context,
-                                          context->pending_buffers,
-                                          context->num_pending_buffers);
-        break;
-    case VAV4L2_CODEC_HEVC:
-        va_status = vav4l2_hevc_translate(context,
-                                          context->pending_buffers,
-                                          context->num_pending_buffers);
-        break;
-    case VAV4L2_CODEC_AV1:
-        va_status = vav4l2_av1_translate(context,
-                                         context->pending_buffers,
-                                         context->num_pending_buffers);
-        break;
-    case VAV4L2_CODEC_VP8:
-        va_status = vav4l2_vp8_translate(context,
-                                         context->pending_buffers,
-                                         context->num_pending_buffers);
-        break;
-    case VAV4L2_CODEC_MPEG2:
-        va_status = vav4l2_mpeg2_translate(context,
-                                           context->pending_buffers,
-                                           context->num_pending_buffers);
-        break;
-    default:
-        va_status = VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
-        break;
-    }
+    else va_status = vav4l2_stateless_translate(context, context->pending_buffers, context->num_pending_buffers);
 
     if (va_status == VA_STATUS_SUCCESS && context->current_surface->status == VASurfaceSkipped)
         va_status = VA_STATUS_ERROR_DECODING_ERROR;
