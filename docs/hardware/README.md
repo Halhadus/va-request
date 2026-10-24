@@ -2,9 +2,12 @@
 
 Reports describe the kernel interface and tests available on a particular system. Results apply to the recorded kernel and source revision.
 
-| Platform | Report | Evidence |
+| Platform | Results | Status |
 | --- | --- | --- |
-| RK3588 | [Hardware, vendor and kernel capabilities](rk3588/README.md); [format/control inventory](rk3588/inventory.md) | Run `run-stph_nco`: decode, JPEG, VPP, DMA-BUF and renderer checks passed; scope and skips are recorded in the report. |
+| RK3588 | [Device report](rk3588/README.md); [kernel inventory](rk3588/inventory.md) | Stateless decode, JPEG, VPP, DMA-BUF and renderer checks passed. |
+| POCO F5 | [Device report](poco-f5/README.md) | Native musl unit tests passed. Stateful decode and DMA-BUF need hardware testing; I420/YV12 renderer failures need a retest. |
+
+Each device page summarizes its latest tests. Replace results when a newer run covers the same operations; keep report archives on the issue or CI run. A unit-only run does not replace hardware results.
 
 ## Submit a hardware report
 

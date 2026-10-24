@@ -22,27 +22,19 @@ See the [complete kernel menu inventory](inventory.md) for every enumerated raw/
 
 The vendor comparison records silicon capabilities. Features without a corresponding V4L2 interface remain unavailable to this driver.
 
-## Recorded qualification
+## Test results
 
-Run `run-stph_nco` used clean commit `a77afab9d428499470cd86784084067a6c7b525e`, tree `1f22114de185d589fa1e379aa72398f676c0f57c`, on the kernel recorded above. Its arm64 driver SHA256 was `d5e9be8bdbfcee77050ab38e326509e49d574794ef8674f92e24bfe1e333e46e`.
+The latest hardware report, `run-aaljd5es`, ran on aarch64 with kernel `7.3+unreleased-arm64`. The source was commit `6027a1e8e6ce34da17345220827e7d4bd5806a85` with local changes. Driver SHA256: `16d8e8d87a29387c3a31f962afdf1cfb331849f8c1ff02cf5ec6a4285b726312`.
 
-| Checks | PASS | FAIL | SKIP |
-| --- | ---: | ---: | ---: |
-| Unit suites | 56 | 0 | 0 |
-| Decode matrix, per export mode | 36 | 0 | 4 |
-| Features, per export mode | 198 | 0 | 0 |
-| Extended formats, per export mode | 28 | 0 | 0 |
-| Plane rows, per export mode | 28 | 0 | 0 |
-| DMA-BUF completion, per export mode | 47 | 0 | 0 |
-| Packet worker | 58 | 0 | 0 |
-| Imported and direct-CAPTURE workers, each | 60 | 0 | 0 |
-| Renderer, per export mode | 20 | 0 | 1 |
-| Raw transport combinations | 132 | 0 | 60 |
-| Outer acceptance gates | 20 | 0 | 0 |
+| Checks | Result |
+| --- | --- |
+| Unit tests | 59 passed |
+| H.264, HEVC, VP8 | Eight 320×192 NV12 frames per codec, identical to software decoding |
+| MPEG-2 | Eight frames; maximum sample error 2, mean error 0.008176, within the documented IDCT tolerance |
+| JPEG, VPP and selected acceptance groups | Passed in native and GBM export modes |
+| Overall | 1306 PASS / 0 FAIL / 70 SKIP |
 
-The original report summary is 925 PASS / 0 FAIL / 8 SKIP. Its aggregate omitted standalone renderer and transport TSV records. Reading all acceptance TSV files yields 1303 PASS / 0 FAIL / 70 SKIP, including group gates and component records. This is a recount of the same run. The eight matrix skips are experimental AV1; two renderer skips are unadvertised LINEAR Y210; 60 transport skips are unsupported format/size combinations.
-
-Subsequent changes to report aggregation and documentation leave the production driver sources unchanged. Other hardware and kernels need their own qualification reports.
+The skips cover experimental AV1, unadvertised LINEAR Y210 rendering and unsupported transport format/size combinations. Totals include group gates and their component checks. These tests used the Request backend; stateful decoding was not exercised.
 
 ## Extended regression profile
 
