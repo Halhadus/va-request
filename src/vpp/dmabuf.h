@@ -26,6 +26,24 @@ static int prime_opaque(const struct vareq_surface *s, const VADRMPRIMESurfaceDe
     errno = error; return opaque;
 }
 
+static int capture_prime(const struct vareq_surface *s, VADRMPRIMESurfaceDescriptor *d)
+{
+    struct vareq_context *ctx = s->capture_ctx;
+    if (s->prime || s->gbm_imported || s->gbm_writable || !s->has_pic || s->last_writer == VAREQ_WRITER_CPU ||
+        s->format != VA_FOURCC_NV12 || s->cap_fourcc != V4L2_PIX_FMT_NV12 || !vareq_surface_capture_matches(ctx, s)) return 0;
+    uint32_t need = vareq_capture_plane_size(s->cap_fourcc, s->stride, s->aligned_h), size;
+    /* Contiguous V4L2 NV12 places UV at stride * negotiated height. */
+    if (!need || s->stride < s->width + (s->width & 1) || s->aligned_h != s->height) return 0;
+    if (ctx->capture_internal && (!ctx->capture_dma[s->buf_index].active || ctx->capture_dma[s->buf_index].owner != s->surface_id)) return 0;
+    if (need < ctx->cap_sizeimage) need = ctx->cap_sizeimage;
+    int fd = vareq_capture_expbuf(ctx, s->buf_index);
+    if (fd < 0) return errno == EINVAL || errno == ENOTTY || errno == EOPNOTSUPP ? 0 : -1;
+    if (vareq_export_fd_validate(fd, need, &size) < 0) { int error = errno; close(fd); errno = error; return -1; }
+    vareq_fill_prime_layers(d, fd, size, DRM_FORMAT_MOD_LINEAR, VA_FOURCC_NV12, s->width, s->height,
+        s->stride, s->aligned_h, DRM_FORMAT_NV12, DRM_FORMAT_R8, DRM_FORMAT_GR88, VA_EXPORT_SURFACE_COMPOSED_LAYERS);
+    return 1;
+}
+
 static int queue_prime(struct vareq_surface *s, VADRMPRIMESurfaceDescriptor *d, uint32_t *raw, int overwrite, const VARectangle *read_region)
 {
     /* These public layouts match the kernel's contiguous raw-plane layout.
@@ -132,9 +150,21 @@ static int run_dmabuf(struct vareq_context *ctx, struct vareq_surface *src,
     int result = 0, submitted = 0, job_started = 0, completed = 0, had_picture = dst->has_pic;
     struct vareq_m2m_state *q = &ctx->vpp_q;
     struct vareq_surface *surfaces[] = {src, dst};
+    int native = capture_prime(src, &d[0]);
+    if (native < 0) { trace_dma_attempt(ctx, "capture-export", errno, &d[0], &d[1]); result = -1; goto done; }
     for (unsigned i = 0; i < 2; i++) {
-        int ret = queue_prime(surfaces[i], &d[i], &raw[i], i && !output->x && !output->y && output->width == dst->width && output->height == dst->height, i ? NULL : input);
-        if (ret <= 0) { result = ret; goto done; }
+        if (!i && native) { raw[0] = V4L2_PIX_FMT_NV12; planes[0] = 1; continue; }
+        int overwrite = i && !output->x && !output->y && output->width == dst->width && output->height == dst->height;
+        /* Allocate an unwritten target only for a native decoder input. */
+        if (native && overwrite && !dst->prime && !dst->gbm_bo && dst->buf_index < 0 && !dst->has_pic &&
+            dst->last_writer == VAREQ_WRITER_NONE && vareq_gbm_surface_ensure(dst) < 0) {
+            trace_dma_attempt(ctx, "output-allocation", errno, &d[0], &d[1]); goto done;
+        }
+        int ret = queue_prime(surfaces[i], &d[i], &raw[i], overwrite, i ? NULL : input);
+        if (ret <= 0) {
+            trace_dma_attempt(ctx, i ? "layout-output" : "layout-input", ret < 0 ? errno : ENOTSUP, &d[0], &d[1]);
+            result = ret; goto done;
+        }
         planes[i] = ret;
     }
     uint32_t key[8] = {src->width, src->height, src->format, dst->width, dst->height, dst->format,

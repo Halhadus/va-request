@@ -12,6 +12,7 @@
 static int failures, fault, qcount, syncs, releases, dma_output, dma_capture, mmap_output, mmap_capture, poll_count, format_calls, stream_on, stream_off, selections, allocation_calls;
 static int out_fd = -1, cap_fd = -1, cap_fds[2] = {-1, -1};
 static struct vareq_context *current;
+static int native_fd = -1, native_error, native_exports;
 static void expect(int value, const char *tag) { if (!value) { fprintf(stderr, "FAIL %s fault=%d\n", tag, fault); failures++; } }
 int __wrap_poll(struct pollfd *p, nfds_t n, int timeout)
 {
@@ -23,6 +24,12 @@ int __wrap_poll(struct pollfd *p, nfds_t n, int timeout)
 static int mock_ioctl(int fd, unsigned long req, void *arg)
 {
     (void)fd;
+    if (req == VIDIOC_EXPBUF) {
+        struct v4l2_exportbuffer *export = arg; native_exports++;
+        expect(export->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE && !export->index && !export->plane && export->flags == (O_CLOEXEC | O_RDWR), "native-export-uses-owned-capture-slot");
+        if (native_error) { errno = native_error; return -1; }
+        export->fd = fcntl(native_fd, F_DUPFD_CLOEXEC, 0); return export->fd < 0 ? -1 : 0;
+    }
     if (req == DMA_BUF_IOCTL_SYNC) { syncs++; return 0; }
     if (req == VIDIOC_TRY_FMT) return 0;
     if (req == VIDIOC_S_FMT) {
@@ -78,7 +85,8 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
             "queue-has-negotiated-plane-count-and-memory");
         if ((capture && fault == 4) || (!capture && fault == 5)) { errno = EIO; return -1; }
         for (unsigned p = 0; p < b->length; p++) {
-            expect(b->m.planes[p].length == (fault == 21 || fault == 23 ? 8192u : 4096u) && (fcntl(b->m.planes[p].m.fd, F_GETFD) & FD_CLOEXEC), "queue-borrows-owned-cloexec-fd-and-full-object-length");
+            unsigned length = native_fd >= 0 && !capture ? lseek(native_fd, 0, SEEK_END) : fault == 21 || fault == 23 ? 8192u : 4096u;
+            expect(b->m.planes[p].length == length && (fcntl(b->m.planes[p].m.fd, F_GETFD) & FD_CLOEXEC), "queue-borrows-owned-cloexec-fd-and-full-object-length");
             if (capture) { cap_fds[p] = b->m.planes[p].m.fd; cap_fd = cap_fds[0]; expect(!b->m.planes[p].bytesused, "capture-has-no-input-payload"); }
             else {
                 out_fd = b->m.planes[p].m.fd;
@@ -134,6 +142,50 @@ static VAStatus run(struct vareq_context *ctx)
     struct vareq_buffer *buffers[] = {&parameter}; current = ctx;
     return vareq_vpp_run(ctx, buffers, 1);
 }
+static void native_capture_checks(int *owners, const char *alternative)
+{
+    enum { VALID, PADDED, CPU, NO_PICTURE, NO_CONTEXT, WRONG_FORMAT, WRONG_OWNER, INACTIVE, SHORT_OBJECT,
+        SHORT_SIZEIMAGE, NO_EXPORT, EXPORT_ERROR, INTERNAL, EXTRA_STORAGE, RETRY_IMPORTER, WRITABLE };
+    const char *names[] = {"native", "padded", "cpu", "empty", "detached", "format", "owner", "inactive", "short-object",
+        "sizeimage", "unsupported-export", "export-error", "internal", "extra-storage", "importer-retry", "writable"};
+    for (unsigned scenario = VALID; scenario <= WRITABLE; scenario++) {
+        struct vareq_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = scenario == RETRY_IMPORTER ? 2 : 1};
+        dd.vpp_devices[0] = (struct vareq_vpp_device){.identity = {.driver = "rockchip-rga", .card = "rga3"},
+            .input = {V4L2_PIX_FMT_NV12}, .output = {V4L2_PIX_FMT_NV12}, .num_input = 1, .num_output = 1};
+        strcpy(dd.vpp_devices[0].path, "mock-dma"); dd.vpp_devices[1] = dd.vpp_devices[0]; strcpy(dd.vpp_devices[1].path, alternative);
+        if (scenario == RETRY_IMPORTER) strcpy(dd.vpp_devices[0].identity.card, "rga2");
+        unsigned length = scenario == SHORT_OBJECT ? 16 : scenario == EXTRA_STORAGE || scenario == RETRY_IMPORTER ? 8192 : 4096;
+        expect(!ftruncate(owners[0], length) && !ftruncate(owners[1], 4096), "native-object-fixture");
+        unsigned char pixels[48], got[48]; memset(pixels, 0x59, sizeof(pixels)); memset(got, 0xa5, sizeof(got));
+        expect(pwrite(owners[0], pixels, length < 48 ? length : 48, 0) > 0 && pwrite(owners[1], got, sizeof(got), 0) == sizeof(got), "native-pixel-fixture");
+        struct vareq_context decoder = {.v4l2_fd = owners[0], .capture_bufs_allocd = 1, .cap_sizeimage = scenario == SHORT_SIZEIMAGE ? 8192 : 48};
+        struct vareq_surface src = {.surface_id = 1, .width = 4, .height = 4, .format = VA_FOURCC_NV12, .memfd_fd = -1,
+            .buf_index = 0, .stride = 8, .aligned_h = scenario == PADDED ? 6 : 4, .capture_ctx = scenario == NO_CONTEXT ? NULL : &decoder,
+            .cap_fourcc = scenario == WRONG_FORMAT ? V4L2_PIX_FMT_NV15 : V4L2_PIX_FMT_NV12, .has_pic = scenario != NO_PICTURE,
+            .last_writer = scenario == CPU ? VAREQ_WRITER_CPU : VAREQ_WRITER_MEMFD, .gbm_writable = scenario == WRITABLE};
+        if (scenario == WRONG_OWNER || scenario == INACTIVE || scenario == INTERNAL) {
+            decoder.capture_internal = 1; decoder.capture_dma[0].active = scenario != INACTIVE; decoder.capture_dma[0].fd = owners[0];
+            decoder.capture_dma[0].owner = scenario == WRONG_OWNER ? VA_INVALID_ID : src.surface_id;
+        }
+        struct vareq_surface dst; fault = 0; imported(&dst, owners[1], -1); dd.surfaces[1] = &src;
+        struct vareq_context ctx = {.codec = VAREQ_CODEC_VPP, .driver_data = &dd, .device_path = strdup("mock-dma"),
+            .current_surface = &dst, .v4l2_fd = memfd_create("native-vpp", MFD_CLOEXEC)};
+        expect(ctx.v4l2_fd >= 0 && !ftruncate(ctx.v4l2_fd, 8192), "native-node-fixture");
+        native_fd = owners[0]; native_error = scenario == NO_EXPORT ? EINVAL : scenario == EXPORT_ERROR ? EIO : 0;
+        qcount = syncs = native_exports = region_mode = 0;
+        int success = scenario == VALID || scenario == INTERNAL || scenario == EXTRA_STORAGE || scenario == RETRY_IMPORTER;
+        expect((run(&ctx) == VA_STATUS_SUCCESS) == success, names[scenario]);
+        expect(!src.prime && !src.gbm_bo && !src.cpu_ptr && src.buf_index == 0 && src.capture_ctx == (scenario == NO_CONTEXT ? NULL : &decoder) &&
+            !syncs && qcount == (success ? 2 : 0) && fcntl(owners[0], F_GETFD) >= 0, "native-input-preserves-capture-ownership-without-cpu-transfer");
+        expect(pread(owners[1], got, sizeof(got), 0) == sizeof(got) && (success ? !memcmp(got, pixels, sizeof(got)) : got[0] == 0xa5), "native-result-or-preserved-destination");
+        if (success) expect(fcntl(out_fd, F_GETFD) < 0 && fcntl(cap_fd, F_GETFD) < 0, "native-temporary-fds-closed-after-completion");
+        if (scenario == INTERNAL) expect(!native_exports && decoder.capture_dma[0].active && decoder.capture_dma[0].owner == src.surface_id, "native-internal-export-borrows-the-live-pool");
+        if (scenario == RETRY_IMPORTER) expect(!strcmp(ctx.device_path, alternative), "native-extra-pages-retry-an-eligible-importer");
+        vareq_m2m_teardown(&ctx, &ctx.vpp_q); close(ctx.v4l2_fd); free(ctx.device_path); vareq_prime_destroy(&dst); free(dst.cpu_ptr);
+    }
+    native_fd = -1; native_error = 0;
+}
+
 int main(void)
 {
     struct vareq_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = 1};
@@ -253,6 +305,7 @@ int main(void)
     expect(dma_output > 0 && dma_capture > 0 && releases > 0, "queue-teardown-uses-negotiated-memory-type");
     expect(fcntl(owners[0], F_GETFD) >= 0 && fcntl(owners[1], F_GETFD) >= 0, "driver-never-closes-client-object-owners");
     unsetenv("VAREQ_VPP_DMABUF_SESSION");
+    native_capture_checks(owners, alternative);
     close(alternative_fd); unlink(alternative);
     for (unsigned i = 0; i < 4; i++) close(owners[i]);
     vareq_set_ioctl_hook(NULL); unsetenv("VAREQ_VPP_DMABUF");

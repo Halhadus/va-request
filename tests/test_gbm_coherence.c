@@ -509,6 +509,77 @@ static void shared_allocator_checks(void)
     vareq_gbm_surface_destroy(&retry); unsetenv("VAREQ_SHARED_STORAGE"); use_shared_storage = fail_import = 0;
     vareq_set_ioctl_hook(NULL);
 }
+static int fresh_output_fd = -1, fresh_output_syncs, fresh_input_fd = -1;
+static int fresh_output_ioctl(int fd, unsigned long request, void *argument)
+{
+    (void)fd;
+    if (request == VIDIOC_EXPBUF) {
+        ((struct v4l2_exportbuffer *)argument)->fd = fcntl(fresh_input_fd, F_DUPFD_CLOEXEC, 0); return 0;
+    }
+    if (request == DMA_BUF_IOCTL_SYNC) {
+        expect((((struct dma_buf_sync *)argument)->flags & DMA_BUF_SYNC_RW) == DMA_BUF_SYNC_READ, "fresh-vpp-only-synchronizes-initial-bo-export");
+        fresh_output_syncs++; return 0;
+    }
+    if (request == VIDIOC_S_FMT) {
+        struct v4l2_format *f = argument;
+        unsigned width = f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ? 8 : 4;
+        expect(f->fmt.pix_mp.width == width && f->fmt.pix_mp.height == width && f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_NV12, "native-vpp-negotiates-distinct-input-and-output-sizes");
+        f->fmt.pix_mp.plane_fmt[0].sizeimage = f->fmt.pix_mp.plane_fmt[0].bytesperline * (f->fmt.pix_mp.height + f->fmt.pix_mp.height / 2);
+    }
+    if (request == VIDIOC_QBUF) {
+        struct v4l2_buffer *b = argument;
+        expect(b->memory == V4L2_MEMORY_DMABUF, "fresh-output-uses-dma-queues");
+        if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) fresh_output_fd = b->m.planes[0].m.fd;
+        else {
+            unsigned char bytes[96];
+            expect(b->m.planes[0].bytesused == sizeof(bytes) && pread(b->m.planes[0].m.fd, bytes, sizeof(bytes), 0) == sizeof(bytes) &&
+                pwrite(fresh_output_fd, bytes, 24, 0) == 24, "uniform-frame-downscale-through-device-queues");
+        }
+    }
+    if (request == VIDIOC_DQBUF) ((struct v4l2_buffer *)argument)->m.planes[0].bytesused = 24;
+    return 0;
+}
+static void fresh_output_checks(void)
+{
+    struct vareq_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = 1, .gbm = {.fd = -1, .drm_fd = -1}};
+    struct vareq_vpp_device *node = &dd.vpp_devices[0];
+    strcpy(node->path, "/dev/null"); strcpy(node->identity.driver, "fixture-vpp");
+    node->input[0] = node->output[0] = V4L2_PIX_FMT_NV12; node->num_input = node->num_output = 1;
+    struct vareq_surface src = {.driver_data = &dd, .surface_id = 1, .width = 4, .height = 4, .format = VA_FOURCC_NV12, .buf_index = -1};
+    struct vareq_surface dst = src; dst.surface_id = 2; dd.surfaces[1] = &src; src.width = src.height = 8;
+    fresh_input_fd = memfd_create("native-vpp-input", MFD_CLOEXEC);
+    unsigned char pixels[96]; memset(pixels, 0x59, sizeof(pixels));
+    if (fresh_input_fd < 0 || ftruncate(fresh_input_fd, 4096) || pwrite(fresh_input_fd, pixels, sizeof(pixels), 0) != sizeof(pixels)) { expect(0, "fresh-vpp-input-fixture"); return; }
+    struct vareq_context decoder = {.v4l2_fd = fresh_input_fd, .capture_bufs_allocd = 1, .cap_sizeimage = 96};
+    src.has_pic = 1; src.last_writer = VAREQ_WRITER_MEMFD; src.buf_index = 0; src.stride = 8; src.aligned_h = 8;
+    src.cap_fourcc = V4L2_PIX_FMT_NV12; src.capture_ctx = &decoder;
+    struct vareq_context ctx = {.driver_data = &dd, .current_surface = &dst, .device_path = strdup(node->path), .v4l2_fd = open(node->path, O_RDWR | O_CLOEXEC)};
+    VAProcPipelineParameterBuffer pipe = {.surface = 1};
+    struct vareq_buffer parameter = {.type = VAProcPipelineParameterBufferType, .size = sizeof(pipe), .data = &pipe};
+    struct vareq_buffer *buffers[] = {&parameter}; int previous_maps = maps; fresh_output_syncs = 0;
+    setenv("VAREQ_VPP_DMABUF", "required", 1); vareq_set_ioctl_hook(fresh_output_ioctl);
+    expect(vareq_vpp_run(&ctx, buffers, 1) == VA_STATUS_SUCCESS && dst.gbm_bo && dst.has_pic && !dst.cpu_ptr && maps == previous_maps && fresh_output_syncs == 2,
+        "fresh-vpp-output-allocates-without-upload-or-readback");
+    if (dst.gbm_bo) expect(!memcmp(((struct fake_bo *)dst.gbm_bo)->pixels, pixels, 24), "fresh-vpp-output-pixels");
+    for (unsigned frame = 0; frame < 3; frame++) {
+        memset(pixels, 0x70 + frame, sizeof(pixels));
+        expect(pwrite(fresh_input_fd, pixels, sizeof(pixels), 0) == sizeof(pixels) && vareq_vpp_run(&ctx, buffers, 1) == VA_STATUS_SUCCESS &&
+            dst.gbm_bo && !memcmp(((struct fake_bo *)dst.gbm_bo)->pixels, pixels, 24) && !src.cpu_ptr && !dst.cpu_ptr && maps == previous_maps,
+            "native-vpp-reuses-output-backing-and-transfers-each-current-frame");
+    }
+    vareq_m2m_teardown(&ctx, &ctx.vpp_q); close(ctx.v4l2_fd); free(ctx.device_path);
+    vareq_gbm_surface_destroy(&dst);
+    dst = (struct vareq_surface){.driver_data = &dd, .surface_id = 2, .width = 4, .height = 4, .format = VA_FOURCC_NV12, .buf_index = -1};
+    src = dst; src.surface_id = 1; ctx.v4l2_fd = open(node->path, O_RDWR | O_CLOEXEC); ctx.device_path = strdup(node->path);
+    VADRMPRIMESurfaceDescriptor desc = {.fourcc = VA_FOURCC_NV12, .width = 4, .height = 4, .num_objects = 1, .num_layers = 1};
+    desc.objects[0].fd = fresh_input_fd; desc.objects[0].size = 4096; desc.layers[0].drm_format = DRM_FORMAT_NV12;
+    desc.layers[0].num_planes = 2; desc.layers[0].pitch[0] = desc.layers[0].pitch[1] = 4; desc.layers[0].offset[1] = 16;
+    expect(vareq_prime_import(&src, &desc) == VA_STATUS_SUCCESS, "imported-vpp-input-fixture");
+    expect(vareq_vpp_run(&ctx, buffers, 1) != VA_STATUS_SUCCESS && !dst.gbm_bo && !dst.has_pic,
+        "imported-input-does-not-promote-a-fresh-output-to-direct-transport");
+    close(ctx.v4l2_fd); free(ctx.device_path); vareq_prime_destroy(&src); vareq_gbm_driver_cleanup(&dd); close(fresh_input_fd); fresh_input_fd = -1;
+    vareq_set_ioctl_hook(NULL); unsetenv("VAREQ_VPP_DMABUF");
+}
 int main(int argc, char **argv)
 {
     display_device_checks();
@@ -625,6 +696,7 @@ int main(int argc, char **argv)
     expect(vareq_gbm_surface_ensure(((struct vareq_driver_data *)c.pDriverData)->surfaces[sc]) == 0,
            "backend-can-initialize-again-after-last-terminate");
     vc.vaTerminate(&c); expect(device_destroys == 3, "reinitialized-backend-is-also-released");
+    fresh_output_checks();
     import_checks();
     shared_allocator_checks();
     export_formats();

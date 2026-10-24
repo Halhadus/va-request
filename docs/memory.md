@@ -24,6 +24,8 @@ Native NV12 EXPBUF export avoids the capture-to-GBM copy when eligible. CPU-writ
 
 VPP direct transport uses actual DMA-BUF OUTPUT/CAPTURE queues with retained descriptor references. Direct processing queues the exported objects without CPU pixel staging. Compatible jobs retain queues; new FDs are rebound with correct ownership. Setup may try another importer or staging only before unsafe submission. Submitted job failures propagate to the caller.
 
+Completed native NV12 decoder buffers can feed VPP through EXPBUF when the live CAPTURE slot, pitch, chroma offset and full object size match the processing layout. A fresh full-frame output can allocate shared backing for this path without uploading pixels. Padded capture heights and other native layouts use the existing transfer path when direct processing is unavailable.
+
 JPEG direct transport similarly keeps eligible input FDs until both queues complete. Its coded CAPTURE remains MMAP and its VACodedBufferSegment is a host copy.
 
 ## Allocation and compatibility
