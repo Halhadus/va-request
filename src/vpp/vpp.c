@@ -34,6 +34,16 @@ static uint32_t va_to_v4l2_raw(uint32_t fourcc)
         return V4L2_PIX_FMT_NV12;
     case VA_FOURCC_NV21:
         return V4L2_PIX_FMT_NV21;
+    case VA_FOURCC_P010:
+        return V4L2_PIX_FMT_P010;
+    case VA_FOURCC_Y210:
+        return V4L2_PIX_FMT_Y210;
+    case VA_FOURCC_XRGB:
+        return V4L2_PIX_FMT_XRGB32;
+    case VA_FOURCC_ABGR:
+        return V4L2_PIX_FMT_BGRA32;
+    case VA_FOURCC_XBGR:
+        return V4L2_PIX_FMT_BGRX32;
     case VA_FOURCC_YV12:
         /* Keep the kernel transport in canonical Y/U/V order. The raw
          * queue boundary repacks VA Y/V/U without changing public layout. */
@@ -85,7 +95,8 @@ static int has_format(const uint32_t *formats, unsigned count, uint32_t wanted)
 static int raw_rgb(uint32_t fcc)
 {
     return fcc == V4L2_PIX_FMT_ARGB32 || fcc == V4L2_PIX_FMT_ABGR32 || fcc == V4L2_PIX_FMT_XBGR32 ||
-        fcc == V4L2_PIX_FMT_RGBA32 || fcc == V4L2_PIX_FMT_RGBX32 || fcc == V4L2_PIX_FMT_RGB565;
+        fcc == V4L2_PIX_FMT_RGBA32 || fcc == V4L2_PIX_FMT_RGBX32 || fcc == V4L2_PIX_FMT_RGB565 ||
+        fcc == V4L2_PIX_FMT_XRGB32 || fcc == V4L2_PIX_FMT_BGRA32 || fcc == V4L2_PIX_FMT_BGRX32;
 }
 
 int vav4l2_vpp_device_score_job(const struct vav4l2_vpp_device *d, const struct vav4l2_compat_job *request)
@@ -204,6 +215,7 @@ static const uint32_t vpp_pixel_formats[] = {
     VA_FOURCC_RGB565,
     VA_FOURCC_RGBA,
     VA_FOURCC_RGBX,
+    VA_FOURCC_XRGB, VA_FOURCC_ABGR, VA_FOURCC_XBGR, VA_FOURCC_P010, VA_FOURCC_Y210,
 };
 
 static const VAProcColorStandardType vpp_color_in[] = {
@@ -303,13 +315,25 @@ VAStatus vav4l2_vpp_query_device_caps(struct vav4l2_driver_data *dd, VAProcPipel
     return VA_STATUS_SUCCESS;
 }
 
+unsigned vav4l2_vpp_extra_rt_formats(struct vav4l2_driver_data *dd)
+{
+    VAProcPipelineCaps caps;
+    if (vav4l2_vpp_query_device_caps(dd, &caps) != VA_STATUS_SUCCESS) return 0;
+    unsigned bits = 0;
+    for (unsigned i = 0; i < caps.num_output_pixel_formats; i++) {
+        if (caps.output_pixel_format[i] == VA_FOURCC_P010) bits |= VA_RT_FORMAT_YUV420_10;
+        if (caps.output_pixel_format[i] == VA_FOURCC_Y210) bits |= VA_RT_FORMAT_YUV422_10;
+    }
+    return bits;
+}
+
 /* Copy each plane at its own allocation pitch and chroma offset. */
 static void copy_raw(uint8_t *dst, uint32_t dst_stride, uint32_t dst_h,
                      const uint8_t *src, uint32_t src_stride, uint32_t src_h,
                      uint32_t fourcc, int width, int height, int bpp)
 {
-    if (fourcc == VA_FOURCC_NV12 || fourcc == VA_FOURCC_NV21) {
-        vav4l2_copy_nv12(dst, dst_stride, dst_h, src, src_stride, src_h, width, height);
+    if (fourcc == VA_FOURCC_NV12 || fourcc == VA_FOURCC_NV21 || fourcc == VA_FOURCC_P010) {
+        vav4l2_copy_nv12(dst, dst_stride, dst_h, src, src_stride, src_h, width * (fourcc == VA_FOURCC_P010 ? 2 : 1), height);
         return;
     }
     for (int y = 0; y < height; y++)
@@ -334,10 +358,10 @@ static int valid_region(const VARectangle *r, unsigned width, unsigned height, u
         (unsigned)r->x > width || (unsigned)r->y > height ||
         r->width > width - (unsigned)r->x || r->height > height - (unsigned)r->y)
         return 0;
-    if ((fcc == VA_FOURCC_NV12 || fcc == VA_FOURCC_NV21 || fcc == VA_FOURCC_I420 || fcc == VA_FOURCC_YV12) &&
+    if ((fcc == VA_FOURCC_NV12 || fcc == VA_FOURCC_NV21 || fcc == VA_FOURCC_I420 || fcc == VA_FOURCC_YV12 || fcc == VA_FOURCC_P010) &&
         ((r->x | r->y | r->width | r->height) & 1)) return 0;
     if ((fcc == VA_FOURCC_YUY2 || fcc == VA_FOURCC_UYVY || fcc == VA_FOURCC_VYUY || fcc == VA_FOURCC_YVYU ||
-         fcc == VA_FOURCC_422H || fcc == VA_FOURCC_YV16) && ((r->x | r->width) & 1)) return 0;
+         fcc == VA_FOURCC_422H || fcc == VA_FOURCC_YV16 || fcc == VA_FOURCC_Y210) && ((r->x | r->width) & 1)) return 0;
     return 1;
 }
 
@@ -400,6 +424,16 @@ static unsigned clip_byte(int value)
     return value < 0 ? 0 : value > 255 ? 255 : (unsigned)value;
 }
 
+static unsigned background10(int component, int chroma, int full)
+{
+    int value = clip_byte(component) * 4;
+    if (full) {
+        int c = clip_byte(component) - (chroma ? 128 : 0);
+        value = (chroma ? 512 : 0) + (c * 1023 + (c < 0 ? -127 : 127)) / 255;
+    }
+    return (unsigned)(value < 0 ? 0 : value > 1023 ? 1023 : value) << 6;
+}
+
 /* Fill the destination backing after successful processing. Alpha zero keeps
  * existing pixels outside output_region; fractional background blending is
  * not implemented. YUV uses the negotiated matrix and range. */
@@ -424,11 +458,21 @@ static void fill_background(struct vav4l2_surface *dst, uint32_t argb,
     for (unsigned row = 0; row < dst->height; row++) {
         uint8_t *p = base + (size_t)row * dst->cpu_stride;
         for (unsigned x = 0; x < dst->width; x++) {
-            if (dst->format == VA_FOURCC_ARGB) { p[0] = 255; p[1] = r; p[2] = g; p[3] = b; p += 4; }
+            if (dst->format == VA_FOURCC_ARGB || dst->format == VA_FOURCC_XRGB) { p[0] = 255; p[1] = r; p[2] = g; p[3] = b; p += 4; }
             else if (dst->format == VA_FOURCC_BGRA || dst->format == VA_FOURCC_BGRX) {
                 p[0] = b; p[1] = g; p[2] = r; p[3] = 255; p += 4;
             } else if (dst->format == VA_FOURCC_RGBA || dst->format == VA_FOURCC_RGBX) {
                 p[0] = r; p[1] = g; p[2] = b; p[3] = 255; p += 4;
+            } else if (dst->format == VA_FOURCC_ABGR || dst->format == VA_FOURCC_XBGR) {
+                p[0] = 255; p[1] = b; p[2] = g; p[3] = r; p += 4;
+            } else if (dst->format == VA_FOURCC_P010 || dst->format == VA_FOURCC_Y210) {
+                unsigned full = fmt->quantization == V4L2_QUANTIZATION_FULL_RANGE;
+                unsigned yy = background10(y, 0, full);
+                p[0] = yy; p[1] = yy >> 8; p += 2;
+                if (dst->format == VA_FOURCC_Y210) {
+                    unsigned cc = background10((x & 1) ? v : u, 1, full);
+                    p[0] = cc; p[1] = cc >> 8; p += 2;
+                }
             } else if (dst->format == VA_FOURCC_RGB565) {
                 unsigned value = (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3);
                 p[0] = value; p[1] = value >> 8; p += 2;
@@ -450,6 +494,12 @@ static void fill_background(struct vav4l2_surface *dst, uint32_t argb,
                 uv[(size_t)row * dst->cpu_stride + x] = clip_byte(dst->format == VA_FOURCC_NV21 ? v : u);
                 uv[(size_t)row * dst->cpu_stride + x + 1] = clip_byte(dst->format == VA_FOURCC_NV21 ? u : v);
             }
+    } else if (dst->format == VA_FOURCC_P010) {
+        for (unsigned row = 0; row < dst->height / 2; row++) for (unsigned x = 0; x < dst->width; x++) {
+            unsigned value = background10((x & 1) ? v : u, 1, fmt->quantization == V4L2_QUANTIZATION_FULL_RANGE);
+            uint8_t *q = uv + (size_t)row * dst->cpu_stride + 2 * x;
+            q[0] = value; q[1] = value >> 8;
+        }
     } else if (dst->format == VA_FOURCC_I420 || dst->format == VA_FOURCC_YV12 ||
                dst->format == VA_FOURCC_422H || dst->format == VA_FOURCC_YV16) {
         unsigned stride = (dst->cpu_stride + 1) / 2;
@@ -546,24 +596,29 @@ static VAStatus run_pipeline(struct vav4l2_context *ctx,
     if (native_capture && src->has_pic && src->last_writer != VAV4L2_WRITER_CPU && src->cap_fourcc == V4L2_PIX_FMT_NV12)
         src_fcc = VA_FOURCC_NV12;
     if (decoded_nv16) src_fcc = VA_FOURCC_YUY2;
+    int decoded_packed10 = native_capture && src->has_pic && src->last_writer != VAV4L2_WRITER_CPU &&
+        ((src->cap_fourcc == V4L2_PIX_FMT_NV15 && src_fcc == VA_FOURCC_P010) ||
+         (src->cap_fourcc == V4L2_PIX_FMT_NV20 && src_fcc == VA_FOURCC_Y210));
     int src_ok = 0, dst_ok = 0;
     for (unsigned j = 0; j < sizeof(vpp_pixel_formats) / sizeof(vpp_pixel_formats[0]); j++) {
         src_ok |= src_fcc == vpp_pixel_formats[j];
         dst_ok |= dst_fcc == vpp_pixel_formats[j];
     }
     if (!src_ok || !dst_ok || (native_capture && src->has_pic && src->last_writer != VAV4L2_WRITER_CPU &&
-        src->cap_fourcc != V4L2_PIX_FMT_NV12 && !decoded_nv16))
+        src->cap_fourcc != V4L2_PIX_FMT_NV12 && src->cap_fourcc != V4L2_PIX_FMT_P010 && !decoded_nv16 && !decoded_packed10))
         return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     if (!valid_region(&input, src->width, src->height, src_fcc) ||
         !valid_region(&output, dst->width, dst->height, dst_fcc)) return VA_STATUS_ERROR_INVALID_PARAMETER;
     if (src->status == VASurfaceSkipped || (!src->has_pic && !src->cpu_ptr))
         return VA_STATUS_ERROR_INVALID_SURFACE;
-    bpp_src = (src_fcc == VA_FOURCC_YUY2 || src_fcc == VA_FOURCC_UYVY || src_fcc == VA_FOURCC_VYUY || src_fcc == VA_FOURCC_YVYU || src_fcc == VA_FOURCC_RGB565) ? 2 :
+    bpp_src = (src_fcc == VA_FOURCC_YUY2 || src_fcc == VA_FOURCC_UYVY || src_fcc == VA_FOURCC_VYUY || src_fcc == VA_FOURCC_YVYU || src_fcc == VA_FOURCC_RGB565 || src_fcc == VA_FOURCC_P010) ? 2 :
               (src_fcc == VA_FOURCC_ARGB || src_fcc == VA_FOURCC_BGRA ||
-               src_fcc == VA_FOURCC_BGRX || src_fcc == VA_FOURCC_RGBA || src_fcc == VA_FOURCC_RGBX) ? 4 : 1;
-    bpp_dst = (dst_fcc == VA_FOURCC_YUY2 || dst_fcc == VA_FOURCC_UYVY || dst_fcc == VA_FOURCC_VYUY || dst_fcc == VA_FOURCC_YVYU || dst_fcc == VA_FOURCC_RGB565) ? 2 :
+               src_fcc == VA_FOURCC_BGRX || src_fcc == VA_FOURCC_RGBA || src_fcc == VA_FOURCC_RGBX ||
+               src_fcc == VA_FOURCC_XRGB || src_fcc == VA_FOURCC_ABGR || src_fcc == VA_FOURCC_XBGR || src_fcc == VA_FOURCC_Y210) ? 4 : 1;
+    bpp_dst = (dst_fcc == VA_FOURCC_YUY2 || dst_fcc == VA_FOURCC_UYVY || dst_fcc == VA_FOURCC_VYUY || dst_fcc == VA_FOURCC_YVYU || dst_fcc == VA_FOURCC_RGB565 || dst_fcc == VA_FOURCC_P010) ? 2 :
               (dst_fcc == VA_FOURCC_ARGB || dst_fcc == VA_FOURCC_BGRA ||
-               dst_fcc == VA_FOURCC_BGRX || dst_fcc == VA_FOURCC_RGBA || dst_fcc == VA_FOURCC_RGBX) ? 4 : 1;
+               dst_fcc == VA_FOURCC_BGRX || dst_fcc == VA_FOURCC_RGBA || dst_fcc == VA_FOURCC_RGBX ||
+               dst_fcc == VA_FOURCC_XRGB || dst_fcc == VA_FOURCC_ABGR || dst_fcc == VA_FOURCC_XBGR || dst_fcc == VA_FOURCC_Y210) ? 4 : 1;
 
     int src_rgb = raw_rgb(va_to_v4l2_raw(src_fcc)), dst_rgb = raw_rgb(va_to_v4l2_raw(dst_fcc));
     unsigned input_siting = pipe->input_color_properties.chroma_sample_location;
@@ -626,11 +681,21 @@ static VAStatus run_pipeline(struct vav4l2_context *ctx,
     } else {
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
+    if (decoded_packed10) {
+        if (src_stride < ((uint32_t)sw + 3) / 4 * 5 || src_alh < (uint32_t)sh)
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+        if (vav4l2_surface_ensure_cpu(src) < 0) return VA_STATUS_ERROR_ALLOCATION_FAILED;
+        if (src_fcc == VA_FOURCC_P010)
+            vav4l2_nv15_to_p010(src->cpu_ptr, src->cpu_stride, src->height, srcp, src_stride, src_alh, sw, sh);
+        else if (vav4l2_nv20_to_y210(src->cpu_ptr, src->cpu_stride, srcp, src_stride, src_alh, sw, sh) < 0)
+            return VA_STATUS_ERROR_ALLOCATION_FAILED;
+        srcp = src->cpu_ptr; src_stride = src->cpu_stride; src_alh = src->height;
+    }
     if (src_stride < (uint32_t)sw * (decoded_nv16 ? 1 : bpp_src) || src_alh < (uint32_t)sh)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
 
-    if (src_fcc == VA_FOURCC_ARGB || src_fcc == VA_FOURCC_BGRA || src_fcc == VA_FOURCC_RGBA) {
-        unsigned alpha = src_fcc == VA_FOURCC_ARGB ? 0 : 3;
+    if (src_fcc == VA_FOURCC_ARGB || src_fcc == VA_FOURCC_BGRA || src_fcc == VA_FOURCC_RGBA || src_fcc == VA_FOURCC_ABGR) {
+        unsigned alpha = src_fcc == VA_FOURCC_ARGB || src_fcc == VA_FOURCC_ABGR ? 0 : 3;
         for (unsigned y = 0; y < input.height; y++)
             for (unsigned x = 0; x < input.width; x++)
                 if (srcp[(size_t)(input.y + y) * src_stride + (input.x + x) * 4 + alpha] != 255)

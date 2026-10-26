@@ -35,6 +35,7 @@ const struct vav4l2_compat_module *const *__wrap_vav4l2_compat_modules(size_t *c
 int __real_open(const char *, int, ...);
 int __wrap_open(const char *path, int flags, ...)
 {
+    if (!strcmp(path, "/dev/dma_heap/system")) { errno = ENOENT; return -1; }
     assert(!strcmp(path, "/dev/video127") || !strcmp(path, "/dev/video2048"));
     assert(flags == (O_RDWR | O_NONBLOCK | O_CLOEXEC));
     return __real_open("/dev/null", O_RDWR | O_CLOEXEC);

@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <linux/dma-heap.h>
 #include "va_v4l2.h"
 #include "probe.h"
 #include "compat/compat.h"
@@ -113,8 +114,21 @@ static int alloc_storage(unsigned bytes, unsigned rows, int coherent)
         if (flags >= 0 && (flags & FD_CLOEXEC) && vav4l2_export_fd_validate(fd, need, &actual) == 0) return fd;
         close(fd);
     }
-    errno = ENOTSUP;
-    return -1;
+    if (!coherent) {
+        int heap = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
+        if (heap >= 0) {
+            struct dma_heap_allocation_data allocation = {.len = need, .fd_flags = O_RDWR | O_CLOEXEC};
+            int rc = vav4l2_xioctl(heap, DMA_HEAP_IOCTL_ALLOC, &allocation), error = errno;
+            close(heap);
+            if (rc < 0) { errno = error; return -1; }
+            uint32_t actual;
+            int fd = allocation.fd, flags = fcntl(fd, F_GETFD);
+            if (flags >= 0 && (flags & FD_CLOEXEC) && vav4l2_export_fd_validate(fd, need, &actual) == 0) return fd;
+            error = errno ? errno : EINVAL; close(fd); errno = error; return -1;
+        }
+        if (errno != ENOENT && errno != ENODEV && errno != ENOTDIR) return -1;
+    }
+    errno = ENOTSUP; return -1;
 }
 int vav4l2_alloc_shared_storage(unsigned bytes, unsigned rows)
 {

@@ -36,7 +36,12 @@ static void image_format_metadata(VAImageFormat *f)
     case VA_FOURCC_422H: case VA_FOURCC_YV16: f->depth = f->bits_per_pixel = 16; break;
     case VA_FOURCC_Y210: f->depth = 20; f->bits_per_pixel = 32; break;
     }
-    if (f->fourcc == VA_FOURCC_RGB565) {
+    if (f->fourcc == VA_FOURCC_BGR565) {
+        f->depth = f->bits_per_pixel = 16; f->red_mask = 0x001f; f->green_mask = 0x07e0; f->blue_mask = 0xf800;
+    } else if (f->fourcc == VA_FOURCC_ABGR || f->fourcc == VA_FOURCC_XBGR) {
+        f->depth = f->fourcc == VA_FOURCC_ABGR ? 32 : 24; f->bits_per_pixel = 32;
+        f->red_mask = 0xff000000; f->green_mask = 0xff0000; f->blue_mask = 0xff00; f->alpha_mask = f->fourcc == VA_FOURCC_ABGR ? 0xff : 0;
+    } else if (f->fourcc == VA_FOURCC_RGB565) {
         f->depth = f->bits_per_pixel = 16; f->red_mask = 0xf800; f->green_mask = 0x07e0; f->blue_mask = 0x001f;
     } else if (f->fourcc == VA_FOURCC_RGBA || f->fourcc == VA_FOURCC_RGBX) {
         f->depth = f->fourcc == VA_FOURCC_RGBA ? 32 : 24; f->bits_per_pixel = 32;
@@ -46,9 +51,9 @@ static void image_format_metadata(VAImageFormat *f)
         f->depth = f->fourcc == VA_FOURCC_BGRA ? 32 : 24; f->bits_per_pixel = 32;
         f->red_mask = 0xff0000; f->green_mask = 0xff00; f->blue_mask = 0xff;
         f->alpha_mask = f->fourcc == VA_FOURCC_BGRA ? 0xff000000 : 0;
-    } else if (f->fourcc == VA_FOURCC_ARGB) {
-        f->depth = f->bits_per_pixel = 32;
-        f->red_mask = 0xff00; f->green_mask = 0xff0000; f->blue_mask = 0xff000000; f->alpha_mask = 0xff;
+    } else if (f->fourcc == VA_FOURCC_ARGB || f->fourcc == VA_FOURCC_XRGB) {
+        f->depth = f->fourcc == VA_FOURCC_ARGB ? 32 : 24; f->bits_per_pixel = 32;
+        f->red_mask = 0xff00; f->green_mask = 0xff0000; f->blue_mask = 0xff000000; f->alpha_mask = f->fourcc == VA_FOURCC_ARGB ? 0xff : 0;
     }
 }
 
@@ -80,6 +85,7 @@ VAStatus vav4l2_query_image_formats(VADriverContextP ctx,
         { VA_FOURCC_RGB565, 16, 16 },
         { VA_FOURCC_RGBA, 32, 32 },
         { VA_FOURCC_RGBX, 24, 32 },
+        { VA_FOURCC_XRGB, 24, 32 }, { VA_FOURCC_ABGR, 32, 32 }, { VA_FOURCC_XBGR, 24, 32 }, { VA_FOURCC_BGR565, 16, 16 },
     };
     int count = 0;
     unsigned i;
@@ -292,7 +298,8 @@ VAStatus vav4l2_create_image(VADriverContextP ctx, VAImageFormat *format,
         format->fourcc != VA_FOURCC_NV21 && format->fourcc != VA_FOURCC_422H && format->fourcc != VA_FOURCC_YV16 &&
         format->fourcc != VA_FOURCC_BGRX && format->fourcc != VA_FOURCC_BGRA &&
         format->fourcc != VA_FOURCC_ARGB && format->fourcc != VA_FOURCC_RGB565 &&
-        format->fourcc != VA_FOURCC_RGBA && format->fourcc != VA_FOURCC_RGBX)
+        format->fourcc != VA_FOURCC_RGBA && format->fourcc != VA_FOURCC_RGBX && format->fourcc != VA_FOURCC_XRGB &&
+        format->fourcc != VA_FOURCC_ABGR && format->fourcc != VA_FOURCC_XBGR && format->fourcc != VA_FOURCC_BGR565)
         return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     if (!image || width <= 0 || height <= 0 || width > UINT16_MAX || height > UINT16_MAX)
         return VA_STATUS_ERROR_INVALID_PARAMETER;

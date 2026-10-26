@@ -244,13 +244,13 @@ static void memfd_growth(void)
 static void image_geometry(VADriverContextP driver)
 {
     struct vav4l2_driver_data *dd = driver->pDriverData;
-    VAImageFormat formats[18] = {0}, nv12 = {.fourcc = VA_FOURCC_NV12};
+    VAImageFormat formats[22] = {0}, nv12 = {.fourcc = VA_FOURCC_NV12};
     int count = -1;
     VASurfaceID sid;
     VAImage input, output, tiny, derived;
     uint8_t *pixels, *copy;
     expect(driver->vtable->vaQueryImageFormats(driver, formats, &count) == VA_STATUS_SUCCESS &&
-           count == 18 && driver->max_image_formats == 18 && formats[0].fourcc == VA_FOURCC_NV12 && formats[7].fourcc == VA_FOURCC_ARGB &&
+           count == 22 && driver->max_image_formats == 22 && formats[0].fourcc == VA_FOURCC_NV12 && formats[7].fourcc == VA_FOURCC_ARGB &&
            formats[8].fourcc == VA_FOURCC_NV21 && formats[9].fourcc == VA_FOURCC_YV12 && formats[10].fourcc == VA_FOURCC_UYVY && formats[11].fourcc == VA_FOURCC_VYUY &&
            formats[12].fourcc == VA_FOURCC_YVYU && formats[13].fourcc == VA_FOURCC_422H &&
            formats[14].fourcc == VA_FOURCC_YV16,
@@ -376,7 +376,7 @@ static void surface_contracts(VADriverContextP driver)
         for (unsigned j = 0; j < n; j++) {
             if (attrs[j].type == VASurfaceAttribMemoryType)
                 expect((unsigned)attrs[j].value.value.i == (VA_SURFACE_ATTRIB_MEM_TYPE_VA |
-                    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3),
+                    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3),
                     "prime-import-is-advertised-for-supported-linear-formats");
             if (attrs[j].type != VASurfaceAttribPixelFormat) continue;
             pixels++;
@@ -440,7 +440,7 @@ static void surface_contracts(VADriverContextP driver)
     expect(driver->vtable->vaQuerySurfaceAttributes(driver, narrow.config_id, narrow_attrs, &narrow_count) ==
            VA_STATUS_SUCCESS && narrow_count == 6 && narrow_attrs[0].value.value.i == VA_FOURCC_NV21,
            "vpp-surface-enumeration-follows-device-formats-without-inventing-yv12");
-    expect(narrow_attrs[5].type == VASurfaceAttribMemoryType && narrow_attrs[5].value.value.i == (VA_SURFACE_ATTRIB_MEM_TYPE_VA | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3),
+    expect(narrow_attrs[5].type == VASurfaceAttribMemoryType && narrow_attrs[5].value.value.i == (VA_SURFACE_ATTRIB_MEM_TYPE_VA | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3),
         "non-nv12-vpp-config-can-import-its-own-linear-format");
     VAConfigAttrib maximum[] = {{.type = VAConfigAttribMaxPictureWidth}, {.type = VAConfigAttribMaxPictureHeight}};
     expect(driver->vtable->vaGetConfigAttributes(driver, VAProfileNone, VAEntrypointVideoProc, maximum, 2) == VA_STATUS_SUCCESS &&

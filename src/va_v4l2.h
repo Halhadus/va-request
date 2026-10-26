@@ -364,7 +364,7 @@ struct vav4l2_driver_data {
     struct vav4l2_vpp_device vpp_devices[VAV4L2_VPP_MAX_DEVICES];
     unsigned num_vpp_devices;
     int vpp_devices_scanned;
-    uint32_t vpp_input_formats[16], vpp_output_formats[16];
+    uint32_t vpp_input_formats[32], vpp_output_formats[32];
     VAProcPipelineCaps vpp_caps;
     int vpp_caps_ready;
 };
@@ -725,6 +725,7 @@ VAStatus vav4l2_vpp_query_filters(VAProcFilterType *filters, unsigned int *n);
 VAStatus vav4l2_vpp_query_filter_caps(VAProcFilterType type, void *caps,
                                       unsigned int *n);
 VAStatus vav4l2_vpp_query_pipeline_caps(VAProcPipelineCaps *caps);
+unsigned vav4l2_vpp_extra_rt_formats(struct vav4l2_driver_data *);
 VAStatus vav4l2_vpp_query_device_caps(struct vav4l2_driver_data *dd, VAProcPipelineCaps *caps);
 int vav4l2_vpp_device_score_job(const struct vav4l2_vpp_device *device, const struct vav4l2_compat_job *job);
 int vav4l2_vpp_device_score(const struct vav4l2_vpp_device *device, uint32_t src, uint32_t dst,

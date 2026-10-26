@@ -13,6 +13,8 @@
 #include <linux/dma-buf.h>
 #include "va_v4l2.h"
 extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
+int __wrap_vav4l2_alloc_drm_storage(int fd, unsigned bytes, unsigned rows, int coherent)
+{ (void)fd; (void)bytes; (void)rows; (void)coherent; errno = ENOTSUP; return -1; }
 struct fake_bo { uint32_t width, height, pitch; int fd; size_t map_size; unsigned char *pixels; };
 static int use_shared_storage, coherent_calls, coherent_fail, last_coherent = -1;
 int __wrap_vav4l2_alloc_coherent_storage(unsigned bytes, unsigned rows)
@@ -508,7 +510,7 @@ static void shared_allocator_checks(void)
     expect(!vav4l2_gbm_surface_ensure(&retry) && coherent_calls == 1 && !retry.gbm_writable, "all-shared-providers-rejected-keep-native-fallback");
     vav4l2_gbm_surface_destroy(&retry); coherent_fail = 0;
     setenv("VAV4L2_SHARED_STORAGE", "coherent", 1); fail_import = import_calls + 1; coherent_calls = 0;
-    expect(!vav4l2_gbm_surface_ensure(&retry) && !coherent_calls && !retry.gbm_writable, "explicit-coherent-policy-does-not-retry-same-provider");
+    expect(!vav4l2_gbm_surface_ensure(&retry) && coherent_calls == 1 && !retry.gbm_writable, "explicit-coherent-policy-does-not-retry-same-provider");
     vav4l2_gbm_surface_destroy(&retry); unsetenv("VAV4L2_SHARED_STORAGE"); use_shared_storage = fail_import = 0;
     vav4l2_set_ioctl_hook(NULL);
 }

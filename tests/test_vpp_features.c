@@ -30,10 +30,11 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
     if (request == VIDIOC_S_FMT) {
         struct v4l2_format *f = arg;
         unsigned cap = f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        unsigned bpp = f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_XBGR32 ? 4 :
+        unsigned bpp = (f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_XBGR32 || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_XRGB32 ||
+             f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_BGRA32 || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_BGRX32 || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_Y210) ? 4 :
             (f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_UYVY || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_YUYV ||
-             f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_VYUY || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_YVYU) ? 2 : 1;
-        f->fmt.pix_mp.plane_fmt[0].bytesperline = rga3_mode ? f->fmt.pix_mp.width * bpp : bpp == 4 ? 64 : 16;
+             f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_VYUY || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_YVYU || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_P010) ? 2 : 1;
+        f->fmt.pix_mp.plane_fmt[0].bytesperline = rga3_mode ? f->fmt.pix_mp.width * bpp : bpp == 4 ? 64 : f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_P010 ? 32 : 16;
         if (odd422_stride && (f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_NV16 || f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_NV61))
             f->fmt.pix_mp.plane_fmt[0].bytesperline = 17;
         if (cap) {
@@ -78,6 +79,9 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
         unsigned cap = b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
         if (raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_NV16 || raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_NV61)
             b->m.planes[0].length = raw[cap].fmt.pix_mp.plane_fmt[0].bytesperline * 16;
+        if (raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_P010 || raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_Y210 ||
+            raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_XRGB32 || raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_BGRA32 || raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_BGRX32)
+            b->m.planes[0].length = 512;
         b->m.planes[0].m.mem_offset = b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ? 0 : 4096;
         return 0;
     }
@@ -138,8 +142,9 @@ static VAStatus run(struct vav4l2_context *c, VAProcPipelineParameterBuffer *pip
 }
 int main(void)
 {
+    setenv("VAV4L2_EXPBUF_EXPORT", "1", 1);
     struct vav4l2_driver_data dd = {0};
-    unsigned char input[192], output[512]; memset(input, 0x11, sizeof(input)); memset(output, 0xaa, sizeof(output));
+    unsigned char input[512], output[512]; memset(input, 0x11, sizeof(input)); memset(output, 0xaa, sizeof(output));
     struct vav4l2_surface src = {.width = 8, .height = 8, .format = VA_FOURCC_NV12,
         .cpu_ptr = input, .cpu_stride = 16, .cpu_size = sizeof(input), .last_writer = VAV4L2_WRITER_CPU};
     struct vav4l2_surface dst = {.width = 8, .height = 8, .format = VA_FOURCC_NV12,
@@ -199,6 +204,46 @@ int main(void)
     expect(run(&c, &pipe) == VA_STATUS_ERROR_OPERATION_FAILED && !c.vpp_q.valid, "clamped-selection-is-not-success");
     clamp_selection = 0; c.vpp_behaviors = VAV4L2_COMPAT_SWAP_MIRROR_AXES;
     dst.format = VA_FOURCC_NV12; dst.cpu_stride = 16; dst.cpu_size = 192;
+    const unsigned added[] = {VA_FOURCC_P010, VA_FOURCC_Y210, VA_FOURCC_XRGB, VA_FOURCC_ABGR, VA_FOURCC_XBGR};
+    for (unsigned i = 0; i < sizeof(added) / sizeof(added[0]); i++) {
+        src.format = dst.format = added[i]; src.cpu_stride = dst.cpu_stride = added[i] == VA_FOURCC_P010 ? 32 : 64;
+        src.cpu_size = dst.cpu_size = 512; memset(input, 0xff, sizeof(input));
+        pipe = (VAProcPipelineParameterBuffer){.surface = 1, .output_region = &out, .output_background_color = 0xff000000};
+        expect(run(&c, &pipe) == VA_STATUS_SUCCESS, "ten-bit-and-RGB32-staged-processing");
+        unsigned offset = 2 * dst.cpu_stride + 2 * (added[i] == VA_FOURCC_P010 ? 2 : 4);
+        expect(output[offset] == 0x33, "staged-compose-preserves-visible-output");
+        if (i < 2) expect(output[0] == 0 && output[1] == 16 && output[i ? 3 : dst.cpu_stride * 8 + 1] == 128,
+            "ten-bit-limited-background-stores-high-ten-bits");
+        else expect(output[0] == 255 && !output[1] && !output[2] && !output[3], "leading-alpha-RGB32-background");
+    }
+    unsigned char packed10[160]; memset(packed10, 0xff, sizeof(packed10));
+    for (unsigned i = 0; i < 2; i++) {
+        src.format = dst.format = i ? VA_FOURCC_Y210 : VA_FOURCC_P010;
+        src.cpu_stride = dst.cpu_stride = i ? 64 : 32; src.cpu_size = dst.cpu_size = 512;
+        src.cap_view = packed10; src.cap_fourcc = i ? V4L2_PIX_FMT_NV20 : V4L2_PIX_FMT_NV15;
+        src.stride = 10; src.aligned_h = 8; src.buf_index = 0; src.has_pic = 1; src.last_writer = VAV4L2_WRITER_NONE;
+        pipe = (VAProcPipelineParameterBuffer){.surface = 1};
+        expect(run(&c, &pipe) == VA_STATUS_SUCCESS && ((unsigned char *)c.vpp_q.out_map[0])[0] == 0xc0 &&
+            ((unsigned char *)c.vpp_q.out_map[0])[1] == 255 && src.cap_view == packed10 && src.buf_index == 0,
+            "packed-ten-bit-decode-stages-losslessly-without-detaching-DPB");
+    }
+    src.cap_view = NULL; src.cap_fourcc = src.stride = src.aligned_h = src.has_pic = 0;
+    src.buf_index = -1; src.last_writer = VAV4L2_WRITER_CPU;
+    src.format = dst.format = VA_FOURCC_NV12; src.cpu_stride = dst.cpu_stride = 16; src.cpu_size = dst.cpu_size = 192;
+    struct vav4l2_context planar_capture = {.v4l2_fd = -1, .capture_bufs_allocd = 1};
+    struct v4l2_pix_format_mplane native = {.width = 8, .height = 8, .field = V4L2_FIELD_NONE,
+        .pixelformat = V4L2_PIX_FMT_NV12M, .num_planes = 2};
+    native.plane_fmt[0].bytesperline = native.plane_fmt[1].bytesperline = 16;
+    native.plane_fmt[0].sizeimage = 128; native.plane_fmt[1].sizeimage = 64;
+    expect(!vav4l2_capture_layout_set(&planar_capture, &native), "native-planar-VPP-source-fixture");
+    src.capture_ctx = &planar_capture; src.cap_view = input; src.cap_fourcc = V4L2_PIX_FMT_NV12;
+    src.stride = 16; src.aligned_h = 8; src.buf_index = 0; src.has_pic = 1; src.last_writer = VAV4L2_WRITER_NONE;
+    pipe = (VAProcPipelineParameterBuffer){.surface = 1}; setenv("VAV4L2_VPP_DMABUF", "auto", 1);
+    expect(run(&c, &pipe) == VA_STATUS_SUCCESS && src.capture_ctx == &planar_capture,
+        "native-planar-capture-stages-without-single-object-relabel");
+    unsetenv("VAV4L2_VPP_DMABUF"); vav4l2_capture_layout_release(&planar_capture);
+    src.capture_ctx = NULL; src.cap_view = NULL; src.cap_fourcc = src.stride = src.aligned_h = src.has_pic = 0;
+    src.buf_index = -1; src.last_writer = VAV4L2_WRITER_CPU;
     const uint32_t extra_layouts[] = {VA_FOURCC_NV21, VA_FOURCC_YV12};
     for (unsigned i = 0; i < 2; i++) {
         src.format = dst.format = extra_layouts[i];
@@ -414,17 +459,18 @@ int main(void)
            caps.mirror_flags == 3 && caps.min_input_width == 34 && caps.max_output_width == 8192,
            "combined-rga2-rga3-caps-union");
     const uint32_t all_formats[] = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV21, V4L2_PIX_FMT_YUV420,
-        V4L2_PIX_FMT_YVU420, V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_ARGB32, V4L2_PIX_FMT_ABGR32, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_UYVY, V4L2_PIX_FMT_VYUY, V4L2_PIX_FMT_YVYU, V4L2_PIX_FMT_NV16, V4L2_PIX_FMT_NV61};
+        V4L2_PIX_FMT_YVU420, V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_ARGB32, V4L2_PIX_FMT_ABGR32, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_UYVY, V4L2_PIX_FMT_VYUY, V4L2_PIX_FMT_YVYU, V4L2_PIX_FMT_NV16, V4L2_PIX_FMT_NV61, V4L2_PIX_FMT_RGB565, V4L2_PIX_FMT_RGBA32, V4L2_PIX_FMT_RGBX32,
+        V4L2_PIX_FMT_XRGB32, V4L2_PIX_FMT_BGRA32, V4L2_PIX_FMT_BGRX32, V4L2_PIX_FMT_P010, V4L2_PIX_FMT_Y210};
     memcpy(dd.vpp_devices[0].input, all_formats, sizeof(all_formats));
     memcpy(dd.vpp_devices[0].output, all_formats, sizeof(all_formats));
-    dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = 13;
+    dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = sizeof(all_formats) / sizeof(all_formats[0]);
     dd.num_vpp_devices = 1; dd.vpp_caps_ready = 0;
     expect(vav4l2_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
-           caps.num_input_pixel_formats == 13 && caps.num_output_pixel_formats == 13 &&
+           caps.num_input_pixel_formats == 21 && caps.num_output_pixel_formats == 21 &&
            caps.input_pixel_format[8] == VA_FOURCC_UYVY && caps.output_pixel_format[8] == VA_FOURCC_UYVY &&
            caps.input_pixel_format[9] == VA_FOURCC_VYUY && caps.output_pixel_format[10] == VA_FOURCC_YVYU &&
            caps.input_pixel_format[11] == VA_FOURCC_422H && caps.output_pixel_format[12] == VA_FOURCC_YV16,
-           "all-thirteen-vpp-layouts-fit-per-driver-caps-storage");
+           "all-twenty-one-vpp-layouts-fit-per-driver-caps-storage");
     dd.vpp_devices[0].input[0] = V4L2_PIX_FMT_UYVY; dd.vpp_devices[0].output[0] = V4L2_PIX_FMT_NV12;
     dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = 1; dd.vpp_caps_ready = 0;
     expect(vav4l2_vpp_query_device_caps(&dd, &caps) == VA_STATUS_SUCCESS &&
@@ -471,5 +517,11 @@ int main(void)
            "rga3-only-rotation-fails-before-starting-hardware");
     vav4l2_m2m_teardown(&c, &c.vpp_q); vav4l2_set_ioctl_hook(NULL); close(c.v4l2_fd);
     free(c.device_path); free(rgb_data); free(nv12_data); unlink(node);
+    struct vav4l2_driver_data depth = {.vpp_devices_scanned = 1, .num_vpp_devices = 1};
+    depth.vpp_devices[0].input[0] = V4L2_PIX_FMT_P010; depth.vpp_devices[0].num_input = 1;
+    depth.vpp_devices[0].output[0] = V4L2_PIX_FMT_Y210; depth.vpp_devices[0].num_output = 1;
+    expect(vav4l2_vpp_extra_rt_formats(&depth) == VA_RT_FORMAT_YUV422_10, "ten-bit-RT-advertisement-follows-output-direction");
+    depth.vpp_caps_ready = 0; depth.vpp_devices[0].output[0] = V4L2_PIX_FMT_P010;
+    expect(vav4l2_vpp_extra_rt_formats(&depth) == VA_RT_FORMAT_YUV420_10, "P010-only-raw-node-advertises-only-P010-depth");
     return failures != 0;
 }

@@ -383,7 +383,7 @@ static unsigned int config_attribute(struct vav4l2_driver_data *dd, VAProfile pr
     case VAConfigAttribRTFormat:
         for (unsigned i = 0; i < sizeof(profile_rt_formats) / sizeof(profile_rt_formats[0]); i++)
             if (profile_rt_formats[i].profile == profile)
-                return profile_rt_formats[i].rt_format;
+                return profile_rt_formats[i].rt_format | (profile == VAProfileNone ? vav4l2_vpp_extra_rt_formats(dd) : 0);
         return VA_ATTRIB_NOT_SUPPORTED;
     case VAConfigAttribDecSliceMode:
         return entrypoint == VAEntrypointVLD ? VA_DEC_SLICE_MODE_NORMAL : VA_ATTRIB_NOT_SUPPORTED;
@@ -457,7 +457,8 @@ vav4l2_create_config(VADriverContextP ctx,
     for (unsigned i = 0; i < sizeof(profile_rt_formats) / sizeof(profile_rt_formats[0]); i++)
         if (profile_rt_formats[i].profile == profile)
             supported_rt = profile_rt_formats[i].rt_format;
-    rt = supported_rt & (~supported_rt + 1u);
+    if (profile == VAProfileNone) supported_rt |= vav4l2_vpp_extra_rt_formats(driver_data);
+    rt = profile == VAProfileHEVCMain10 ? VA_RT_FORMAT_YUV420_10 : supported_rt & (~supported_rt + 1u);
     for (int i = 0; i < num_attribs; i++) {
         if (attrib_list[i].type == VAConfigAttribRTFormat) {
             rt = attrib_list[i].value;
@@ -620,6 +621,10 @@ static const struct {
     { VA_FOURCC_RGB565, VA_RT_FORMAT_RGB16 },
     { VA_FOURCC_RGBA, VA_RT_FORMAT_RGB32 },
     { VA_FOURCC_RGBX, VA_RT_FORMAT_RGB32 },
+    { VA_FOURCC_XRGB, VA_RT_FORMAT_RGB32 },
+    { VA_FOURCC_ABGR, VA_RT_FORMAT_RGB32 },
+    { VA_FOURCC_XBGR, VA_RT_FORMAT_RGB32 },
+    { VA_FOURCC_BGR565, VA_RT_FORMAT_RGB16 },
 };
 
 static uint32_t default_surface_fourcc(unsigned int rt)
@@ -725,7 +730,7 @@ vav4l2_query_surface_attributes(VADriverContextP ctx,
     attribs[count].flags         = VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE;
     attribs[count].value.type    = VAGenericValueTypeInteger;
     attribs[count].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_VA |
-        (import_available ? VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3 : 0);
+        (import_available ? VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 | VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3 : 0);
     count++;
 
     if (!attrib_list) {
@@ -944,11 +949,15 @@ vav4l2_create_surfaces2(VADriverContextP ctx,
         }
     }
 
-    if (memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 || memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3) {
+    if (memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME || memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 || memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3) {
         if (!external || modifiers) return VA_STATUS_ERROR_INVALID_PARAMETER;
         VADRMPRIMESurfaceDescriptor *normalized = NULL;
         const VADRMPRIMESurfaceDescriptor *descriptors = external;
-        if (memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3) {
+        if (memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME) {
+            VAStatus status = vav4l2_prime_legacy(external, width, height, num_surfaces, &normalized);
+            if (status != VA_STATUS_SUCCESS) return status;
+            descriptors = normalized;
+        } else if (memory == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3) {
             const VADRMPRIME3SurfaceDescriptor *v3 = external;
             for (unsigned i = 0; i < num_surfaces; i++) {
                 if (v3[i].flags) return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
@@ -2299,7 +2308,7 @@ vav4l2_init(VADriverContextP ctx)
     ctx->max_profiles = NUM_PROFILES;
     ctx->max_entrypoints = 4;
     ctx->max_attributes = 32;
-    ctx->max_image_formats = 18;
+    ctx->max_image_formats = 22;
     ctx->max_subpic_formats = 1;
     ctx->max_display_attributes = 0;
     ctx->str_vendor = "libva-v4l2 0.1.0";

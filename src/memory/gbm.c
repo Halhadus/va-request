@@ -293,10 +293,11 @@ int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s)
     rows = size / bytes;
     unsigned shared_pitch = (bytes + 63) & ~63u;
     const char *storage = getenv("VAV4L2_SHARED_STORAGE");
-    int providers = storage && !strcmp(storage, "coherent") ? 1 : 2;
+    int coherent = storage && !strcmp(storage, "coherent");
+    int providers = coherent ? 1 : 2;
     for (int provider = 0; provider < providers && !s->gbm_bo; provider++) {
         errno = 0;
-        int shared = provider ? vav4l2_alloc_coherent_storage(shared_pitch, rows) : vav4l2_alloc_shared_storage(shared_pitch, rows);
+        int shared = coherent || provider ? vav4l2_alloc_coherent_storage(shared_pitch, rows) : vav4l2_alloc_shared_storage(shared_pitch, rows);
         storage_trace(s, "allocate", provider, shared < 0 ? -1 : 0, shared < 0 ? errno : 0);
         if (shared < 0) continue;
         struct gbm_import_fd_modifier_data input = {.width = bytes, .height = rows, .format = GBM_FORMAT_R8,
@@ -310,6 +311,20 @@ int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s)
         }
         if (s->gbm_bo) { s->gbm_writable = 1; s->gbm_external_fd = shared; }
         else close(shared);
+    }
+    if (!s->gbm_bo) {
+        struct vav4l2_gbm_state *state = s->driver_data ? &s->driver_data->gbm : &fallback_gbm;
+        int shared = vav4l2_alloc_drm_storage(state->fd, shared_pitch, rows, coherent);
+        if (shared >= 0) {
+            struct gbm_import_fd_modifier_data input = {.width = bytes, .height = rows, .format = GBM_FORMAT_R8,
+                .num_fds = 1, .fds = {shared}, .strides = {(int)shared_pitch}, .modifier = DRM_FORMAT_MOD_LINEAR};
+            s->gbm_bo = gbm_bo_import(dev, GBM_BO_IMPORT_FD_MODIFIER, &input, GBM_BO_USE_LINEAR);
+            if (s->gbm_bo && (gbm_bo_get_stride_for_plane(s->gbm_bo, 0) != shared_pitch || gbm_bo_get_modifier(s->gbm_bo) != DRM_FORMAT_MOD_LINEAR)) {
+                gbm_bo_destroy(s->gbm_bo); s->gbm_bo = NULL;
+            }
+            if (s->gbm_bo) { s->gbm_writable = 1; s->gbm_external_fd = shared; }
+            else { int saved = errno; close(shared); errno = saved; return -1; }
+        } else if (errno != ENOTSUP && errno != ENOTTY && errno != EOPNOTSUPP) return -1;
     }
     if (!s->gbm_bo) {
         errno = 0;
@@ -333,6 +348,9 @@ int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s)
     }
     return 0;
 }
+
+int vav4l2_gbm_surface_ensure_export(struct vav4l2_surface *s, uint32_t flags)
+{ (void)flags; return vav4l2_gbm_surface_ensure(s); }
 
 /* Upload the surface's current pixel data into its bo. The pixels live in
  * either cpu_ptr (VPP output, vaPutImage uploads; image layout: Y@0,
@@ -473,6 +491,3 @@ int vav4l2_gbm_read_cpu(struct vav4l2_surface *s)
     if (!ret) s->last_writer = VAV4L2_WRITER_CPU;
     return ret;
 }
-
-int vav4l2_gbm_surface_ensure_export(struct vav4l2_surface *s, uint32_t flags)
-{ (void)flags; return vav4l2_gbm_surface_ensure(s); }

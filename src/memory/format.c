@@ -516,6 +516,7 @@ uint32_t vav4l2_default_image_stride(uint32_t va_fourcc, int width)
     if (width <= 0)
         return 0;
     switch (va_fourcc) {
+    case VA_FOURCC_BGR565:
     case VA_FOURCC_RGB565:
         stride = (uint64_t)width * 2; break;
     case VA_FOURCC_P010:
@@ -528,6 +529,9 @@ uint32_t vav4l2_default_image_stride(uint32_t va_fourcc, int width)
     case VA_FOURCC_Y210:
     case VA_FOURCC_RGBA:
     case VA_FOURCC_RGBX:
+    case VA_FOURCC_XRGB:
+    case VA_FOURCC_ABGR:
+    case VA_FOURCC_XBGR:
     case VA_FOURCC_ARGB:
     case VA_FOURCC_BGRA:
     case VA_FOURCC_BGRX:
@@ -571,8 +575,9 @@ static int image_planes(const struct vav4l2_image_view *v, uint8_t *planes[3],
     case VA_FOURCC_P010: *bpp = 2; *n = 2; break;
     case VA_FOURCC_YUY2: case VA_FOURCC_UYVY: case VA_FOURCC_VYUY: case VA_FOURCC_YVYU: *bpp = 2; pair = 1; break;
     case VA_FOURCC_Y210: *bpp = 4; pair = 1; break;
-    case VA_FOURCC_RGB565: *bpp = 2; break;
+    case VA_FOURCC_BGR565: case VA_FOURCC_RGB565: *bpp = 2; break;
     case VA_FOURCC_RGBA: case VA_FOURCC_RGBX:
+    case VA_FOURCC_XRGB: case VA_FOURCC_ABGR: case VA_FOURCC_XBGR:
     case VA_FOURCC_BGRA: case VA_FOURCC_BGRX: case VA_FOURCC_ARGB: *bpp = 4; break;
     default: return 0;
     }

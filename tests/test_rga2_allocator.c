@@ -22,6 +22,7 @@ static void expect(int ok, const char *message)
 }
 int __wrap_open(const char *path, int flags, ...)
 {
+    if (!strcmp(path, "/dev/dma_heap/system")) { errno = ENOENT; return -1; }
     opens++;
     expect(flags == (O_RDWR | O_NONBLOCK | O_CLOEXEC), "nonblocking CLOEXEC device open");
     int tag = !strcmp(path, "/dev/video0") && rga2 ? 1 : !strcmp(path, "/dev/video1") && rga3 ? 2 : 0;

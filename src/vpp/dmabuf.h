@@ -16,7 +16,7 @@ static int prime_opaque(const struct vav4l2_surface *s, const VADRMPRIMESurfaceD
     unsigned char *map = mmap(NULL, d->objects[0].size, PROT_READ, MAP_SHARED, fd, 0);
     int opaque = map == MAP_FAILED ? -1 : 1, error = errno;
     if (map != MAP_FAILED) {
-        unsigned alpha = s->format == VA_FOURCC_ARGB ? 0 : 3, pitch = d->layers[0].pitch[0];
+        unsigned alpha = s->format == VA_FOURCC_ARGB || s->format == VA_FOURCC_ABGR ? 0 : 3, pitch = d->layers[0].pitch[0];
         for (unsigned y = rect->y; opaque && y < (unsigned)rect->y + rect->height; y++)
             for (unsigned x = rect->x; x < (unsigned)rect->x + rect->width; x++)
                 if (map[(size_t)y * pitch + x * 4 + alpha] != 255) { opaque = 0; break; }
@@ -30,17 +30,19 @@ static int capture_prime(const struct vav4l2_surface *s, VADRMPRIMESurfaceDescri
 {
     struct vav4l2_context *ctx = s->capture_ctx;
     if (s->prime || s->gbm_imported || s->gbm_writable || !s->has_pic || s->last_writer == VAV4L2_WRITER_CPU ||
-        s->format != VA_FOURCC_NV12 || s->cap_fourcc != V4L2_PIX_FMT_NV12 || !vav4l2_surface_capture_matches(ctx, s)) return 0;
+        ((s->format != VA_FOURCC_NV12 || s->cap_fourcc != V4L2_PIX_FMT_NV12) &&
+         (s->format != VA_FOURCC_P010 || s->cap_fourcc != V4L2_PIX_FMT_P010)) || !vav4l2_surface_capture_matches(ctx, s) || ctx->capture_layout) return 0;
     uint32_t need = vav4l2_capture_plane_size(s->cap_fourcc, s->stride, s->aligned_h), size;
     /* Contiguous V4L2 NV12 places UV at stride * negotiated height. */
-    if (!need || s->stride < s->width + (s->width & 1) || s->aligned_h != s->height) return 0;
+    if (!need || s->stride < (s->width + (s->width & 1)) * (s->format == VA_FOURCC_P010 ? 2u : 1u) || s->aligned_h != s->height) return 0;
     if (ctx->capture_internal && (!ctx->capture_dma[s->buf_index].active || ctx->capture_dma[s->buf_index].owner != s->surface_id)) return 0;
     if (need < ctx->cap_sizeimage) need = ctx->cap_sizeimage;
     int fd = vav4l2_capture_expbuf(ctx, s->buf_index);
     if (fd < 0) return errno == EINVAL || errno == ENOTTY || errno == EOPNOTSUPP ? 0 : -1;
     if (vav4l2_export_fd_validate(fd, need, &size) < 0) { int error = errno; close(fd); errno = error; return -1; }
-    vav4l2_fill_prime_layers(d, fd, size, DRM_FORMAT_MOD_LINEAR, VA_FOURCC_NV12, s->width, s->height,
-        s->stride, s->aligned_h, DRM_FORMAT_NV12, DRM_FORMAT_R8, DRM_FORMAT_GR88, VA_EXPORT_SURFACE_COMPOSED_LAYERS);
+    vav4l2_fill_prime_layers(d, fd, size, DRM_FORMAT_MOD_LINEAR, s->format, s->width, s->height,
+        s->stride, s->aligned_h, s->format == VA_FOURCC_P010 ? DRM_FORMAT_P010 : DRM_FORMAT_NV12,
+        s->format == VA_FOURCC_P010 ? DRM_FORMAT_R16 : DRM_FORMAT_R8, s->format == VA_FOURCC_P010 ? DRM_FORMAT_GR1616 : DRM_FORMAT_GR88, VA_EXPORT_SURFACE_COMPOSED_LAYERS);
     return 1;
 }
 
@@ -54,7 +56,8 @@ static int queue_prime(struct vav4l2_surface *s, VADRMPRIMESurfaceDescriptor *d,
     case VA_FOURCC_YUY2: case VA_FOURCC_UYVY: case VA_FOURCC_VYUY:
     case VA_FOURCC_YVYU: case VA_FOURCC_BGRX: case VA_FOURCC_YV12:
     case VA_FOURCC_422H: case VA_FOURCC_YV16: case VA_FOURCC_ARGB: case VA_FOURCC_BGRA:
-    case VA_FOURCC_RGB565: case VA_FOURCC_RGBA: case VA_FOURCC_RGBX: break;
+    case VA_FOURCC_RGB565: case VA_FOURCC_RGBA: case VA_FOURCC_RGBX:
+    case VA_FOURCC_XRGB: case VA_FOURCC_ABGR: case VA_FOURCC_XBGR: case VA_FOURCC_P010: case VA_FOURCC_Y210: break;
     default: return 0;
     }
     VAStatus st;
@@ -89,7 +92,7 @@ static int queue_prime(struct vav4l2_surface *s, VADRMPRIMESurfaceDescriptor *d,
         offset += (uint64_t)pitch * l.rows[i];
     }
     if (!ok || offset > d->objects[0].size) { close_prime(d); return 0; }
-    if (read_region && (s->format == VA_FOURCC_ARGB || s->format == VA_FOURCC_BGRA || s->format == VA_FOURCC_RGBA)) {
+    if (read_region && (s->format == VA_FOURCC_ARGB || s->format == VA_FOURCC_BGRA || s->format == VA_FOURCC_RGBA || s->format == VA_FOURCC_ABGR)) {
         int opaque = prime_opaque(s, d, read_region);
         if (opaque != 1) { close_prime(d); return opaque; }
     }
@@ -103,7 +106,7 @@ static void trace_dma_attempt(const struct vav4l2_context *ctx, const char *stag
     if (!path || !*path) return;
     FILE *file = fopen(path, "a");
     if (!file) { perror("DMA-BUF trace"); return; }
-    if (!ftell(file)) fprintf(file, "NODE\tSTAGE\tERRNO\tSRC_FORMAT\tDST_FORMAT\tSRC_SIZE\tDST_SIZE\tSRC_OBJECTS\tDST_OBJECTS\tSRC_PITCH\tDST_PITCH\tSESSION\tSTREAMING\tRAW_OUTPUT\tRAW_CAPTURE\n");
+    if (!ftell(file)) fprintf(file, "NODE\tSTAGE\tERRNO\tSRC_FORMAT\tDST_FORMAT\tSRC_SIZE\tDST_SIZE\tSRC_OBJECTS\tDST_OBJECTS\tSRC_PITCH\tDST_PITCH\tSESSION\tSTREAMING\tRAW_OUTPUT\tRAW_CAPTURE\tOUTPUT_SIZE\tCAPTURE_SIZE\tOUTPUT_PLANES\tCAPTURE_PLANES\n");
     fprintf(file, "%s\t%s\t%d\t%08x\t%08x\t%ux%u\t%ux%u\t", ctx->device_path ? ctx->device_path : "-", stage, error,
         src->fourcc, dst->fourcc, src->width, src->height, dst->width, dst->height);
     const VADRMPRIMESurfaceDescriptor *descs[] = {src, dst};
@@ -116,8 +119,16 @@ static void trace_dma_attempt(const struct vav4l2_context *ctx, const char *stag
         fputc('\t', file);
     }
     const char *session = getenv("VAV4L2_VPP_DMABUF_SESSION");
-    fprintf(file, "%s\t%u\t%08x\t%08x\n", session && *session ? session : "default", ctx->vpp_q.streaming,
+    fprintf(file, "%s\t%u\t%08x\t%08x", session && *session ? session : "default", ctx->vpp_q.streaming,
         ctx->vpp_q.ofmt.fmt.pix_mp.pixelformat, ctx->vpp_q.cfmt.fmt.pix_mp.pixelformat);
+    const struct v4l2_pix_format_mplane *formats[] = {&ctx->vpp_q.ofmt.fmt.pix_mp, &ctx->vpp_q.cfmt.fmt.pix_mp};
+    for (unsigned i = 0; i < 2; i++) fprintf(file, "\t%ux%u", formats[i]->width, formats[i]->height);
+    for (unsigned i = 0; i < 2; i++) {
+        fputc('\t', file);
+        for (unsigned p = 0; p < formats[i]->num_planes && p < VIDEO_MAX_PLANES; p++)
+            fprintf(file, "%s%u@%u", p ? "," : "", formats[i]->plane_fmt[p].bytesperline, formats[i]->plane_fmt[p].sizeimage);
+    }
+    fputc('\n', file);
     if (fclose(file)) perror("close DMA-BUF trace");
 }
 
@@ -153,7 +164,7 @@ static int run_dmabuf(struct vav4l2_context *ctx, struct vav4l2_surface *src,
     int native = capture_prime(src, &d[0]);
     if (native < 0) { trace_dma_attempt(ctx, "capture-export", errno, &d[0], &d[1]); result = -1; goto done; }
     for (unsigned i = 0; i < 2; i++) {
-        if (!i && native) { raw[0] = V4L2_PIX_FMT_NV12; planes[0] = 1; continue; }
+        if (!i && native) { raw[0] = va_to_v4l2_raw(src->format); planes[0] = 1; continue; }
         int overwrite = i && !output->x && !output->y && output->width == dst->width && output->height == dst->height;
         /* Allocate an unwritten target only for a native decoder input. */
         if (native && overwrite && !dst->prime && !dst->gbm_bo && dst->buf_index < 0 && !dst->has_pic &&
@@ -223,9 +234,25 @@ retry:
         if (xioctl(fd, VIDIOC_S_FMT, f) < 0) {
             result = errno == EINVAL || errno == ENOTTY ? 0 : -1; goto release;
         }
-        if (f->fmt.pix_mp.width != surfaces[i]->width || f->fmt.pix_mp.height != surfaces[i]->height ||
+        unsigned storage_width = surfaces[i]->width, pitch = d[i].layers[0].pitch[0];
+        /* A node may derive planar stride from width. Negotiate the padded
+         * storage width, then select the visible crop/compose exactly. */
+        if (planes[i] == 1 && raw[i] == V4L2_PIX_FMT_YUV420 && pitch > storage_width && pitch <= 8192 &&
+            !(pitch & 1) && f->fmt.pix_mp.plane_fmt[0].bytesperline != pitch) {
+            storage_width = pitch; f->fmt.pix_mp = *colors[i];
+            f->fmt.pix_mp.width = storage_width; f->fmt.pix_mp.height = surfaces[i]->height;
+            f->fmt.pix_mp.pixelformat = raw[i]; f->fmt.pix_mp.field = V4L2_FIELD_NONE; f->fmt.pix_mp.num_planes = 1;
+            f->fmt.pix_mp.plane_fmt[0].bytesperline = pitch;
+            stage = i ? "S_FMT-capture-padded" : "S_FMT-output-padded";
+            if (xioctl(fd, VIDIOC_S_FMT, f) < 0) {
+                result = errno == EINVAL || errno == ENOTTY ? 0 : -1; goto release;
+            }
+        }
+        stage = i ? "format-capture-layout" : "format-output-layout";
+        if (f->fmt.pix_mp.width != storage_width || f->fmt.pix_mp.height != surfaces[i]->height ||
             f->fmt.pix_mp.pixelformat != raw[i] || f->fmt.pix_mp.num_planes != planes[i] ||
             f->fmt.pix_mp.field != V4L2_FIELD_NONE || !color_matches(&f->fmt.pix_mp, colors[i])) goto release;
+        stage = i ? "format-capture-storage" : "format-output-storage";
         for (unsigned p = 0; p < planes[i]; p++) {
             unsigned object = planes[i] == 1 ? 0 : d[i].layers[0].object_index[p];
             unsigned pitch = d[i].layers[0].pitch[p];
@@ -256,7 +283,8 @@ spans:;
     }
 
     int partial = input->x || input->y || input->width != src->width || input->height != src->height ||
-        output->x || output->y || output->width != dst->width || output->height != dst->height;
+        output->x || output->y || output->width != dst->width || output->height != dst->height ||
+        q->ofmt.fmt.pix_mp.width != src->width || q->cfmt.fmt.pix_mp.width != dst->width;
     /* Selection changes require idle queues. Both buffers were dequeued
      * before retaining a session; stop it before changing either rectangle. */
     if (q->streaming && (partial || q->selection_active)) {

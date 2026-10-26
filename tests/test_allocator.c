@@ -7,13 +7,20 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <linux/dma-heap.h>
 #include "va_v4l2.h"
 static int exact_enabled, exact_only, exact_fault, exact_fd[1024], exact_exports;
 static unsigned exact_size;
 static int owner, fault, failures, queried, allocated, exported, jobs;
+static int heap_mode, heap_calls, heap_export = -1;
 static void expect(int value, const char *tag) { if (!value) { fprintf(stderr, "FAIL %s fault=%d\n", tag, fault); failures++; } }
 int __wrap_open(const char *path, int flags, ...)
 {
+    if (!strcmp(path, "/dev/dma_heap/system")) {
+        expect(flags == (O_RDONLY | O_CLOEXEC), "heap-open-has-owned-cloexec-handle");
+        if (!heap_mode || heap_mode == 4) { errno = heap_mode ? EACCES : ENOENT; return -1; }
+        return fcntl(owner, F_DUPFD_CLOEXEC, 0);
+    }
     expect(flags == (O_RDWR | O_NONBLOCK | O_CLOEXEC), "allocator-open-is-cloexec-and-nonblocking");
     int exact = !strcmp(path, "/dev/video8") && exact_enabled;
     if ((!exact && (strcmp(path, "/dev/video7") || exact_only)) || fault == 1) { errno = ENOENT; return -1; }
@@ -27,6 +34,14 @@ int __wrap_open64(const char *path, int flags, ...) { return __wrap_open(path, f
 static int mock_ioctl(int fd, unsigned long request, void *arg)
 {
     expect(fcntl(fd, F_GETFD) >= 0, "allocator-uses-live-device-fd");
+    if (request == DMA_HEAP_IOCTL_ALLOC) {
+        struct dma_heap_allocation_data *a = arg; heap_calls++;
+        expect(a->len == 6144 && a->fd_flags == (O_RDWR | O_CLOEXEC) && !a->heap_flags, "heap-allocation-uses-standard-span-and-flags");
+        if (heap_mode == 2) { errno = ENOMEM; return -1; }
+        heap_export = memfd_create("system-heap-fixture", MFD_CLOEXEC);
+        expect(heap_export >= 0 && !ftruncate(heap_export, heap_mode == 3 ? 1 : 8192), "heap-export-fixture");
+        a->fd = heap_export; return 0;
+    }
     if (exact_fd[fd]) {
         if (request == VIDIOC_QUERYCAP) {
             struct v4l2_capability *c = arg;
@@ -100,6 +115,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 }
 int main(void)
 {
+    setenv("VAV4L2_SHARED_STORAGE", "auto", 1); /* Heap cases use the normal provider policy. */
     unsetenv("VAV4L2_ALLOC_TRACE"); /* Mock discovery is never hardware evidence. */
     owner = memfd_create("coherent-export-fixture", MFD_CLOEXEC); if (owner < 0) return 2;
     vav4l2_set_ioctl_hook(mock_ioctl);
@@ -131,12 +147,24 @@ int main(void)
     if (large >= 0) close(large);
     expect(vav4l2_alloc_shared_storage(0, 1) < 0 && vav4l2_alloc_shared_storage(UINT32_MAX, 2) < 0, "allocator-rejects-zero-or-overflow-span");
     expect(queried && allocated && exported && !jobs, "allocation-never-queues-or-streams-a-device-job");
+    for (heap_mode = 1; heap_mode <= 4; heap_mode++) {
+        vav4l2_allocator_cleanup(); int calls = heap_calls;
+        int fd = vav4l2_alloc_shared_storage(64, 96);
+        expect((fd >= 0) == (heap_mode == 1), "standard-system-heap-fallback-without-video-provider");
+        if (fd >= 0) { expect((fcntl(fd, F_GETFD) & FD_CLOEXEC) && lseek(fd, 0, SEEK_END) == 8192, "heap-exports-complete-owned-object"); close(fd); }
+        if (heap_mode == 2) expect(errno == ENOMEM && heap_calls == calls + 1, "heap-allocation-failure-is-not-masked");
+        if (heap_mode == 3) expect(fcntl(heap_export, F_GETFD) < 0, "short-heap-object-is-closed");
+        if (heap_mode == 4) expect(errno == EACCES && heap_calls == calls, "heap-permission-failure-is-not-masked");
+        calls = heap_calls;
+        expect(vav4l2_alloc_coherent_storage(64, 96) < 0 && heap_calls == calls, "heap-does-not-claim-strict-coherent-provider-policy");
+    }
     close(owner); vav4l2_set_ioctl_hook(NULL); vav4l2_allocator_cleanup();
     printf("allocator: %s\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }
 
 int __wrap_vav4l2_list_video_nodes(char (*paths)[64], unsigned capacity)
 {
+    if (heap_mode) return 0;
     unsigned count = capacity < 9 ? capacity : 9;
     for (unsigned i = 0; i < count; i++) snprintf(paths[i], 64, "/dev/video%u", i);
     return count;

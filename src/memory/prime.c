@@ -1,6 +1,7 @@
 /* Linear DRM PRIME objects. CPU staging keeps the V4L2 queue allocation and
  * reference lifetime independent of external object layout and ownership. */
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +53,10 @@ int vav4l2_prime_layout(uint32_t f, unsigned w, unsigned h, struct vav4l2_prime_
     case VA_FOURCC_VYUY: l->drm_format = DRM_FORMAT_VYUY; l->row[0] *= 2; break;
     case VA_FOURCC_YVYU: l->drm_format = DRM_FORMAT_YVYU; l->row[0] *= 2; break;
     case VA_FOURCC_Y210: l->drm_format = DRM_FORMAT_Y210; l->row[0] *= 4; break;
+    case VA_FOURCC_BGR565: l->drm_format = DRM_FORMAT_BGR565; l->row[0] *= 2; return 0;
+    case VA_FOURCC_XRGB: l->drm_format = DRM_FORMAT_BGRX8888; l->row[0] *= 4; return 0;
+    case VA_FOURCC_ABGR: l->drm_format = DRM_FORMAT_RGBA8888; l->row[0] *= 4; return 0;
+    case VA_FOURCC_XBGR: l->drm_format = DRM_FORMAT_RGBX8888; l->row[0] *= 4; return 0;
     case VA_FOURCC_RGB565: l->drm_format = DRM_FORMAT_RGB565; l->row[0] *= 2; return 0;
     case VA_FOURCC_RGBA: l->drm_format = DRM_FORMAT_ABGR8888; l->row[0] *= 4; return 0;
     case VA_FOURCC_RGBX: l->drm_format = DRM_FORMAT_XBGR8888; l->row[0] *= 4; return 0;
@@ -70,6 +75,35 @@ int vav4l2_prime_layout(uint32_t f, unsigned w, unsigned h, struct vav4l2_prime_
         l->row[2] = l->row[1]; l->rows[2] = l->rows[1]; l->plane_format[2] = DRM_FORMAT_R8;
     }
     return 0;
+}
+
+/* PRIME1 describes one LINEAR object per surface. Normalize the complete batch
+ * before importing so PRIME2 bounds, aliasing and FD ownership checks also apply. */
+VAStatus vav4l2_prime_legacy(const VASurfaceAttribExternalBuffers *e, unsigned width, unsigned height,
+    unsigned count, VADRMPRIMESurfaceDescriptor **out)
+{
+    struct vav4l2_prime_layout layout;
+    if (!e || !out || !count || count > VAV4L2_MAX_SURFACES || !e->buffers || e->num_buffers != count ||
+        e->width != width || e->height != height || !e->data_size || e->private_data ||
+        vav4l2_prime_layout(e->pixel_format, width, height, &layout) < 0 || e->num_planes != layout.planes)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    unsigned hints = VA_SURFACE_EXTBUF_DESC_CACHED | VA_SURFACE_EXTBUF_DESC_UNCACHED | VA_SURFACE_EXTBUF_DESC_WC;
+    if (e->flags & ~hints) return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
+    if ((e->flags & hints) && ((e->flags & hints) & ((e->flags & hints) - 1))) return VA_STATUS_ERROR_INVALID_PARAMETER;
+    VADRMPRIMESurfaceDescriptor *d = calloc(count, sizeof(*d));
+    if (!d) return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    for (unsigned i = 0; i < count; i++) {
+        if (e->buffers[i] > INT_MAX) { free(d); return VA_STATUS_ERROR_INVALID_PARAMETER; }
+        d[i].fourcc = e->pixel_format; d[i].width = width; d[i].height = height;
+        d[i].num_objects = d[i].num_layers = 1;
+        d[i].objects[0].fd = e->buffers[i]; d[i].objects[0].size = e->data_size;
+        d[i].objects[0].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+        d[i].layers[0].drm_format = layout.drm_format; d[i].layers[0].num_planes = layout.planes;
+        for (unsigned j = 0; j < layout.planes; j++) {
+            d[i].layers[0].pitch[j] = e->pitches[j]; d[i].layers[0].offset[j] = e->offsets[j];
+        }
+    }
+    *out = d; return VA_STATUS_SUCCESS;
 }
 
 /* Device DMA waits for reservation fences; CPU access additionally needs SYNC.

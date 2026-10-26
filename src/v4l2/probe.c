@@ -386,8 +386,8 @@ static int scan_nodes(struct scan_node *nodes, int max_nodes)
 
 int vav4l2_vpp_formats_usable(const uint32_t *input, unsigned ni, const uint32_t *output, unsigned no)
 {
-    const uint32_t raw[] = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV21, V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_NV16, V4L2_PIX_FMT_NV61, V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_UYVY, V4L2_PIX_FMT_VYUY, V4L2_PIX_FMT_YVYU,
-        V4L2_PIX_FMT_ARGB32, V4L2_PIX_FMT_ABGR32, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_RGBA32, V4L2_PIX_FMT_RGBX32, V4L2_PIX_FMT_RGB565, V4L2_PIX_FMT_YUV422P};
+    const uint32_t raw[] = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV21, V4L2_PIX_FMT_NV12M, V4L2_PIX_FMT_NV21M, V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_NV16, V4L2_PIX_FMT_NV61, V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_UYVY, V4L2_PIX_FMT_VYUY, V4L2_PIX_FMT_YVYU,
+        V4L2_PIX_FMT_ARGB32, V4L2_PIX_FMT_ABGR32, V4L2_PIX_FMT_XBGR32, V4L2_PIX_FMT_RGBA32, V4L2_PIX_FMT_RGBX32, V4L2_PIX_FMT_RGB565, V4L2_PIX_FMT_YUV422P, V4L2_PIX_FMT_XRGB32, V4L2_PIX_FMT_BGRA32, V4L2_PIX_FMT_BGRX32, V4L2_PIX_FMT_P010, V4L2_PIX_FMT_Y210};
     int in = 0, out = 0;
     for (unsigned i = 0; i < sizeof(raw) / sizeof(raw[0]); i++) {
         in |= fourcc_in(input, ni, raw[i]); out |= fourcc_in(output, no, raw[i]);
