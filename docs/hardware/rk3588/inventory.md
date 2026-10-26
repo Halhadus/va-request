@@ -31,7 +31,7 @@ The HDMI receiver is a capture interface, not a memory-to-memory codec/processor
 | `BX24` | 32-bit XRGB 8-8-8-8 | Kernel XRGB byte layout only; no corresponding public bridge layout |
 | `JPEG` | JFIF JPEG, compressed | JPEG encoded CAPTURE; no generic JPEG decoder |
 | `MG2S` | MPEG-2 Parsed Slice Data, compressed | MPEG-2 translator |
-| `NM12` | Y/UV 4:2:0 (N-C | NV12M eligible physical two-plane VPP/JPEG transport; not generic decoder CAPTURE |
+| `NM12` | Y/UV 4:2:0 (N-C | NV12M physical two-plane storage; implemented for eligible VPP/JPEG transport and decoder CAPTURE |
 | `NM16` | Y/UV 4:2:2 (N-C | NV16M present in kernel; no completed direct bridge transport |
 | `NM21` | Y/VU 4:2:0 (N-C | NV21M eligible two-plane VPP transport |
 | `NM61` | Y/VU 4:2:2 (N-C | NV61M present in kernel; no completed direct bridge transport |
@@ -47,7 +47,7 @@ The HDMI receiver is a capture interface, not a memory-to-memory codec/processor
 | `S265` | HEVC Parsed Slice Data, compressed | HEVC Main/Main10 translator |
 | `UYVY` | UYVY 4:2:2 | Image/PRIME/VPP; JPEG packed-input implementation pending |
 | `VP8F` | VP8 Frame, compressed | VP8 translator |
-| `VP9F` | VP9 Frame, compressed | Pending VP9 implementation; inventory only |
+| `VP9F` | VP9 Frame, compressed | Request Profile 0/2 passed the recorded eight-frame fixtures |
 | `VT12` | Y/UV 4:2:0 (4x4 Linear | Recorded interface format; no matching public bridge path is claimed |
 | `VYUY` | VYUY 4:2:2 | Image/PRIME/VPP |
 | `XB24` | 32-bit RGBX 8-8-8-8 | VA RGBX |
@@ -60,4 +60,4 @@ The HDMI receiver is a capture interface, not a memory-to-memory codec/processor
 
 NV15/NV16/NV20 in the decoder implementation must be considered after compatible SPS controls, even if absent from a fresh-fd CAPTURE list. For the complete public VA/DRM mapping, plane topology, bit packing and staging restrictions see [formats](../../formats.md). Extra RGB/alpha and multiplanar kernel menu entries remain visible in inventory without being silently added as unsupported VA layouts.
 
-VP9 kernel integration and bridge qualification are pending. This particular custom kernel already advertises VP9F; that is not an assertion that every upstream/distribution RK3588 kernel exposes it. Multicore kernel/interface integration and bridge scheduling are likewise pending.
+VP9 results apply to the recorded fixtures on this custom kernel; they do not establish support in every upstream/distribution RK3588 kernel. Multicore kernel/interface integration and bridge scheduling remain pending.

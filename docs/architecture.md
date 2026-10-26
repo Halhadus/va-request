@@ -4,11 +4,17 @@
 | --- | --- |
 | `src/api/` | Typed libva callbacks; config/context/surface/buffer lifecycle, separate Image transfer and unsupported-operation modules, shared frontend serialization and API validation |
 | `src/codecs/` | Decode/encode parameter translation, packet assembly and reference validation |
-| `src/codecs/bytestream.c` | H.264/HEVC Annex-B parameter sets reconstructed from VA decode buffers |
+| `src/codecs/bytestream.c` | Atomic packet assembly and normalization state committed after queue submission |
+| `src/codecs/h264_bytestream.c`, `hevc_bytestream.c`, `av1_bytestream.c`, `vp9.c` | Codec syntax, parameter sets, reference-list normalization and VP9 frame packets |
 | `src/v4l2/codec.c` | Codec descriptors, required-control policy and queue capability classification |
 | `src/v4l2/probe.c` | Numeric video-node enumeration, profile/format discovery, exact media-interface matching and cache validation |
 | `src/v4l2/device.c` | Shared device access, queue allocation, capture geometry and storage attachment |
-| `src/v4l2/stateless.c` | Request initialization, codec dispatch, synchronous submission, capture reconfiguration and recovery |
+| `src/v4l2/queue.c` | Single-planar UAPI conversion at the device boundary |
+| `src/codecs/h264_request.c`, `hevc_request.c`, `vp9_request.c` | Header parsing and Request controls for each codec |
+| `src/codecs/request_slices.c` | Owned picture plans and shared slice-request submission |
+| `src/memory/capture_layout.c` | Independent planar objects, pitches, tiled readback and eligible native export |
+| `src/memory/gpu_copy.c` | Optional private EGL worker for copying LINEAR NV12/P010 buffers |
+| `src/v4l2/stateless.c` | Request initialization, codec dispatch, bounded submission queues, completion, capture reconfiguration and recovery |
 | `src/v4l2/stateful.c` | Independent bytestream OUTPUT/CAPTURE, source changes, timestamp routing, drain/resume and pending surface lifetime |
 | `src/compat/` | Runtime module matching, processing exceptions and additional storage providers |
 | `src/memory/` | Capture pools, format conversion, LINEAR PRIME validation, FD ownership, synchronization and generic GBM storage |
@@ -16,13 +22,15 @@
 | `tests/` | Hardware-free fault regressions, public VA clients, packet adapters and hardware pixel oracles |
 | `tools/` | Read-only capability inventory and standard report orchestration |
 
+Codec files share VA buffer collection, slice assembly and header validation. `h264.c` and `hevc.c` build Request controls; `*_bytestream.c` reconstruct parameter sets or OBUs and normalize coded headers. `*_request.c` parses the additional fields needed by slice-based Request decoding. Queue ownership stays in the V4L2 backends.
+
 ## Discovery
 
 Discovery naturally sorts numeric `/dev/video*` paths, including indices above 63. It holds up to 64 candidate nodes, 64 formats per queue and 16 VPP candidates. Node enumeration returns EOVERFLOW when more than 64 nodes are present.
 
-The opened node's `device_caps` is authoritative when V4L2_CAP_DEVICE_CAPS is present. Both M2M_MPLANE and STREAMING are required. Decoder discovery distinguishes stateful bytestream FourCCs from stateless parsed-frame/slice FourCCs.
+The opened node's `device_caps` is authoritative when V4L2_CAP_DEVICE_CAPS is present. STREAMING and either M2M or M2M_MPLANE are required. Single-planar ioctls are converted at the device boundary; codec and ownership code use the same queue model. Decoder discovery distinguishes stateful bytestream FourCCs from stateless parsed-frame/slice FourCCs.
 
-Each decoder requires a compiled translator and its coded OUTPUT format. Stateless paths require mandatory writable controls. Stateless H.264/HEVC additionally require frame-based mode and Annex-B start-code menu entries. For Request decoding, the OUTPUT queue must expose SUPPORTS_REQUESTS via nonallocating CREATE_BUFS(count=0), and the associated media node must allocate a request. Media association uses the graph's V4L video interface major/minor pair.
+Each decoder requires a compiled translator and its coded OUTPUT format. Stateless paths require mandatory writable controls. Stateless H.264/HEVC select frame-based Annex-B when available, otherwise slice-based mode with supported start codes, writable slice controls and HOLD_CAPTURE. For Request decoding, the OUTPUT queue must expose SUPPORTS_REQUESTS via nonallocating CREATE_BUFS(count=0), and the associated media node must allocate a request. Media association uses the graph's V4L video interface major/minor pair.
 
 Stateful candidates require SOURCE_CHANGE subscription and decoder STOP command support; they do not require a media node or request controls. H.264 candidates are ranked by advertised extended profiles and frame area. Available H.264/HEVC profile menus constrain VA profile advertisement; sequence setup validates each stream. Each codec selects one node. Incompatible context or stream reconfiguration returns an error. Stateful CAPTURE is configured after sequence parsing; its OUTPUT stays streaming during CAPTURE reconfiguration. See [decoding](decoding.md).
 
@@ -44,7 +52,7 @@ See [Contributing](../CONTRIBUTING.md) for interface changes, compatibility modu
 
 ## Build and runtime boundaries
 
-Codec, memory and processing modules are built into the driver. EGL/GLES acceptance clients test exported buffers; see [build options](building.md).
+Codec, memory and processing modules are built into the driver. The optional EGL/GLES worker copies eligible shared buffers; acceptance clients test exported buffers. See [build options](building.md).
 
 GBM backing is scoped to each libva display and uses an owned duplicate of its DRM FD. For displays without a DRM connection, render nodes are enumerated through libdrm. An explicit render-node override applies only to storage selection. Storage allocation tries eligible V4L2 providers and generic GBM backing.
 

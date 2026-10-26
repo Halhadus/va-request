@@ -47,4 +47,10 @@ The hardware suite checks available decode profiles, JPEG encoding, video proces
 - [Tested hardware](docs/hardware/README.md)
 - [Contributing](CONTRIBUTING.md)
 
-Based on [vaapi-v4l2-bridge](https://github.com/pty819/vaapi-v4l2-bridge) by liyifan. Maintained by Halhadus. Licensed under LGPL-2.1-or-later, with the original frontend's MIT notice retained; see [COPYING](COPYING) and [AUTHORS](AUTHORS).
+## Acknowledgements
+
+- [vaapi-v4l2-bridge](https://github.com/pty819/vaapi-v4l2-bridge), by liyifan and contributors, provided the initial VA frontend.
+- [Radxa libva-v4l2](https://github.com/radxa-pkg/libva-v4l2) provided the H.264/HEVC/AV1 normalization and VP9 packet approach.
+- [Omacom libva-v4l2_request](https://github.com/omacom/libva-v4l2_request) provided the VP9 Request parser and H.264/HEVC slice parsing and controls.
+
+Maintained by Halhadus. The combined driver is licensed under GPL-3.0-or-later. Individual MIT and LGPL source notices are retained; see [COPYING](COPYING), [AUTHORS](AUTHORS) and [third-party notices](NOTICE).

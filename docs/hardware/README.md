@@ -5,7 +5,7 @@ Reports describe the kernel interface and tests available on a particular system
 | Platform | Results | Status |
 | --- | --- | --- |
 | RK3588 | [Device report](rk3588/README.md); [kernel inventory](rk3588/inventory.md) | Stateless decode, JPEG, VPP, DMA-BUF and renderer checks passed. |
-| POCO F5 | [Device report](poco-f5/README.md) | Native musl unit tests passed. Stateful decode and DMA-BUF need hardware testing; I420/YV12 renderer failures need a retest. |
+| POCO F5 | [Device report](poco-f5/README.md) | Native musl unit and renderer checks passed. Stateful decode failures remain; native decoder DMA-BUF is unqualified. |
 
 Each device page summarizes its latest tests. Replace results when a newer run covers the same operations; keep report archives on the issue or CI run. A unit-only run does not replace hardware results.
 

@@ -1,6 +1,6 @@
 # Build and packaging
 
-The driver is built against public libva, DRM/GBM and Linux UAPI headers. Compilation, package creation and regression tests do not require video hardware. Hardware test commands run against target devices.
+The driver is built against public libva, DRM/GBM and Linux UAPI headers. Its entry point matches the libva ABI used for the build. EGL/GLES libraries are loaded only when the copy worker starts, keeping graphics dependencies out of VA driver initialization. Compilation, package creation and regression tests do not require video hardware. Hardware test commands run against target devices.
 
 ```sh
 meson setup build --prefix=/usr --buildtype=release
@@ -8,7 +8,7 @@ meson compile -C build
 meson test -C build --suite unit --print-errorlogs
 ```
 
-`tests=true` builds hardware-free regression suites. `hardware_tests=auto` builds VA acceptance clients and adds the EGL/GLES clients when their development packages are available. `enabled` requires those graphics dependencies; `disabled` omits the acceptance clients. None of these choices changes the production driver's codec or DMA-BUF paths. Test clients are not installed in the driver package.
+`tests=true` builds hardware-free regression suites. `hardware_tests=auto` builds VA acceptance clients and adds the EGL/GLES clients when their development packages are available. `enabled` requires those graphics dependencies; `disabled` omits the acceptance clients. `gpu_copy=auto` also builds the production copy worker when EGL/GLES development packages are available; `enabled` requires them and `disabled` omits the worker. Runtime copying remains off unless `VAV4L2_GPU_COPY=1` is set. Test clients are not installed in the driver package.
 
 ## Debian
 

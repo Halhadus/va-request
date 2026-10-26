@@ -18,6 +18,7 @@ Normal use requires only driver selection. Decode, encode, processing and eligib
 
 | Variable | Default | Values and behavior |
 | --- | --- | --- |
+| `VAV4L2_GPU_COPY` | Disabled | `1`: use the private EGL worker when copying native LINEAR NV12/P010 capture into eligible imported or GBM backing; `0` or unset: CPU transfer. An attempted GPU copy failure is reported without retrying over the target. Requires a build with EGL/GLES support |
 | `VAV4L2_EXPBUF_EXPORT` | Enabled | A value starting with `0` disables native decoder EXPBUF export and selects copy backing. Read once per process at first use |
 | `VAV4L2_VPP_DMABUF` | `auto` | `0`: staged processing; `required`: fail if direct transport is unavailable; other values: automatic eligible direct transport with staging fallback |
 | `VAV4L2_JPEG_DMABUF` | `auto` | `0`: staged encoder input; `required`: require direct input; other values: automatic selection |
@@ -26,7 +27,7 @@ Normal use requires only driver selection. Decode, encode, processing and eligib
 | `VAV4L2_SHARED_STORAGE` | `auto` | `coherent`: restrict compatibility allocation to the coherent-provider policy; other values: normal provider ranking |
 | `VAV4L2_VPP_DMABUF_SESSION` | Retain compatible sessions | `reconfigure`: rebuild queues for each direct job; `isolated`: reopen the node for each direct job; other values: normal session reuse |
 
-The two decoder CAPTURE import/pool overrides apply to Request decoding. Stateful decoding uses fixed native MMAP slots with eligible EXPBUF export; it rejects `required` capture import/pool modes.
+The two decoder CAPTURE import/pool overrides apply to Request decoding. Stateful decoding uses fixed native MMAP slots and persistent client export backing; it rejects `required` capture import/pool modes.
 
 `required` modes are diagnostic constraints and return errors instead of staging. Direct transport still requires the negotiated format, stride, object span and ownership. See [memory and fallback](memory.md).
 
