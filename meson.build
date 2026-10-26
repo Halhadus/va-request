@@ -8,7 +8,14 @@ if not cc.has_header_symbol('drm_fourcc.h', 'DRM_FORMAT_NV20', dependencies: lib
 endif
 gbm_dep = dependency('gbm')
 threads_dep = dependency('threads')
-core_deps = [libva_dep, libva_drm_dep, libdrm_dep, gbm_dep, threads_dep]
+dl_dep = cc.find_library('dl')
+core_deps = [libva_dep, libva_drm_dep, libdrm_dep, gbm_dep, threads_dep, dl_dep]
+gpu_egl_dep = dependency('egl', required: get_option('gpu_copy'))
+gpu_gles_dep = dependency('glesv2', required: get_option('gpu_copy'))
+if gpu_egl_dep.found() and gpu_gles_dep.found()
+  core_deps += [gpu_egl_dep.partial_dependency(compile_args: true, includes: true), gpu_gles_dep.partial_dependency(compile_args: true, includes: true)]
+  add_project_arguments('-DVAV4L2_HAVE_GPU_COPY', language: 'c')
+endif
 inc = include_directories('src')
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 driverdir = get_option('driverdir')
@@ -44,6 +51,7 @@ core_sources = files(
   'src/memory/capture_dmabuf.c',
   'src/memory/capture_pool.c',
   'src/memory/capture_layout.c',
+  'src/memory/gpu_copy.c',
   'src/codecs/jpeg.c',
   'src/vpp/vpp.c',
   'src/v4l2/codec.c',
@@ -53,7 +61,6 @@ core_sources += compat_sources
 core = static_library('va_v4l2_core', core_sources, gnu_symbol_visibility: 'hidden', include_directories: inc, dependencies: core_deps)
 driver = shared_library('v4l2_drv_video', [], link_whole: core, dependencies: core_deps, name_prefix: '', install: true, install_dir: driverdir)
 python = find_program('python3')
-dl_dep = cc.find_library('dl')
 if get_option('tests')
   # glibc redirects large-file calls to distinct symbols; musl uses the POSIX
   # names and does not expose/link the transitional LFS64 interfaces.
@@ -120,6 +127,7 @@ if get_option('tests')
     'queue_api': [],
     'request_queue': ['poll', 'vav4l2_scan_all_cached'],
     'capture_layout': ['vav4l2_dmabuf_wait'],
+    'gpu_copy': ['gbm_create_device', 'gbm_device_destroy', 'dlopen', 'dlsym', 'dlclose', 'vav4l2_capture_expbuf', 'vav4l2_surface_fill_prime_gbm'],
     'request_slices': ['vav4l2_decode_submit', 'vav4l2_decode_submit_field', 'vav4l2_surface_pull_capture'],
     'drm_storage': ['drmGetVersion', 'drmFreeVersion', 'drmIoctl', 'drmPrimeHandleToFD'],
     'stateful_queue': ['poll', 'ioctl', 'vav4l2_scan_all_cached', 'gbm_bo_create', 'gbm_bo_map', 'gbm_bo_unmap', 'gbm_bo_get_stride_for_plane', 'gbm_bo_get_modifier', 'gbm_bo_get_fd_for_plane', 'gbm_bo_destroy', 'gbm_device_destroy', 'vav4l2_alloc_shared_storage', 'vav4l2_alloc_coherent_storage', 'vav4l2_alloc_drm_storage'],

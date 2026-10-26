@@ -330,6 +330,7 @@ struct vav4l2_gbm_state {
     int fd, drm_fd, failed;
 };
 struct vav4l2_driver_data {
+    struct vav4l2_gpu_copy *gpu_copy;
     struct vav4l2_gbm_state gbm;
     struct vav4l2_config *configs;
     VAConfigID next_config_id;

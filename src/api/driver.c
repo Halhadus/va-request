@@ -27,6 +27,7 @@
 #include <drm_fourcc.h>
 
 #include "va_v4l2.h"
+#include "memory/gpu_copy.h"
 #include "probe.h"
 #include "internal.h"
 
@@ -259,6 +260,7 @@ vav4l2_terminate(VADriverContextP ctx)
         driver_data->configs = config->next;
         free(config);
     }
+    vav4l2_gpu_copy_finish(driver_data);
     vav4l2_gbm_driver_cleanup(driver_data);
     if (g_driver_instances && !--g_driver_instances) {
         vav4l2_gbm_cleanup();

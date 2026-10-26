@@ -19,6 +19,7 @@
 #include "va_v4l2.h"
 #include "probe.h"
 #include "internal.h"
+#include "memory/gpu_copy.h"
 
 static vav4l2_ioctl_fn g_ioctl_hook;
 
@@ -866,6 +867,8 @@ int vav4l2_surface_pull_capture(struct vav4l2_context *ctx,
     vav4l2_decode_trace(ctx, "pull-begin", 0, buf_index);
     surf->h264_frame_num_valid = 0;
     if (ctx->capture_memory == V4L2_MEMORY_DMABUF) return vav4l2_capture_dma_complete(ctx, surf, buf_index);
+    int copied = vav4l2_gpu_copy_capture(ctx, surf, buf_index);
+    if (copied) return copied > 0 ? 0 : -1;
     if (ctx->capture_layout) return vav4l2_capture_layout_pull(ctx, surf, buf_index);
     if (vav4l2_mmap_one_capture(ctx, buf_index) < 0) { vav4l2_decode_trace(ctx, "pull-map", -1, buf_index); return -1; }
     void *src = ctx->capture_buf_ptr[buf_index];

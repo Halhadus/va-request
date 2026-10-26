@@ -13,10 +13,10 @@
 #include <linux/dma-buf.h>
 #include "va_v4l2.h"
 extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
+struct fake_bo { uint32_t width, height, pitch; int fd; size_t map_size; unsigned char *pixels; };
 int __wrap_vav4l2_alloc_drm_storage(int fd, unsigned bytes, unsigned rows, int coherent)
 { (void)fd; (void)bytes; (void)rows; (void)coherent; errno = ENOTSUP; return -1; }
-struct fake_bo { uint32_t width, height, pitch; int fd; size_t map_size; unsigned char *pixels; };
-static int use_shared_storage, coherent_calls, coherent_fail, last_coherent = -1;
+static int use_shared_storage, shared_calls, coherent_calls, coherent_fail, last_coherent = -1;
 int __wrap_vav4l2_alloc_coherent_storage(unsigned bytes, unsigned rows)
 {
     coherent_calls++;
@@ -27,6 +27,7 @@ int __wrap_vav4l2_alloc_coherent_storage(unsigned bytes, unsigned rows)
 }
 int __wrap_vav4l2_alloc_shared_storage(unsigned bytes, unsigned rows)
 {
+    shared_calls++;
     if (!use_shared_storage) return -1;
     int fd = memfd_create("shared-native-fixture", MFD_CLOEXEC);
     if (fd >= 0 && ftruncate(fd, (size_t)bytes * rows + 4096)) { close(fd); return -1; }
@@ -511,7 +512,25 @@ static void shared_allocator_checks(void)
     vav4l2_gbm_surface_destroy(&retry); coherent_fail = 0;
     setenv("VAV4L2_SHARED_STORAGE", "coherent", 1); fail_import = import_calls + 1; coherent_calls = 0;
     expect(!vav4l2_gbm_surface_ensure(&retry) && coherent_calls == 1 && !retry.gbm_writable, "explicit-coherent-policy-does-not-retry-same-provider");
-    vav4l2_gbm_surface_destroy(&retry); unsetenv("VAV4L2_SHARED_STORAGE"); use_shared_storage = fail_import = 0;
+    vav4l2_gbm_surface_destroy(&retry); unsetenv("VAV4L2_SHARED_STORAGE"); fail_import = 0;
+    for (unsigned i = 0; i < 8; i++) {
+        struct vav4l2_surface target = {.width = 4, .height = 4, .format = i == 1 ? VA_FOURCC_P010 : i == 2 ? VA_FOURCC_BGRX : VA_FOURCC_NV12,
+            .memfd_fd = -1, .gbm_external_fd = -1};
+        setenv("VAV4L2_GPU_COPY", i == 3 ? "0" : "1", 1); shared_calls = coherent_calls = 0;
+        unsigned flags = i == 4 ? VA_EXPORT_SURFACE_READ_WRITE : i == 5 ? VA_EXPORT_SURFACE_WRITE_ONLY : VA_EXPORT_SURFACE_READ_ONLY;
+        if (i == 7) {
+            target.last_writer = VAV4L2_WRITER_CPU; target.cpu_stride = 64; target.cpu_size = 384;
+            expect(!vav4l2_surface_ensure_cpu(&target), "cpu-export-fixture-allocation");
+        }
+        int result = i == 6 ? vav4l2_gbm_surface_ensure(&target) : vav4l2_gbm_surface_ensure_export(&target, flags);
+        expect(!result && target.gbm_writable && shared_calls == (i >= 2) && coherent_calls == (i < 2),
+            "gpu-policy-only-applies-to-read-only-non-cpu-export-targets");
+        int held = target.gbm_external_fd, calls = shared_calls + coherent_calls;
+        expect(!vav4l2_gbm_surface_ensure_export(&target, VA_EXPORT_SURFACE_READ_ONLY) && target.gbm_external_fd == held &&
+            shared_calls + coherent_calls == calls, "export-policy-never-replaces-existing-backing");
+        vav4l2_gbm_surface_destroy(&target); free(target.cpu_ptr);
+    }
+    setenv("VAV4L2_GPU_COPY", "0", 1); use_shared_storage = 0;
     vav4l2_set_ioctl_hook(NULL);
 }
 static int fresh_output_fd = -1, fresh_output_syncs, fresh_input_fd = -1;
@@ -587,6 +606,7 @@ static void fresh_output_checks(void)
 }
 int main(int argc, char **argv)
 {
+    setenv("VAV4L2_GPU_COPY", "0", 1); /* Transfer fault fixtures below use the CPU path. */
     display_device_checks();
     destroys = device_destroys = 0;
     struct VADriverVTable va = {0}, vb = {0};
@@ -701,7 +721,7 @@ int main(int argc, char **argv)
     expect(vav4l2_gbm_surface_ensure(((struct vav4l2_driver_data *)c.pDriverData)->surfaces[sc]) == 0,
            "backend-can-initialize-again-after-last-terminate");
     vc.vaTerminate(&c); expect(device_destroys == 3, "reinitialized-backend-is-also-released");
-    fresh_output_checks();
+    setenv("VAV4L2_GPU_COPY", "1", 1); fresh_output_checks(); setenv("VAV4L2_GPU_COPY", "0", 1);
     import_checks();
     shared_allocator_checks();
     export_formats();

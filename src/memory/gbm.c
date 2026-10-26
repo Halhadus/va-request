@@ -272,7 +272,7 @@ static void storage_trace(const struct vav4l2_surface *s, const char *stage, int
     errno = saved;
 }
 
-int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s)
+static int ensure_surface(struct vav4l2_surface *s, int gpu_target)
 {
     struct gbm_device *dev;
     uint32_t rows;
@@ -293,7 +293,7 @@ int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s)
     rows = size / bytes;
     unsigned shared_pitch = (bytes + 63) & ~63u;
     const char *storage = getenv("VAV4L2_SHARED_STORAGE");
-    int coherent = storage && !strcmp(storage, "coherent");
+    int coherent = gpu_target || (storage && !strcmp(storage, "coherent"));
     int providers = coherent ? 1 : 2;
     for (int provider = 0; provider < providers && !s->gbm_bo; provider++) {
         errno = 0;
@@ -349,8 +349,14 @@ int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s)
     return 0;
 }
 
+int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s) { return ensure_surface(s, 0); }
 int vav4l2_gbm_surface_ensure_export(struct vav4l2_surface *s, uint32_t flags)
-{ (void)flags; return vav4l2_gbm_surface_ensure(s); }
+{
+    const char *gpu = getenv("VAV4L2_GPU_COPY");
+    int target = s && gpu && !strcmp(gpu, "1") && (flags & VA_EXPORT_SURFACE_READ_WRITE) == VA_EXPORT_SURFACE_READ_ONLY &&
+        s->last_writer != VAV4L2_WRITER_CPU && (s->format == VA_FOURCC_NV12 || s->format == VA_FOURCC_P010);
+    return ensure_surface(s, target);
+}
 
 /* Upload the surface's current pixel data into its bo. The pixels live in
  * either cpu_ptr (VPP output, vaPutImage uploads; image layout: Y@0,

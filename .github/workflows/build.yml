@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential meson ninja-build pkg-config libdrm-dev libgbm-dev ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y build-essential meson ninja-build pkg-config libdrm-dev libgbm-dev libegl-dev libgles-dev ffmpeg
       - name: libva 2.23.0
         run: |
           git clone --depth 1 --branch 2.23.0 https://github.com/intel/libva.git "$RUNNER_TEMP/libva"
