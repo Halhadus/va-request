@@ -18,6 +18,7 @@ endif
 core_sources = files(
   'src/api/driver.c', 'src/api/images.c', 'src/api/unsupported.c',
   'src/v4l2/device.c',
+  'src/v4l2/queue.c',
   'src/v4l2/probe.c',
   'src/v4l2/stateful.c',
   'src/v4l2/stateless.c',
@@ -103,6 +104,7 @@ if get_option('tests')
     'reference_headers': [],
     'rga2_allocator': ['open', 'open64', 'vav4l2_list_video_nodes'],
     'stateful_packet': [],
+    'queue_api': [],
     'stateful_queue': ['poll', 'ioctl'],
     'slice_packetization': ['vav4l2_decode_submit', 'vav4l2_ensure_capture'],
     'surface_ownership': [],

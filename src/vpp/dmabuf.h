@@ -202,7 +202,7 @@ retry:
         if (!strcmp(session, "isolated")) {
             vav4l2_m2m_teardown(ctx, q);
             if (ctx->v4l2_fd < 0) { result = -1; goto done; }
-            close(ctx->v4l2_fd); ctx->v4l2_fd = open(ctx->device_path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+            vav4l2_close_context_device(ctx); ctx->v4l2_fd = vav4l2_open_device(ctx->device_path);
         }
     }
     if (!warm) vav4l2_m2m_teardown(ctx, q);

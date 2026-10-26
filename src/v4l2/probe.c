@@ -89,12 +89,12 @@ int vav4l2_find_media_path(const char *video_path, char *out, unsigned out_len)
         if (snprintf(path, sizeof(path), "/dev/%s", entry->d_name) >= (int)sizeof(path)) continue;
         int fd = open(path, O_RDWR | O_CLOEXEC); if (fd < 0) continue;
         struct media_v2_topology top = {0};
-        if (ioctl(fd, MEDIA_IOC_G_TOPOLOGY, &top) < 0 || !top.num_interfaces || top.num_interfaces > 4096) { close(fd); continue; }
+        if (vav4l2_xioctl(fd, MEDIA_IOC_G_TOPOLOGY, &top) < 0 || !top.num_interfaces || top.num_interfaces > 4096) { close(fd); continue; }
         unsigned capacity = top.num_interfaces;
         struct media_v2_interface *interfaces = calloc(capacity, sizeof(*interfaces));
         if (!interfaces) { close(fd); break; }
         top.ptr_interfaces = (uintptr_t)interfaces;
-        if (ioctl(fd, MEDIA_IOC_G_TOPOLOGY, &top) == 0 && top.num_interfaces <= capacity) {
+        if (vav4l2_xioctl(fd, MEDIA_IOC_G_TOPOLOGY, &top) == 0 && top.num_interfaces <= capacity) {
             for (unsigned i = 0; i < top.num_interfaces; i++) if (interfaces[i].intf_type == MEDIA_INTF_T_V4L_VIDEO &&
                 interfaces[i].devnode.major == major(node.st_rdev) && interfaces[i].devnode.minor == minor(node.st_rdev)) {
                 if (strlen(path) < out_len) { memcpy(out, path, strlen(path) + 1); found = 0; }
@@ -216,17 +216,17 @@ static void probe_h264_caps(int fd, struct scan_node *node)
         size.pixel_format = V4L2_PIX_FMT_H264;
         if (!vav4l2_stateful_usable(fd, VAV4L2_CODEC_H264)) return;
     }
-    if (ioctl(fd, VIDIOC_QUERYCTRL, &ctrl) == 0 && !(ctrl.flags & V4L2_CTRL_FLAG_DISABLED) &&
+    if (vav4l2_xioctl(fd, VIDIOC_QUERYCTRL, &ctrl) == 0 && !(ctrl.flags & V4L2_CTRL_FLAG_DISABLED) &&
         ctrl.minimum >= 0 && ctrl.maximum < 32) {
         for (int i = ctrl.minimum; i <= ctrl.maximum; i++) {
             struct v4l2_querymenu menu = { .id = ctrl.id, .index = (unsigned)i };
-            if (ioctl(fd, VIDIOC_QUERYMENU, &menu) == 0)
+            if (vav4l2_xioctl(fd, VIDIOC_QUERYMENU, &menu) == 0)
                 node->h264_profiles |= 1u << i;
         }
     }
     for (size.index = 0; size.index < 64; size.index++) {
         uint64_t area;
-        if (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &size) < 0)
+        if (vav4l2_xioctl(fd, VIDIOC_ENUM_FRAMESIZES, &size) < 0)
             break;
         if (size.type == V4L2_FRMSIZE_TYPE_DISCRETE)
             area = (uint64_t)size.discrete.width * size.discrete.height;
@@ -276,10 +276,10 @@ static int jpeg_encoder_usable(int fd)
 {
     if (!vav4l2_codec_enabled(VAV4L2_CODEC_JPEG_ENC)) return 0;
     struct v4l2_format fmt = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE};
-    if (ioctl(fd, VIDIOC_G_FMT, &fmt) < 0) return 0;
+    if (vav4l2_xioctl(fd, VIDIOC_G_FMT, &fmt) < 0) return 0;
     fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_JPEG;
     fmt.fmt.pix_mp.num_planes = 1;
-    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0 || fmt.fmt.pix_mp.pixelformat != V4L2_PIX_FMT_JPEG || fmt.fmt.pix_mp.num_planes != 1) return 0;
+    if (vav4l2_xioctl(fd, VIDIOC_S_FMT, &fmt) < 0 || fmt.fmt.pix_mp.pixelformat != V4L2_PIX_FMT_JPEG || fmt.fmt.pix_mp.num_planes != 1) return 0;
     if (!vav4l2_codec_controls_usable(fd, VAV4L2_CODEC_JPEG_ENC)) return 0;
     /* Encoder OUTPUT menus depend on the selected coded CAPTURE format. */
     uint32_t formats[VAV4L2_PROBE_MAX_FOURCCS];
@@ -331,7 +331,7 @@ static int scan_nodes(struct scan_node *nodes, int max_nodes)
         if (fd < 0)
             continue;
         memset(&cap, 0, sizeof(cap));
-        if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0 ||
+        if (vav4l2_xioctl(fd, VIDIOC_QUERYCAP, &cap) < 0 ||
             !vav4l2_node_is_m2m(&cap)) {
             close(fd);
             continue;
@@ -354,7 +354,7 @@ static int scan_nodes(struct scan_node *nodes, int max_nodes)
         const uint32_t ids[] = {V4L2_CID_ROTATE, V4L2_CID_HFLIP, V4L2_CID_VFLIP};
         for (unsigned j = 0; j < 3; j++) {
             memset(&qc, 0, sizeof(qc)); qc.id = ids[j];
-            if (ioctl(fd, VIDIOC_QUERYCTRL, &qc) == 0 && !(qc.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY)))
+            if (vav4l2_xioctl(fd, VIDIOC_QUERYCTRL, &qc) == 0 && !(qc.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY)))
                 nodes[n].controls |= 1u << j;
         }
         nodes[n].has_rotate = !!(nodes[n].controls & VAV4L2_VPP_ROTATE);
@@ -397,7 +397,7 @@ void vav4l2_scan_vpp_devices(struct vav4l2_driver_data *dd)
         d->num_input = s->nout; d->num_output = s->ncap;
         memcpy(d->input, s->out_fcc, s->nout * sizeof(uint32_t));
         memcpy(d->output, s->cap_fcc, s->ncap * sizeof(uint32_t));
-        int fd = open(d->path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        int fd = vav4l2_open_device(d->path);
         if (fd < 0) { dd->num_vpp_devices--; continue; }
         int valid = 1;
         for (unsigned cap = 0; cap < 2; cap++) for (unsigned maximum = 0; maximum < 2; maximum++) {
@@ -405,11 +405,11 @@ void vav4l2_scan_vpp_devices(struct vav4l2_driver_data *dd)
             f.fmt.pix_mp.pixelformat = cap ? d->output[0] : d->input[0];
             f.fmt.pix_mp.width = f.fmt.pix_mp.height = maximum ? 65535 : 1;
             f.fmt.pix_mp.field = V4L2_FIELD_NONE;
-            if (ioctl(fd, VIDIOC_TRY_FMT, &f) < 0 || !f.fmt.pix_mp.width || !f.fmt.pix_mp.height) { valid = 0; continue; }
+            if (vav4l2_xioctl(fd, VIDIOC_TRY_FMT, &f) < 0 || !f.fmt.pix_mp.width || !f.fmt.pix_mp.height) { valid = 0; continue; }
             (maximum ? d->max_width : d->min_width)[cap] = f.fmt.pix_mp.width;
             (maximum ? d->max_height : d->min_height)[cap] = f.fmt.pix_mp.height;
         }
-        close(fd);
+        vav4l2_queue_forget(fd); close(fd);
         if (!valid) dd->num_vpp_devices--;
     }
     dd->vpp_devices_scanned = 1;
@@ -538,7 +538,7 @@ static int validate_cached_node(const char *path, enum vav4l2_codec codec)
     if (!valid_video_path(path) || !vav4l2_codec_enabled(codec)) return 0;
     int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC); if (fd < 0) return 0;
     struct v4l2_capability cap = {0}; uint32_t formats[VAV4L2_PROBE_MAX_FOURCCS], capture[VAV4L2_PROBE_MAX_FOURCCS], want;
-    int valid = ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0 && vav4l2_node_is_m2m(&cap);
+    int valid = vav4l2_xioctl(fd, VIDIOC_QUERYCAP, &cap) == 0 && vav4l2_node_is_m2m(&cap);
     int count = valid ? vav4l2_enum_output_fourccs(fd, formats, VAV4L2_PROBE_MAX_FOURCCS) : -1;
     if (codec <= VAV4L2_CODEC_MPEG2) {
         int api = valid ? vav4l2_decoder_select(fd, codec, &want) : -1;

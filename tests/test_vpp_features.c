@@ -20,6 +20,7 @@ static void expect(int ok, const char *tag)
 static int mock_ioctl(int fd, unsigned long request, void *arg)
 {
     (void)fd; ioctls++;
+    if (request == VIDIOC_QUERYCAP) { ((struct v4l2_capability *)arg)->capabilities = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING; return 0; }
     if (request == VIDIOC_TRY_FMT) {
         struct v4l2_format *f = arg; tries++;
         if (rga3_mode && f->fmt.pix_mp.width < 128) f->fmt.pix_mp.width = 128;

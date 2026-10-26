@@ -24,6 +24,7 @@ int __wrap_poll(struct pollfd *p, nfds_t n, int timeout)
 static int mock_ioctl(int fd, unsigned long req, void *arg)
 {
     (void)fd;
+    if (req == VIDIOC_QUERYCAP) { ((struct v4l2_capability *)arg)->capabilities = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING; return 0; }
     if (req == VIDIOC_EXPBUF) {
         struct v4l2_exportbuffer *export = arg; native_exports++;
         expect(export->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE && !export->index && !export->plane && export->flags == (O_CLOEXEC | O_RDWR), "native-export-uses-owned-capture-slot");

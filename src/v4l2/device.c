@@ -29,21 +29,26 @@ void vav4l2_set_ioctl_hook(vav4l2_ioctl_fn fn)
 
 /* Optional structured evidence,independent of stderr. Never change the
  * caller's errno or ioctl result when opening/writing diagnostics fails. */
-static void decode_trace_write(const struct vav4l2_context *ctx, int fd, const char *stage, int status, uint64_t argument)
+static void decode_trace_write(const struct vav4l2_context *ctx, int fd, const char *stage, int status, uint64_t argument, const struct v4l2_buffer *buffer)
 {
     int saved = errno; const char *path = getenv("VAV4L2_DECODE_TRACE");
     if (path && *path) {
         int out = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
         if (out >= 0) {
             const struct vav4l2_surface *surf = ctx ? ctx->current_surface : NULL;
-            char line[768];
-            int n = snprintf(line, sizeof(line), "STAGE=%s\tPID=%ld\tFD=%d\tCONTEXT=%u\tCODEC=%d\tFRAME=%llu\tSURFACE=%u\tSTATUS=%d\tARG=%llu\tERRNO=%d\tALLOCATED=%d\tFREE=%d\tMEMORY=%u\tWIDTH=%d\tHEIGHT=%d\tSTRIDE=%u\tCAP_HEIGHT=%u\tSIZEIMAGE=%u\tINDEX=%d\tWRITER=%d\tBORROWS=%u\tPOOL=%d\n",
+            unsigned bytes = buffer ? buffer->bytesused : 0;
+            if (buffer && (buffer->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE || buffer->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) && buffer->length && buffer->m.planes)
+                bytes = buffer->m.planes[0].bytesused;
+            char line[1024];
+            int n = snprintf(line, sizeof(line), "STAGE=%s\tPID=%ld\tFD=%d\tCONTEXT=%u\tCODEC=%d\tFRAME=%llu\tSURFACE=%u\tSTATUS=%d\tARG=%llu\tERRNO=%d\tALLOCATED=%d\tFREE=%d\tMEMORY=%u\tWIDTH=%d\tHEIGHT=%d\tSTRIDE=%u\tCAP_HEIGHT=%u\tSIZEIMAGE=%u\tINDEX=%d\tWRITER=%d\tBORROWS=%u\tPOOL=%d\tTYPE=%u\tBUFFER_INDEX=%u\tFLAGS=%u\tBYTESUSED=%u\tTS_SEC=%lld\tTS_USEC=%lld\n",
                 stage, (long)getpid(), fd, ctx ? ctx->context_id : VA_INVALID_ID, ctx ? (int)ctx->codec : -1,
                 (unsigned long long)(ctx ? ctx->frame_count : 0), surf ? surf->surface_id : VA_INVALID_ID, status,
                 (unsigned long long)argument, status < 0 ? saved : 0, ctx ? ctx->capture_bufs_allocd : 0, ctx ? ctx->n_free_cap : 0,
                 ctx ? ctx->capture_memory : 0, ctx ? ctx->width : 0, ctx ? ctx->height : 0, ctx ? ctx->cap_stride : 0,
                 ctx ? ctx->cap_height : 0, ctx ? ctx->cap_sizeimage : 0, surf ? surf->buf_index : -1,
-                surf ? (int)surf->last_writer : -1, surf ? surf->memfd_borrows : 0, ctx ? ctx->capture_internal : 0);
+                surf ? (int)surf->last_writer : -1, surf ? surf->memfd_borrows : 0, ctx ? ctx->capture_internal : 0,
+                buffer ? buffer->type : 0, buffer ? buffer->index : 0, buffer ? buffer->flags : 0, bytes,
+                (long long)(buffer ? buffer->timestamp.tv_sec : 0), (long long)(buffer ? buffer->timestamp.tv_usec : 0));
             if (n > 0 && (size_t)n < sizeof(line)) { ssize_t written; do { written = write(out, line, n); } while (written < 0 && errno == EINTR); }
             close(out);
         }
@@ -52,13 +57,15 @@ static void decode_trace_write(const struct vav4l2_context *ctx, int fd, const c
 }
 void vav4l2_decode_trace(const struct vav4l2_context *ctx, const char *stage, int status, uint64_t argument)
 {
-    decode_trace_write(ctx, ctx ? ctx->v4l2_fd : -1, stage, status, argument);
+    decode_trace_write(ctx, ctx ? ctx->v4l2_fd : -1, stage, status, argument, NULL);
 }
 
+static int raw_ioctl(int fd, unsigned long request, void *arg) { return ioctl(fd, request, arg); }
 int vav4l2_ioctl_once(int fd, unsigned long request, void *arg)
 {
-    int result = g_ioctl_hook ? g_ioctl_hook(fd, request, arg) : ioctl(fd, request, arg);
-    decode_trace_write(NULL, fd, "ioctl", result, request);
+    int result = vav4l2_queue_ioctl(fd, request, arg, g_ioctl_hook ? g_ioctl_hook : raw_ioctl);
+    decode_trace_write(NULL, fd, "ioctl", result, request,
+        !result && (request == VIDIOC_QBUF || request == VIDIOC_DQBUF) ? arg : NULL);
     return result;
 }
 
@@ -85,7 +92,7 @@ int vav4l2_poll_intr(struct pollfd *fds, nfds_t n, int timeout)
     for (;;) {
         int r = poll(fds, n, remaining);
         if (r >= 0 || errno != EINTR) {
-            decode_trace_write(NULL, n ? fds[0].fd : -1, "poll", r, ((uint64_t)(uint32_t)timeout << 32) | (n ? (unsigned short)fds[0].revents : 0));
+            decode_trace_write(NULL, n ? fds[0].fd : -1, "poll", r, ((uint64_t)(uint32_t)timeout << 32) | (n ? (unsigned short)fds[0].revents : 0), NULL);
             return r;
         }
         if (timeout < 0) continue;
@@ -116,8 +123,8 @@ int vav4l2_open_device(const char *path)
     }
 
     uint32_t caps = cap.capabilities & V4L2_CAP_DEVICE_CAPS ? cap.device_caps : cap.capabilities;
-    if (!(caps & V4L2_CAP_VIDEO_M2M_MPLANE) || !(caps & V4L2_CAP_STREAMING)) {
-        fprintf(stderr, "v4l2: %s is not M2M mplane device\n", path);
+    if (!(caps & (V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_VIDEO_M2M)) || !(caps & V4L2_CAP_STREAMING)) {
+        fprintf(stderr, "v4l2: %s is not an M2M streaming device\n", path);
         close(fd);
         return -1;
     }
@@ -145,7 +152,7 @@ void vav4l2_close_context_device(struct vav4l2_context *ctx)
 {
     int saved = errno;
     vav4l2_compat_backend_finish(&ctx->compat_backend, ctx->v4l2_fd);
-    if (ctx->v4l2_fd >= 0) close(ctx->v4l2_fd);
+    if (ctx->v4l2_fd >= 0) { vav4l2_queue_forget(ctx->v4l2_fd); close(ctx->v4l2_fd); }
     ctx->v4l2_fd = -1; errno = saved;
 }
 
@@ -275,7 +282,7 @@ static int setup_output_queue(struct vav4l2_context *ctx, int fd, uint32_t codec
     for (unsigned count = VAV4L2_NUM_OUTPUT_BUFS; count; count /= 2) {
         struct v4l2_requestbuffers req = {.count = count, .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, .memory = V4L2_MEMORY_MMAP};
         int result = xioctl(fd, VIDIOC_REQBUFS, &req);
-        decode_trace_write(NULL, fd, "output-allocate", result, ((uint64_t)count << 32) | req.count);
+        decode_trace_write(NULL, fd, "output-allocate", result, ((uint64_t)count << 32) | req.count, NULL);
         if (result == 0 && req.count) {
             fprintf(stderr, "v4l2: output queue: %u buffers\n", req.count);
             return req.count < VAV4L2_NUM_OUTPUT_BUFS ? req.count : VAV4L2_NUM_OUTPUT_BUFS;

@@ -40,6 +40,7 @@ int __wrap_poll(struct pollfd *p, nfds_t count, int timeout) { expect(count == 1
 static int mock_ioctl(int fd, unsigned long req, void *arg)
 {
     (void)fd;
+    if (req == VIDIOC_QUERYCAP) { ((struct v4l2_capability *)arg)->capabilities = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING; return 0; }
     if (req == DMA_BUF_IOCTL_SYNC) {
         struct dma_buf_sync *s = arg; syncs++;
         expect((s->flags & DMA_BUF_SYNC_RW) == DMA_BUF_SYNC_READ, "no CPU write in direct processing");

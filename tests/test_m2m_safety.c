@@ -27,6 +27,7 @@ static void *mapping(size_t size)
 static int m2m_ioctl(int fd, unsigned long request, void *arg)
 {
     (void)fd;
+    if (request == VIDIOC_QUERYCAP) { ((struct v4l2_capability *)arg)->capabilities = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING; return 0; }
     if (mode == 18 && (request == VIDIOC_QUERY_EXT_CTRL || request == VIDIOC_S_EXT_CTRLS))
         expect(0, "jpeg-legacy-client-never-needs-an-extra-kernel-control");
     if (request == VIDIOC_S_CTRL) {

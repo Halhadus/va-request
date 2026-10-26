@@ -29,7 +29,7 @@ static int export_storage(const char *node, struct v4l2_format *fmt, unsigned by
     uint64_t need = (uint64_t)bytes * rows;
     long page = sysconf(_SC_PAGESIZE);
     if (page <= 0) return -1;
-    int fd = open(node, O_RDWR | O_NONBLOCK | O_CLOEXEC); if (fd < 0) return -1;
+    int fd = vav4l2_open_device(node); if (fd < 0) return -1;
     const char *stage = "S_FMT"; int result = -1, error = EINVAL; unsigned allocated = 0;
     uint32_t wanted = fmt->fmt.pix_mp.pixelformat;
     if (vav4l2_xioctl(fd, VIDIOC_S_FMT, fmt) < 0) { error = errno; goto done; }
@@ -59,7 +59,7 @@ static int export_storage(const char *node, struct v4l2_format *fmt, unsigned by
     stage = tag ? tag : "exported";
 done:
     trace_allocation(node, stage, bytes, rows, need, allocated, error, fmt);
-    close(fd); return result;
+    vav4l2_queue_forget(fd); close(fd); return result;
 }
 
 static void scan_storage(void)

@@ -562,6 +562,8 @@ int vav4l2_claim_capture_for_export(struct vav4l2_context *ctx,
 int vav4l2_expbuf_export_wanted(void);
 void vav4l2_explog(const char *fmt, ...);
 typedef int (*vav4l2_ioctl_fn)(int fd, unsigned long request, void *arg);
+int vav4l2_queue_ioctl(int, unsigned long, void *, vav4l2_ioctl_fn);
+void vav4l2_queue_forget(int);
 void vav4l2_set_ioctl_hook(vav4l2_ioctl_fn fn);
 int vav4l2_dequeue_buffer(int fd, enum v4l2_buf_type type, int *flag_error);
 int vav4l2_mmap_output_buffers(int fd, int count, void **ptrs, uint32_t *size_out);

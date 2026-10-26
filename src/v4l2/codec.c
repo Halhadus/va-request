@@ -51,7 +51,7 @@ int vav4l2_node_is_m2m(const struct v4l2_capability *cap)
 {
     if (!cap) return 0;
     uint32_t caps = cap->capabilities & V4L2_CAP_DEVICE_CAPS ? cap->device_caps : cap->capabilities;
-    return (caps & (V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING)) == (V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING);
+    return (caps & V4L2_CAP_STREAMING) && (caps & (V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_VIDEO_M2M));
 }
 
 uint32_t vav4l2_stateful_fourcc(enum vav4l2_codec codec)

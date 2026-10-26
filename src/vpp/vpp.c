@@ -159,13 +159,13 @@ static int select_device(struct vav4l2_context *ctx, uint32_t src, uint32_t dst,
     for (unsigned i = 0; i < count; i++) {
         const struct vav4l2_vpp_device *d = &dd->vpp_devices[order[i]];
         int same = !strcmp(ctx->device_path, d->path);
-        int fd = same ? ctx->v4l2_fd : open(d->path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        int fd = same ? ctx->v4l2_fd : vav4l2_open_device(d->path);
         if (fd < 0) continue;
-        if (!job_dimensions(fd, sw, sh, src, dw, dh, dst)) { if (!same) close(fd); continue; }
+        if (!job_dimensions(fd, sw, sh, src, dw, dh, dst)) { if (!same) { vav4l2_queue_forget(fd); close(fd); } continue; }
         if (!same) {
             char *path = strdup(d->path);
-            if (!path) { close(fd); return -1; }
-            vav4l2_m2m_teardown(ctx, &ctx->vpp_q); close(ctx->v4l2_fd);
+            if (!path) { vav4l2_queue_forget(fd); close(fd); return -1; }
+            vav4l2_m2m_teardown(ctx, &ctx->vpp_q); vav4l2_close_context_device(ctx);
             free(ctx->device_path); ctx->device_path = path; ctx->v4l2_fd = fd;
         }
         struct vav4l2_compat compat;

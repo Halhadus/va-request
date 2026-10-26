@@ -36,7 +36,16 @@ int __wrap_open(const char *path, int flags, ...) { mode_t mode = 0; if (flags &
 #if VAV4L2_TEST_LFS64
 int __wrap_open64(const char *path, int flags, ...) { mode_t mode = 0; if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); } return trace_open(path, flags, mode, 1); }
 #endif
-static int fault_ioctl(int fd, unsigned long request, void *arg) { (void)fd; (void)request; (void)arg; errno = EIO; return -1; }
+static int fault_ioctl(int fd, unsigned long request, void *arg)
+{
+    (void)fd;
+    if (request == VIDIOC_DQBUF) {
+        struct v4l2_buffer *b = arg; b->index = 2; b->flags = V4L2_BUF_FLAG_ERROR;
+        b->m.planes[0].bytesused = 384; b->timestamp.tv_sec = 7; b->timestamp.tv_usec = 25;
+        errno = EBUSY; return 0;
+    }
+    errno = EIO; return -1;
+}
 int main(void)
 {
     storage = memfd_create("decode trace", MFD_CLOEXEC); if (storage < 0) return 1;
@@ -54,8 +63,12 @@ int main(void)
     fail_open = 0; expect(trace_cloexec, "trace-FD-CLOEXEC");
     fail_write = 1; errno = 0; expect(vav4l2_ioctl_once(17, VIDIOC_QBUF, NULL) == -1 && errno == EIO, "trace-write-failure-cannot-replace-ioctl-errno");
     fail_write = 0; expect(fcntl(last_fd, F_GETFD) < 0 && errno == EBADF, "trace-FD-closes-after-write-failure");
+    struct v4l2_plane plane = {0};
+    struct v4l2_buffer buffer = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, .length = 1, .m.planes = &plane};
+    expect(vav4l2_ioctl_once(17, VIDIOC_DQBUF, &buffer) == 0 && errno == EBUSY, "successful-dequeue-metadata-preserves-errno");
     char log[8192]; ssize_t n = pread(storage, log, sizeof(log) - 1, 0); expect(n > 0, "trace-has-evidence");
     if (n > 0) { log[n] = 0; expect(strstr(log, "STAGE=capture-empty") && strstr(log, "ALLOCATED=4\tFREE=0") && strstr(log, "WIDTH=3840\tHEIGHT=2160") && strstr(log, "FRAME=5\tSURFACE=7"), "queue-context-is-recorded"); expect(strstr(log, "STAGE=ioctl") && strstr(log, "STATUS=-1") && strstr(log, "ERRNO=5"), "raw-ioctl-error-is-recorded"); }
+    if (n > 0) expect(strstr(log, "BUFFER_INDEX=2\tFLAGS=64\tBYTESUSED=384\tTS_SEC=7\tTS_USEC=25") != NULL, "dequeued-flags-payload-and-timestamp-are-recorded");
     vav4l2_set_ioctl_hook(NULL); unsetenv("VAV4L2_DECODE_TRACE"); close(storage);
     printf("decode trace:%s\n", failures ? "FAIL" : "PASS"); return failures != 0;
 }
