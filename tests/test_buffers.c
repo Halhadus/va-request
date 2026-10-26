@@ -5,14 +5,15 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <errno.h>
 #include "va_v4l2.h"
 
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 static int failures;
 /* The API fixture must not inherit the host decoder's profile menu. */
-int __wrap_vav4l2_scan_all_cached(char *h264, char *hevc, char *av1, char *vp8, char *mpeg2, char *jpeg, char *vpp, unsigned len)
+int __wrap_vav4l2_scan_all_cached(char *h264, char *hevc, char *av1, char *vp8, char *mpeg2, char *jpeg, char *vpp, char *vp9, unsigned len)
 {
-    char *paths[] = {h264, hevc, av1, vp8, mpeg2, jpeg, vpp};
+    char *paths[] = {h264, hevc, av1, vp8, mpeg2, jpeg, vpp, vp9};
     for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) if (paths[i] && len) paths[i][0] = 0;
     return 0;
 }
@@ -125,6 +126,15 @@ static unsigned fake_cap_width, fake_cap_height, requested_cap_count;
 static int capture_ioctl(int fd, unsigned long request, void *arg)
 {
     (void)fd;
+    if (request == VIDIOC_ENUM_FMT) {
+        struct v4l2_fmtdesc *fmt = arg;
+        if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE || fmt->index) {
+            errno = EINVAL;
+            return -1;
+        }
+        fmt->pixelformat = V4L2_PIX_FMT_NV12;
+        return 0;
+    }
     if (request == VIDIOC_S_FMT) {
         struct v4l2_format *fmt = arg;
         if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) return -1;
@@ -557,7 +567,7 @@ int main(void)
     unsigned char input[8] = {1,2,3,4,5,6,7,8};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     setenv("VAV4L2_EXPBUF_EXPORT", "1", 1); /* Mock capture fixture uses the EXPBUF path. */
-    if (__vaDriverInit_1_20(&ctx) != VA_STATUS_SUCCESS)
+    if (VAV4L2_DRIVER_INIT(&ctx) != VA_STATUS_SUCCESS)
         return 1;
     expect(v.vaCreateBuffer(&ctx, 0, VASliceDataBufferType, UINT_MAX, 2, NULL, &id) == VA_STATUS_ERROR_INVALID_PARAMETER && id == VA_INVALID_ID, "allocation-overflow");
     expect(v.vaCreateBuffer(&ctx, 0, VASliceDataBufferType, 0, 1, NULL, &id) == VA_STATUS_ERROR_INVALID_PARAMETER, "zero-size");

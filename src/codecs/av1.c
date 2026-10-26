@@ -193,386 +193,7 @@ static void av1_fill_skip_mode(struct v4l2_ctrl_av1_frame *frame,
     }
 }
 
-/*
- * VA-API does not expose refresh_frame_flags. Reconstruct the bitmask
- * from the DPB occupancy ffmpeg *does* give us (ref_frame_map +
- * per-surface order_hint), matching GStreamer/libaom for both
- * last-only and lag-in-frames pyramid GOPs.
- */
-static uint8_t av1_surface_level1(struct vav4l2_driver_data *dd, VASurfaceID sid)
-{
-    struct vav4l2_surface *s;
-
-    s = vav4l2_surface_by_id(dd, sid);
-    return s ? s->av1_level1 : 0;
-}
-
-#define AV1_STYLE_UNKNOWN    0
-#define AV1_STYLE_LIBAOM     1
-#define AV1_STYLE_SVT        2
-#define AV1_STYLE_LIBAOM_RTC 3
-
-static int av1_slot_is_dup(const VASurfaceID sids[8], int i)
-{
-    int j;
-
-    if (sids[i] == VA_INVALID_SURFACE)
-        return 1;
-    for (j = 0; j < i; j++) {
-        if (sids[j] == sids[i])
-            return 1;
-    }
-    return 0;
-}
-
-static int av1_unique_sid_count(const VASurfaceID sids[8])
-{
-    int n = 0, i, j;
-
-    for (i = 0; i < 8; i++) {
-        if (sids[i] == VA_INVALID_SURFACE)
-            continue;
-        for (j = 0; j < i; j++) {
-            if (sids[j] == sids[i])
-                break;
-        }
-        if (j == i)
-            n++;
-    }
-    return n;
-}
-
-/* First slot of the most-duplicated surface (KEY copies after 0xff). */
-static uint8_t av1_most_dup_first(const VASurfaceID sids[8],
-                                 const uint32_t hints[8])
-{
-    int i, j, best = -1, best_count = 1, best_oh = 0x7fffffff;
-
-    for (i = 0; i < 8; i++) {
-        int count;
-
-        if (sids[i] == VA_INVALID_SURFACE)
-            continue;
-        for (j = 0; j < i; j++) {
-            if (sids[j] == sids[i])
-                break;
-        }
-        if (j != i)
-            continue;
-        count = 1;
-        for (j = i + 1; j < 8; j++) {
-            if (sids[j] == sids[i])
-                count++;
-        }
-        if (count > best_count ||
-            (count == best_count && count > 1 && (int)hints[i] < best_oh)) {
-            best_count = count;
-            best_oh = (int)hints[i];
-            best = i;
-        }
-    }
-    if (best < 0 || best_count <= 1)
-        return 0;
-    return (uint8_t)(1u << best);
-}
-
-static uint8_t av1_first_dup_from(const VASurfaceID sids[8], int start)
-{
-    int i, j;
-
-    for (i = start; i < 8; i++) {
-        if (sids[i] == VA_INVALID_SURFACE)
-            return (uint8_t)(1u << i);
-        for (j = 0; j < i; j++) {
-            if (sids[j] == sids[i])
-                return (uint8_t)(1u << i);
-        }
-    }
-    return 0;
-}
-
-/* SVT RA temporal layer from order_hint modulo mini-GOP. */
-static int av1_svt_tl(uint32_t oh, uint32_t gop)
-{
-    unsigned pos, x, v, logg, g;
-
-    if (!gop)
-        return 0;
-    pos = oh % gop;
-    if (pos == 0)
-        return 0;
-    g = gop;
-    logg = 0;
-    while (g > 1) {
-        g >>= 1;
-        logg++;
-    }
-    x = pos;
-    v = 0;
-    while ((x & 1) == 0) {
-        x >>= 1;
-        v++;
-    }
-    return (int)logg - (int)v;
-}
-
-static uint8_t av1_get_refresh_idx(const VASurfaceID sids[8],
-                                  const uint32_t hints[8],
-                                  const uint8_t level1[8],
-                                  uint32_t cur, unsigned bits_minus_1,
-                                  int update_arf)
-{
-    int i;
-    int arf_count = 0;
-    int oldest_arf_order = 0x7fffffff, oldest_arf_idx = -1;
-    int oldest_order = 0x7fffffff, oldest_idx = -1;
-
-    for (i = 0; i < 8; i++) {
-        int order, dist;
-
-        if (sids[i] == VA_INVALID_SURFACE)
-            continue;
-        order = (int)hints[i];
-        dist = av1_relative_dist((unsigned)order, cur, bits_minus_1);
-        /* Keep future frames and three closest previous. */
-        if (dist > -3)
-            continue;
-        if (level1[i]) {
-            if (order < oldest_arf_order) {
-                oldest_arf_order = order;
-                oldest_arf_idx = i;
-            }
-            arf_count++;
-            continue;
-        }
-        if (order < oldest_order) {
-            oldest_order = order;
-            oldest_idx = i;
-        }
-    }
-    if (update_arf && arf_count > 2 && oldest_arf_idx >= 0)
-        return (uint8_t)(1u << oldest_arf_idx);
-    if (oldest_idx >= 0)
-        return (uint8_t)(1u << oldest_idx);
-    if (oldest_arf_idx >= 0)
-        return (uint8_t)(1u << oldest_arf_idx);
-    return 0;
-}
-
-static uint8_t av1_infer_refresh_libaom(const VASurfaceID sids[8],
-                                       const uint32_t hints[8],
-                                       const uint8_t level1[8],
-                                       uint32_t cur, unsigned bits_minus_1,
-                                       int show, int skip)
-{
-    uint8_t r;
-
-    r = av1_first_dup_from(sids, 1);
-    if (r)
-        return r;
-    r = av1_get_refresh_idx(sids, hints, level1, cur, bits_minus_1,
-                            !show && !skip);
-    return r ? r : 0x01;
-}
-
-static uint8_t av1_infer_refresh_svt(const VADecPictureParameterBufferAV1 *pic,
-                                    const VASurfaceID sids[8],
-                                    const uint32_t hints[8],
-                                    const uint8_t level1[8],
-                                    uint32_t cur, unsigned bits_minus_1,
-                                    int show, int skip,
-                                    struct vav4l2_context *ctx)
-{
-    uint8_t r;
-
-    /* SVT RA: shown pictures are non-reference leaves or overlays.
-     * Only hidden ARFs write the DPB (GStreamer refresh=0 on every show). */
-    if (show)
-        return 0;
-
-    if (ctx && !ctx->av1.have_first_arf) {
-        ctx->av1.have_first_arf = 1;
-        /* Distance from the GOP's KEY — the absolute order_hint only
-         * equals it in the first GOP (cur=16, key_oh=0). At later GOPs
-         * storing `cur` (48...) broke every layer computation after it. */
-        ctx->av1.gop = (uint8_t)(cur > ctx->av1.key_oh ? cur - ctx->av1.key_oh
-                                                       : (cur ? cur : 8));
-        ctx->av1.l0_oh = cur;
-        ctx->av1.prev_l0_oh = ctx->av1.key_oh;
-        ctx->av1.l0_toggle = 1;
-        ctx->av1.l1_toggle = 0;
-        /* SVT RA16 starts by refreshing ALTREF slot 1, not KEY slot 0.
-         * The first slot of the duplicated KEY surface is not a free slot. */
-        if (ctx->av1.gop == 16)
-            return 0x02;
-        r = av1_most_dup_first(sids, hints);
-        return r ? r : 0x01;
-    }
-    if (ctx && ctx->av1.gop == 16) {
-        /* A single reference in SVT's anchor chain advances slots 0->1->2->0.
-         * At EOS a shortened pyramid may promote an earlier anchor (e.g.
-         * order_hint 58 instead of 60); the fixed schedule misses that. */
-        uint8_t anchor = pic->ref_frame_idx[0];
-        int single_anchor = anchor < 3;
-        for (int i = 1; i < V4L2_AV1_REFS_PER_FRAME; i++)
-            if (pic->ref_frame_idx[i] != anchor)
-                single_anchor = 0;
-        if (single_anchor)
-            return (uint8_t)(1u << ((anchor + 1) % 3));
-        /* SVT's 16-frame RA pyramid uses a repeating 32-order-hint slot
-         * schedule. FFmpeg's VA picture params omit refresh_frame_flags
-         * and its raw tile payload has no uncompressed frame header.
-         * Decode-order inference from duplicate DPB entries replaces live
-         * references here. Keep other GOP sizes on the old fallback. */
-        static const uint8_t refresh[16] = {
-            0, 0x40, 0x20, 0x40, 0x10, 0x40, 0x20, 0x40,
-            0x02, 0x20, 0x08, 0x20, 0x04, 0x10, 0x01, 0x02
-        };
-        unsigned mask = (1u << (bits_minus_1 + 1)) - 1;
-        unsigned pos = ((cur - ctx->av1.key_oh) & mask) % 32;
-        if (pos && !(pos & 1))
-            return refresh[pos / 2];
-    }
-    /* EOS / cut-short pyramids: each new max even ARF is L0 (16,24,28,30). */
-    if (ctx && cur > ctx->av1.l0_oh) {
-        uint8_t slot = ctx->av1.l0_toggle;
-        ctx->av1.prev_l0_oh = ctx->av1.l0_oh;
-        ctx->av1.l0_oh = cur;
-        ctx->av1.l0_toggle = (uint8_t)((slot + 1) % 3);
-        return (uint8_t)(1u << slot);
-    }
-    /* Layer map uses the current mini-GOP length (last L0 minus previous). */
-    if (ctx && ctx->av1.gop >= 16) {
-        uint32_t g = ctx->av1.gop;
-        if (ctx->av1.prev_l0_oh && ctx->av1.l0_oh > ctx->av1.prev_l0_oh)
-            g = ctx->av1.l0_oh - ctx->av1.prev_l0_oh;
-        else if (cur > ctx->av1.gop)
-            g /= 2;
-        if (g < 4)
-            g = 4;
-        {
-            int tl = av1_svt_tl(cur, g);
-            uint8_t slot;
-            switch (tl) {
-            case 0:
-                slot = ctx->av1.l0_toggle;
-                ctx->av1.l0_toggle = (uint8_t)((ctx->av1.l0_toggle + 1) % 3);
-                return (uint8_t)(1u << slot);
-            case 1:
-                slot = (uint8_t)(3 + ctx->av1.l1_toggle);
-                ctx->av1.l1_toggle ^= 1;
-                return (uint8_t)(1u << slot);
-            case 2:
-                return 0x20;
-            case 3:
-                return 0x40;
-            default:
-                return 0x80;
-            }
-        }
-    }
-
-    /* Cut-short / 8-frame mini-GOP: occupancy. */
-    if (av1_unique_sid_count(sids) == 2 && av1_slot_is_dup(sids, 3))
-        return 0x08;
-    r = av1_most_dup_first(sids, hints);
-    if (r)
-        return r;
-    r = av1_get_refresh_idx(sids, hints, level1, cur, bits_minus_1,
-                            !show && !skip);
-    return r ? r : 0x01;
-}
-
-/*
- * VA-API does not expose refresh_frame_flags. Reconstruct the bitmask
- * from DPB occupancy (ref_frame_map + per-surface order_hint).
- *
- * libaom pyramids: free duplicate slots starting at index 1 (KEY stays
- * in slot 0), then get_refresh_idx.
- * SVT-AV1 RA pyramids: first hidden ARF overwrites slot 0, non-ref
- * shown leaves have refresh=0, second ARF uses GOLDEN (slot 3).
- * Style is latched from the first inter after a KEY.
- */
-static uint8_t av1_infer_refresh_flags(const VADecPictureParameterBufferAV1 *pic,
-                                       struct vav4l2_driver_data *dd,
-                                       struct vav4l2_context *ctx)
-{
-    uint8_t ft = pic->pic_info_fields.bits.frame_type;
-    VASurfaceID sids[8];
-    uint32_t hints[8];
-    uint8_t level1[8];
-    unsigned bits_minus_1 = pic->order_hint_bits_minus_1;
-    uint32_t cur = pic->order_hint;
-    int i;
-    int show = pic->pic_info_fields.bits.show_frame;
-    int skip = pic->mode_control_fields.bits.skip_mode_present;
-
-    if (ft == V4L2_AV1_KEY_FRAME ||
-        ft == V4L2_AV1_SWITCH_FRAME ||
-        ft == V4L2_AV1_INTRA_ONLY_FRAME) {
-        if (ctx) {
-            ctx->av1.style = AV1_STYLE_UNKNOWN;
-            ctx->av1.gop = 0;
-            ctx->av1.l0_toggle = 0;
-            ctx->av1.l1_toggle = 0;
-            ctx->av1.have_first_arf = 0;
-            ctx->av1.l0_oh = 0;
-            ctx->av1.prev_l0_oh = 0;
-            ctx->av1.key_oh = cur;
-        }
-        return 0xff;
-    }
-
-    for (i = 0; i < 8; i++) {
-        sids[i] = pic->ref_frame_map[i];
-        hints[i] = av1_surface_order_hint(dd, sids[i]);
-        level1[i] = av1_surface_level1(dd, sids[i]);
-    }
-
-    /* Overlay / show-existing of an ARF already sitting in the DPB. */
-    for (i = 0; i < 8; i++) {
-        if (sids[i] != VA_INVALID_SURFACE && hints[i] == cur)
-            return 0;
-    }
-
-    if (ctx && ctx->av1.style == AV1_STYLE_UNKNOWN &&
-        ft == V4L2_AV1_INTER_FRAME) {
-        if (show) {
-            /* libaom --usage=realtime / low-delay: first inter is shown.
-             * LAST cycles through map slots 0..5 (order_hint % 6); slots
-             * 6-7 stay KEY. Pyramid GOPs hide the first ARF instead. */
-            ctx->av1.style = AV1_STYLE_LIBAOM_RTC;
-        } else if (pic->pic_info_fields.bits.showable_frame &&
-                   pic->primary_ref_frame != 7) {
-            /* SVT RA: first picture after KEY is a showable hidden ARF
-             * that still uses LAST's CDF. */
-            ctx->av1.style = AV1_STYLE_SVT;
-        } else {
-            ctx->av1.style = AV1_STYLE_LIBAOM;
-        }
-    }
-
-    if (ctx && ctx->av1.style == AV1_STYLE_LIBAOM_RTC)
-        return (uint8_t)(1u << (cur % 6));
-    if (ctx && ctx->av1.style == AV1_STYLE_SVT)
-        return av1_infer_refresh_svt(pic, sids, hints, level1, cur, bits_minus_1,
-                                     show, skip, ctx);
-    return av1_infer_refresh_libaom(sids, hints, level1, cur, bits_minus_1,
-                                    show, skip);
-}
-
-
-/*
- * refresh_frame_flags: VA-API does not carry it and the slot policy is
- * encoder-defined (bilibili's "BILIAV1" assigns slots in an order no
- * order-hint heuristic reproduces). Clients that submit the whole OBU
- * span (Chrome) carry the frame OBU's uncompressed header in the same
- * buffer the tile offsets point into: parse the true 8-bit field there
- * and verify frame_type / show_frame / order_hint / primary_ref_frame
- * against VA's own picture parameters before trusting it. Any mismatch
- * — including raw-tile clients like ffmpeg, whose buffer starts
- * mid-OBU — falls back to the heuristic above.
- */
+/* Recover refresh metadata from a complete OBU when the client supplies it. */
 struct av1_br { const uint8_t *d; size_t n; size_t bit; };
 
 static unsigned av1_br_f(struct av1_br *br, unsigned nb)
@@ -590,101 +211,132 @@ static unsigned av1_br_f(struct av1_br *br, unsigned nb)
     return v;
 }
 
-static int av1_parse_hdr_refresh(const uint8_t *span, size_t span_n,
-                                 const VADecPictureParameterBufferAV1 *pic,
-                                 uint8_t *refresh_out)
+/* Sequence syntax determines the offsets of original frame metadata. */
+static int av1_sequence_header(const uint8_t *data, size_t size, struct vav4l2_av1_header *header)
 {
-    size_t pos = 0;
-    unsigned ohb = (unsigned)pic->order_hint_bits_minus_1 + 1;
-    int eoh = pic->seq_info_fields.fields.enable_order_hint;
-    int cand;
-
-    if (pic->seq_info_fields.fields.still_picture)
-        return 0;
-
-    /* Chrome submits a whole run of OBUs as one slice buffer; the current
-     * frame's header is often NOT the first frame OBU in it. Walk every
-     * frame OBU and keep the one that reproduces VA's picture params.
-     * libva does not expose the sequence's screen-content / integer-MV
-     * modes, so each header is tried with / without those optional bits. */
-    pos = 0;
-    while (pos + 1 < span_n) {
-        uint8_t h = span[pos];
-        unsigned type = (h >> 3) & 0xf;
-        int has_size = (h >> 1) & 1;
-        size_t sz;
-
-        pos += 1;
-        if (h & 0x4)
-            pos += 1;
-        if (has_size) {
-            size_t shift = 0;
-            sz = 0;
-            while (pos < span_n) {
-                uint8_t b = span[pos++];
-                sz |= (size_t)(b & 0x7f) << shift;
-                shift += 7;
-                if (!(b & 0x80))
-                    break;
-                if (shift > 28)
-                    return 0;
+    struct av1_br b = {data, size, 0};
+    struct vav4l2_av1_header h = {.valid = 1, .screen_tools = 2, .integer_mv = 2};
+    unsigned delay_bits = 0;
+    unsigned profile = av1_br_f(&b, 3); av1_br_f(&b, 1); h.reduced = av1_br_f(&b, 1);
+    if (profile) return 0;
+    if (h.reduced) av1_br_f(&b, 5);
+    else {
+        if (av1_br_f(&b, 1)) {
+            av1_br_f(&b, 32); av1_br_f(&b, 32);
+            h.equal_interval = av1_br_f(&b, 1);
+            if (h.equal_interval) {
+                unsigned zeros = 0;
+                while (!av1_br_f(&b, 1) && b.bit != SIZE_MAX) if (++zeros > 31) return 0;
+                av1_br_f(&b, zeros);
             }
-        } else {
-            sz = span_n - pos;
-        }
-        if (sz > span_n - pos)
-            return 0;
-        if (type == 6 || type == 3) {
-            for (cand = 0; cand < 4; cand++) {
-                int sct_bit = cand & 1;
-                struct av1_br br = { span + pos, sz, 0 };
-                unsigned sef, ft, show, er = 1, allow_sct = 0, oh = 0, prf, refresh;
-
-                sef = av1_br_f(&br, 1);
-                if (br.bit == (size_t)-1 || sef)
-                    continue;
-                ft = av1_br_f(&br, 2);
-                show = av1_br_f(&br, 1);
-                if (!show)
-                    av1_br_f(&br, 1);
-                if (!((ft == 0 && show) || ft == 2))
-                    er = av1_br_f(&br, 1);
-                av1_br_f(&br, 1);
-                if (sct_bit) {
-                    allow_sct = av1_br_f(&br, 1);
-                    if (allow_sct)
-                        av1_br_f(&br, 1);
-                }
-                if (ft != 2)
-                    av1_br_f(&br, 1);
-                if (eoh)
-                    oh = av1_br_f(&br, ohb);
-                prf = (!er && ft == 1) ? av1_br_f(&br, 3) : 7;
-                if (ft == 2 || (ft == 0 && show))
-                    refresh = 0xff;
-                else
-                    refresh = av1_br_f(&br, 8);
-                if (br.bit == (size_t)-1)
-                    continue;
-                if (ft != pic->pic_info_fields.bits.frame_type)
-                    continue;
-                if (show != pic->pic_info_fields.bits.show_frame)
-                    continue;
-                if (eoh && oh != pic->order_hint)
-                    continue;
-                if (prf != pic->primary_ref_frame)
-                    continue;
-                if (sct_bit && allow_sct != !!pic->pic_info_fields.bits.allow_screen_content_tools)
-                    continue;
-                *refresh_out = (uint8_t)refresh;
-                return 1;
+            h.decoder_model = av1_br_f(&b, 1);
+            if (h.decoder_model) {
+                delay_bits = av1_br_f(&b, 5) + 1;
+                av1_br_f(&b, 32);
+                h.removal_bits = av1_br_f(&b, 5) + 1;
+                h.presentation_bits = av1_br_f(&b, 5) + 1;
             }
         }
-        pos += sz;
+        unsigned display_delay = av1_br_f(&b, 1), points = av1_br_f(&b, 5) + 1;
+        h.points = points;
+        for (unsigned i = 0; i < points; i++) {
+            h.point_idc[i] = av1_br_f(&b, 12); unsigned level = av1_br_f(&b, 5); if (level > 7) av1_br_f(&b, 1);
+            if (h.decoder_model && (h.model_present[i] = av1_br_f(&b, 1))) {
+                av1_br_f(&b, delay_bits); av1_br_f(&b, delay_bits); av1_br_f(&b, 1);
+            }
+            if (display_delay && av1_br_f(&b, 1)) av1_br_f(&b, 4);
+        }
     }
-    return 0;
+    unsigned wb = av1_br_f(&b, 4) + 1, hb = av1_br_f(&b, 4) + 1;
+    av1_br_f(&b, wb); av1_br_f(&b, hb);
+    if (!h.reduced && av1_br_f(&b, 1)) {
+        unsigned delta = av1_br_f(&b, 4) + 2; h.frame_id_bits = delta + av1_br_f(&b, 3) + 1;
+    }
+    av1_br_f(&b, 3);
+    if (!h.reduced) {
+        av1_br_f(&b, 4);
+        unsigned order = av1_br_f(&b, 1); if (order) av1_br_f(&b, 2);
+        h.screen_tools = av1_br_f(&b, 1) ? 2 : av1_br_f(&b, 1);
+        if (h.screen_tools) h.integer_mv = av1_br_f(&b, 1) ? 2 : av1_br_f(&b, 1);
+        if (order) h.order_hint_bits = av1_br_f(&b, 3) + 1;
+    }
+    if (b.bit == SIZE_MAX) return 0;
+    *header = h; return 1;
 }
-
+static int av1_header_refresh(const uint8_t *data, size_t size, struct vav4l2_av1_header *h,
+    const VADecPictureParameterBufferAV1 *p, unsigned temporal, unsigned spatial, uint8_t *out)
+{
+    struct av1_br b = {data, size, 0};
+    unsigned ft = 0, show = 1, er = 1;
+    if (!h->reduced) {
+        if (av1_br_f(&b, 1)) return 0;
+        ft = av1_br_f(&b, 2); show = av1_br_f(&b, 1);
+        if (show && h->decoder_model && !h->equal_interval) av1_br_f(&b, h->presentation_bits);
+        if (!show) av1_br_f(&b, 1);
+        if (ft != 3 && !(ft == 0 && show)) er = av1_br_f(&b, 1);
+    }
+    unsigned disable_cdf = av1_br_f(&b, 1);
+    unsigned screen = h->screen_tools == 2 ? av1_br_f(&b, 1) : h->screen_tools;
+    unsigned integer = screen ? h->integer_mv == 2 ? av1_br_f(&b, 1) : h->integer_mv : 0;
+    int intra = ft == 0 || ft == 2;
+    uint32_t frame_id = h->frame_id_bits ? av1_br_f(&b, h->frame_id_bits) : 0;
+    if (ft != 3 && !h->reduced) av1_br_f(&b, 1);
+    unsigned order = av1_br_f(&b, h->order_hint_bits), primary = intra || er ? 7 : av1_br_f(&b, 3);
+    unsigned removal_present = h->decoder_model ? av1_br_f(&b, 1) : 0;
+    uint32_t removal[32] = {0};
+    if (removal_present) for (unsigned i = 0; i < h->points; i++) {
+        unsigned idc = h->point_idc[i];
+        if (h->model_present[i] && (!idc || ((idc & (1u << temporal)) && (idc & (1u << (spatial + 8))))))
+            removal[i] = av1_br_f(&b, h->removal_bits);
+    }
+    unsigned refresh = ft == 3 || (ft == 0 && show) ? 255 : av1_br_f(&b, 8);
+    if (b.bit == SIZE_MAX || ft != p->pic_info_fields.bits.frame_type || show != p->pic_info_fields.bits.show_frame ||
+        er != p->pic_info_fields.bits.error_resilient_mode || disable_cdf != p->pic_info_fields.bits.disable_cdf_update ||
+        screen != p->pic_info_fields.bits.allow_screen_content_tools || (!intra && integer != p->pic_info_fields.bits.force_integer_mv) ||
+        h->order_hint_bits != (p->seq_info_fields.fields.enable_order_hint ? (unsigned)p->order_hint_bits_minus_1 + 1 : 0) ||
+        (h->order_hint_bits && order != p->order_hint) || primary != p->primary_ref_frame) return 0;
+    h->frame_id = frame_id; h->removal_present = removal_present; memcpy(h->removal_time, removal, sizeof(removal));
+    *out = refresh; return 1;
+}
+VAStatus vav4l2_av1_refresh_flags(struct vav4l2_av1_header *header, const VADecPictureParameterBufferAV1 *p,
+    const uint8_t *data, size_t size, uint8_t *out)
+{
+    if (!header || !p || !out || (!data && size)) return VA_STATUS_ERROR_INVALID_PARAMETER;
+    struct vav4l2_av1_header next = *header;
+    next.frame_id = next.removal_present = 0; memset(next.removal_time, 0, sizeof(next.removal_time));
+    size_t pos = 0; int found = 0; uint8_t refresh = 0;
+    while (pos < size) {
+        uint8_t h = data[pos++]; unsigned type = h >> 3 & 15;
+        if ((h & 0x81) || !(h & 2)) break;
+        unsigned temporal = 0, spatial = 0;
+        if (h & 4) { if (pos == size || (data[pos] & 7)) break; temporal = data[pos] >> 5; spatial = data[pos] >> 3 & 3; pos++; }
+        size_t length = 0; unsigned shift = 0; int complete = 0;
+        for (unsigned i = 0; i < 8 && pos < size; i++) {
+            unsigned v = data[pos++];
+            if (shift >= sizeof(size_t) * 8 || (size_t)(v & 127) > (SIZE_MAX >> shift)) return VA_STATUS_ERROR_INVALID_PARAMETER;
+            length |= (size_t)(v & 127) << shift;
+            if (!(v & 128)) { complete = 1; break; } shift += 7;
+        }
+        if (!complete || length > size - pos) break;
+        if (type == 1 && !av1_sequence_header(data + pos, length, &next)) next.valid = 0;
+        if ((type == 3 || type == 6) && next.valid) {
+            uint8_t value;
+            if (av1_header_refresh(data + pos, length, &next, p, temporal, spatial, &value)) {
+                if (found) return VA_STATUS_ERROR_INVALID_PARAMETER;
+                refresh = value; found = 1;
+            }
+        }
+        pos += length;
+    }
+    if (found) { *header = next; *out = refresh; return VA_STATUS_SUCCESS; }
+    /* These two frame types have an implicit mask in the AV1 specification.
+     * Other raw-tile pictures need the original sequence/frame OBU metadata. */
+    if ((!next.valid || (!next.decoder_model && !next.frame_id_bits)) &&
+        (p->pic_info_fields.bits.frame_type == 3 || (p->pic_info_fields.bits.frame_type == 0 && p->pic_info_fields.bits.show_frame))) {
+        *header = next; *out = 255; return VA_STATUS_SUCCESS;
+    }
+    return VA_STATUS_ERROR_UNIMPLEMENTED;
+}
 
 /* AV1 5.9.14: uniform tiles partition superblocks, not pixels or MI units. */
 static int av1_tile_axis(uint32_t *starts, uint32_t *widths, unsigned count,
@@ -830,12 +482,12 @@ VAStatus vav4l2_av1_prepare_tiles(const VADecPictureParameterBufferAV1 *pic,
     return VA_STATUS_SUCCESS;
 }
 
-static void av1_fill_frame_params(struct v4l2_ctrl_av1_frame *frame,
+static VAStatus av1_fill_frame_params(struct v4l2_ctrl_av1_frame *frame,
                                   const VADecPictureParameterBufferAV1 *pic,
                                   struct vav4l2_context *ctx,
                                   const uint8_t *span, size_t span_n,
                                   const uint8_t * const *all_spans,
-                                  const uint32_t *all_sizes)
+                                  const uint32_t *all_sizes, struct vav4l2_av1_header *header)
 {
     struct vav4l2_driver_data *dd = ctx ? ctx->driver_data : NULL;
     memset(frame, 0, sizeof(*frame));
@@ -1003,34 +655,15 @@ static void av1_fill_frame_params(struct v4l2_ctrl_av1_frame *frame,
             av1_surface_order_hint(dd, sid);
     }
 
-    {
-        uint8_t parsed = 0;
-        int parsed_ok = (span && av1_parse_hdr_refresh(span, span_n, pic,
-                                                       &parsed));
-        if (!parsed_ok) {
-            /* Chrome may split the submission into several slice buffers;
-             * only some carry the OBU framing. Try them all. */
-            int si;
-            for (si = 0; si < VAV4L2_MAX_SLICE_DATAS && !parsed_ok; si++)
-                if (all_spans[si] && all_spans[si] != span &&
-                    av1_parse_hdr_refresh(all_spans[si], all_sizes[si],
-                                          pic, &parsed)) {
-                    parsed_ok = 1;
-                    break;
-                }
-        }
-        if (parsed_ok) {
-            /* OBU truth available: the slot model may own buffer release.
-             * The order-hint heuristic is NOT trusted for that — SVT-style
-             * pyramids mismatch it, and early recycling then exposes the
-             * kernel's equally-wrong slot table as corruption. */
-            ctx->av1.model_active = 1;
-            frame->refresh_frame_flags = parsed;
-        } else
-            frame->refresh_frame_flags = av1_infer_refresh_flags(pic, dd, ctx);
-    }
+    VAStatus refresh_status = vav4l2_av1_refresh_flags(header, pic, span, span_n, &frame->refresh_frame_flags);
+    for (unsigned si = 0; refresh_status != VA_STATUS_SUCCESS && si < VAV4L2_MAX_SLICE_DATAS; si++)
+        if (all_spans[si] && all_spans[si] != span)
+            refresh_status = vav4l2_av1_refresh_flags(header, pic, all_spans[si], all_sizes[si], &frame->refresh_frame_flags);
+    if (refresh_status != VA_STATUS_SUCCESS) return refresh_status;
 
-    frame->flags = 0;
+    frame->flags = header->removal_present ? V4L2_AV1_FRAME_FLAG_BUFFER_REMOVAL_TIME_PRESENT : 0;
+    frame->current_frame_id = header->frame_id;
+    memcpy(frame->buffer_removal_time, header->removal_time, sizeof(frame->buffer_removal_time));
     if (pic->pic_info_fields.bits.show_frame)
         frame->flags |= V4L2_AV1_FRAME_FLAG_SHOW_FRAME;
     if (pic->pic_info_fields.bits.showable_frame)
@@ -1066,13 +699,7 @@ static void av1_fill_frame_params(struct v4l2_ctrl_av1_frame *frame,
     if (frame->skip_mode_frame[0] > 0)
         frame->flags |= V4L2_AV1_FRAME_FLAG_SKIP_MODE_ALLOWED;
 
-    if (ctx && ctx->current_surface) {
-        ctx->current_surface->order_hint = pic->order_hint;
-        ctx->current_surface->av1_level1 =
-            (pic->pic_info_fields.bits.frame_type == V4L2_AV1_KEY_FRAME) ||
-            (!pic->pic_info_fields.bits.show_frame &&
-             !pic->mode_control_fields.bits.skip_mode_present);
-    }
+    return VA_STATUS_SUCCESS;
 }
 
 /*
@@ -1094,6 +721,7 @@ void vav4l2_av1_dpb_model_reset(struct vav4l2_context *ctx)
     if (!ctx)
         return;
     ctx->av1.model_active = 0;
+    ctx->av1.header.valid = 0;
     for (i = 0; i < V4L2_AV1_TOTAL_REFS_PER_FRAME; i++)
         ctx->av1.slot_buf[i] = -1;
     for (i = 0; i < VAV4L2_MAX_CAPTURE_BUFS; i++)
@@ -1151,6 +779,31 @@ static void av1_release_unrefd(struct vav4l2_context *ctx,
     }
 }
 
+/* CDF and motion references must still belong to this decoder queue. A
+ * display snapshot cannot replace the CAPTURE buffer holding codec state. */
+VAStatus vav4l2_av1_validate_references(const struct vav4l2_context *ctx, const VADecPictureParameterBufferAV1 *p)
+{
+    if (!ctx || !p) return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (p->primary_ref_frame > 7) return VA_STATUS_ERROR_INVALID_PARAMETER;
+    unsigned type = p->pic_info_fields.bits.frame_type;
+    if (type == V4L2_AV1_KEY_FRAME || type == V4L2_AV1_INTRA_ONLY_FRAME || p->pic_info_fields.bits.error_resilient_mode) {
+        if (p->primary_ref_frame != 7) return VA_STATUS_ERROR_INVALID_PARAMETER;
+        if (type == V4L2_AV1_KEY_FRAME || type == V4L2_AV1_INTRA_ONLY_FRAME) return VA_STATUS_SUCCESS;
+    }
+    for (unsigned i = 0; i < V4L2_AV1_REFS_PER_FRAME; i++) {
+        unsigned slot = p->ref_frame_idx[i];
+        if (slot >= V4L2_AV1_TOTAL_REFS_PER_FRAME) return VA_STATUS_ERROR_INVALID_PARAMETER;
+        VASurfaceID id = p->ref_frame_map[slot];
+        VAStatus status = vav4l2_validate_reference(ctx, id);
+        if (status != VA_STATUS_SUCCESS) return status;
+        const struct vav4l2_surface *s = vav4l2_surface_by_id(ctx->driver_data, id);
+        if (s == ctx->current_surface) return VA_STATUS_ERROR_INVALID_SURFACE;
+        if (ctx->av1.model_active && (ctx->av1.slot_buf[slot] != s->buf_index ||
+            ctx->av1.buf_owner[s->buf_index] != id)) return VA_STATUS_ERROR_INVALID_SURFACE;
+    }
+    return VA_STATUS_SUCCESS;
+}
+
 VAStatus vav4l2_av1_translate(struct vav4l2_context *ctx,
                               struct vav4l2_buffer **buffers,
                               int num_buffers)
@@ -1183,6 +836,8 @@ VAStatus vav4l2_av1_translate(struct vav4l2_context *ctx,
         fprintf(stderr, "v4l2: AV1 decode missing picture params\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
+    VAStatus reference_status = vav4l2_av1_validate_references(ctx, pic_param);
+    if (reference_status != VA_STATUS_SUCCESS) return reference_status;
     struct v4l2_av1_tile_info tile_info;
     struct v4l2_ctrl_av1_tile_group_entry entries[32];
     uint32_t tile_start, tile_length;
@@ -1199,13 +854,25 @@ VAStatus vav4l2_av1_translate(struct vav4l2_context *ctx,
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
+    if (!ctx->av1.grain_checked) {
+        struct v4l2_query_ext_ctrl q = {.id = V4L2_CID_STATELESS_AV1_FILM_GRAIN};
+        int rc = vav4l2_xioctl(ctx->v4l2_fd, VIDIOC_QUERY_EXT_CTRL, &q);
+        if (rc < 0 && errno != EINVAL && errno != ENOTTY) return VA_STATUS_ERROR_OPERATION_FAILED;
+        ctx->av1.has_grain = rc == 0 && !(q.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY));
+        ctx->av1.grain_checked = 1;
+    }
+    if (!ctx->av1.has_grain && pic_param->film_grain_info.film_grain_info_fields.bits.apply_grain)
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+
     struct v4l2_ctrl_av1_sequence seq;
     struct v4l2_ctrl_av1_frame frame;
 
     av1_fill_sequence_params(&seq, pic_param);
-    av1_fill_frame_params(&frame, pic_param, ctx,
+    struct vav4l2_av1_header header = ctx->av1.header;
+    VAStatus frame_status = av1_fill_frame_params(&frame, pic_param, ctx,
                           (const uint8_t *)cb.largest, cb.largest_size,
-                          cb.slice_datas, cb.slice_sizes);
+                          cb.slice_datas, cb.slice_sizes, &header);
+    if (frame_status != VA_STATUS_SUCCESS) return frame_status;
     frame.tile_info = tile_info;
 
     int request_fd = ctx->request_fd;
@@ -1267,7 +934,7 @@ VAStatus vav4l2_av1_translate(struct vav4l2_context *ctx,
         ctx->streamed = 1;
     }
 
-    /* Film grain — kernel expects the control even when unused. */
+    /* Send optional film-grain state only when the node exposes it. */
     struct v4l2_ctrl_av1_film_grain grain;
     memset(&grain, 0, sizeof(grain));
     {
@@ -1311,10 +978,12 @@ VAStatus vav4l2_av1_translate(struct vav4l2_context *ctx,
     unsigned n_req_ctrls = 0;
 
     memset(req_ctrls, 0, sizeof(req_ctrls));
-    req_ctrls[n_req_ctrls].id = V4L2_CID_STATELESS_AV1_FILM_GRAIN;
-    req_ctrls[n_req_ctrls].ptr = &grain;
-    req_ctrls[n_req_ctrls].size = sizeof(grain);
-    n_req_ctrls++;
+    if (ctx->av1.has_grain) {
+        req_ctrls[n_req_ctrls].id = V4L2_CID_STATELESS_AV1_FILM_GRAIN;
+        req_ctrls[n_req_ctrls].ptr = &grain;
+        req_ctrls[n_req_ctrls].size = sizeof(grain);
+        n_req_ctrls++;
+    }
 
     req_ctrls[n_req_ctrls].id = V4L2_CID_STATELESS_AV1_FRAME;
     req_ctrls[n_req_ctrls].p_av1_frame = &frame;
@@ -1378,7 +1047,10 @@ VAStatus vav4l2_av1_translate(struct vav4l2_context *ctx,
         if (vav4l2_surface_pull_capture(ctx, surf, done_cap) < 0) {
             fprintf(stderr, "v4l2: AV1 pull capture failed\n");
             vav4l2_cap_pool_push(ctx, done_cap);
+            return VA_STATUS_ERROR_OPERATION_FAILED;
         } else {
+            surf->order_hint = pic_param->order_hint;
+            ctx->av1.model_active = 1; ctx->av1.header = header;
             if (vav4l2_debug)
                 fprintf(stderr, "v4l2: AV1 frame surf=%#x oh=%u buf=%d refresh=%02x type=%u\n",
                         surf->surface_id, pic_param->order_hint, done_cap,

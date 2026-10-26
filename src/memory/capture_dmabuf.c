@@ -134,15 +134,10 @@ int vav4l2_capture_dma_queue(struct vav4l2_context *ctx, int index)
 
 int vav4l2_capture_dma_dequeue(struct vav4l2_context *ctx, int *error)
 {
-    struct v4l2_plane plane = {0};
-    struct v4l2_buffer buffer = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, .memory = V4L2_MEMORY_DMABUF,
-        .length = 1, .m.planes = &plane};
+    struct v4l2_buffer buffer;
     *error = 0;
-    if (vav4l2_xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buffer) < 0) return -1;
-    if (buffer.memory != V4L2_MEMORY_DMABUF || buffer.length != 1 || buffer.index >= (unsigned)ctx->capture_bufs_allocd ||
-        !ctx->capture_dma[buffer.index].active) return -1;
+    if (vav4l2_decoder_dequeue_capture(ctx, &buffer) < 0) return -1;
     *error = !!(buffer.flags & V4L2_BUF_FLAG_ERROR);
-    if (!*error && (plane.data_offset || plane.bytesused < ctx->cap_sizeimage || plane.bytesused > ctx->capture_dma[buffer.index].length)) return -1;
     capture_trace(ctx, *error ? "decode-error" : "dequeued", buffer.index, 0);
     return buffer.index;
 }

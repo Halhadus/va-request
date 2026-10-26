@@ -473,3 +473,6 @@ int vav4l2_gbm_read_cpu(struct vav4l2_surface *s)
     if (!ret) s->last_writer = VAV4L2_WRITER_CPU;
     return ret;
 }
+
+int vav4l2_gbm_surface_ensure_export(struct vav4l2_surface *s, uint32_t flags)
+{ (void)flags; return vav4l2_gbm_surface_ensure(s); }

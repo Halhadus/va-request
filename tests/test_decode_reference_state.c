@@ -101,6 +101,34 @@ static VAStatus submit(struct vav4l2_context *ctx, VASurfaceID ref, unsigned cod
     struct vav4l2_buffer *buffers[] = {&picture, &parameter, &data};
     return translate[index](ctx, buffers, 3);
 }
+static void av1_contract(struct vav4l2_context *ctx, struct vav4l2_surface *s, struct vav4l2_context *foreign)
+{
+    VADecPictureParameterBufferAV1 p = {0};
+    p.pic_info_fields.bits.frame_type = V4L2_AV1_INTER_FRAME;
+    p.primary_ref_frame = 0;
+    for (unsigned i = 0; i < 8; i++) p.ref_frame_map[i] = 1;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_SUCCESS, "av1-retained-zero-timestamp-reference");
+    p.ref_frame_idx[0] = 8;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_ERROR_INVALID_PARAMETER, "av1-primary-slot-bounds");
+    p.ref_frame_idx[0] = 0; p.ref_frame_map[0] = VA_INVALID_SURFACE;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_ERROR_INVALID_SURFACE, "av1-missing-primary-CDF-reference");
+    p.ref_frame_map[0] = 1; s->capture_ctx = foreign;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_ERROR_INVALID_SURFACE, "av1-foreign-CDF-storage");
+    s->capture_ctx = ctx; s->buf_index = -1;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_ERROR_INVALID_SURFACE, "av1-detached-CDF-storage");
+    s->buf_index = 0; s->status = VASurfaceSkipped;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_ERROR_DECODING_ERROR, "av1-failed-CDF-reference");
+    s->status = VASurfaceReady; ctx->av1.model_active = 1;
+    for (unsigned i = 0; i < 8; i++) ctx->av1.slot_buf[i] = 0;
+    ctx->av1.buf_owner[0] = 1;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_SUCCESS, "av1-slot-owner-model-matches-retained-reference");
+    ctx->av1.slot_buf[0] = 1;
+    expect(vav4l2_av1_validate_references(ctx, &p) == VA_STATUS_ERROR_INVALID_SURFACE, "av1-stale-slot-model-rejected");
+    ctx->av1.model_active = 0;
+    struct vav4l2_buffer picture = {.type = VAPictureParameterBufferType, .data = &p, .size = sizeof(p)}, *batch[] = {&picture};
+    p.ref_frame_map[0] = VA_INVALID_SURFACE; ioctls = 0;
+    expect(vav4l2_av1_translate(ctx, batch, 1) == VA_STATUS_ERROR_INVALID_SURFACE && !ioctls, "av1-rejection-precedes-controls-and-state-update");
+}
 int main(void)
 {
     struct vav4l2_driver_data dd = {0}; struct vav4l2_context owner = {.driver_data = &dd, .capture_bufs_allocd = 2, .cap_width = 16, .cap_height = 16,
@@ -110,6 +138,7 @@ int main(void)
     struct vav4l2_surface s = {.surface_id = 1, .timestamp = 0, .has_pic = 1, .status = VASurfaceReady,
         .buf_index = 0, .capture_ctx = &owner, .last_writer = VAV4L2_WRITER_MEMFD};
     dd.surfaces[1] = &s; vav4l2_set_ioctl_hook(ioctl_count);
+    av1_contract(&owner, &s, &foreign);
     h264_contract(&owner);
     hevc_contract(&owner);
     expect(vav4l2_validate_reference(&owner, 1) == VA_STATUS_SUCCESS, "first-frame-timestamp-zero-is-valid-with-retained-unmapped-capture");

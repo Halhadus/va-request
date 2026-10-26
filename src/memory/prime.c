@@ -264,12 +264,15 @@ int vav4l2_prime_capture(struct vav4l2_surface *s, const void *src, uint32_t str
     struct vav4l2_image_view from = {.data = (void *)src, .fourcc = fcc, .stride = stride,
         .width = s->width, .height = s->height, .alloc_height = alh, .size = size};
     int ret = -1;
-    if (fcc == V4L2_PIX_FMT_NV12 || fcc == V4L2_PIX_FMT_NV16) {
+    if (fcc == V4L2_PIX_FMT_NV12 || fcc == V4L2_PIX_FMT_P010 || fcc == V4L2_PIX_FMT_NV16) {
         if (fcc == V4L2_PIX_FMT_NV12) from.fourcc = VA_FOURCC_NV12;
+        if (fcc == V4L2_PIX_FMT_P010) from.fourcc = VA_FOURCC_P010;
         ret = vav4l2_copy_image_rect(&to, 0, 0, &from, 0, 0, s->width, s->height) == VA_STATUS_SUCCESS ? 0 : -1;
         if (ret && fcc == V4L2_PIX_FMT_NV16 && s->format == VA_FOURCC_YUY2) {
             vav4l2_nv16_to_yuy2(s->cpu_ptr, s->cpu_stride, src, stride, alh, s->width, s->height); ret = 0;
         }
+    } else if (vav4l2_capture_tile(fcc) && s->format == vav4l2_va_fourcc_for_capture(fcc)) {
+        ret = vav4l2_detile_capture(s->cpu_ptr, s->cpu_stride, s->cpu_size, src, size, stride, alh, s->width, s->height, fcc);
     } else if (fcc == V4L2_PIX_FMT_NV15 && s->format == VA_FOURCC_P010) {
         vav4l2_nv15_to_p010(s->cpu_ptr, s->cpu_stride, s->height, src, stride, alh, s->width, s->height); ret = 0;
     } else if (fcc == V4L2_PIX_FMT_NV20) {

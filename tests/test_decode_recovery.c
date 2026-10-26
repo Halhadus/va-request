@@ -10,6 +10,7 @@
 
 static int failures, mode, stopped, queued_cap, allocations, releases;
 static int field_active, field_fault, field_stage, field_outputs, field_captures, field_dequeues, field_requests;
+static struct timeval submitted_time;
 int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
 {
     (void)timeout;
@@ -25,6 +26,7 @@ static void expect(int ok, const char *tag)
 static int fault_ioctl(int fd, unsigned long request, void *arg)
 {
     (void)fd;
+    if (request == VIDIOC_QUERYCTRL) { ((struct v4l2_queryctrl *)arg)->maximum = 1; return 0; }
     if (request == VIDIOC_S_FMT) {
         struct v4l2_format *f = arg;
         if (mode == 9) f->fmt.pix_mp.width--;
@@ -43,13 +45,14 @@ static int fault_ioctl(int fd, unsigned long request, void *arg)
         if (mode == 15 || mode == 17 || r->count > (mode == 13 || mode == 18 ? 2u : 1u)) { errno = ENOMEM; return -1; }
         return 0;
     }
-    if (request == VIDIOC_STREAMOFF) { stopped++; if (mode >= 7) { errno = EIO; return -1; } return 0; }
+    if (request == VIDIOC_STREAMOFF) { stopped++; if (mode == 7 || mode == 8) { errno = EIO; return -1; } return 0; }
     if (request == VIDIOC_QBUF) {
         struct v4l2_buffer *b = arg;
         if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
             queued_cap = b->index;
-            if (mode == 1 || mode >= 7) { errno = EIO; return -1; }
+            if (mode == 1 || mode == 7 || mode == 8) { errno = EIO; return -1; }
         }
+        else submitted_time = b->timestamp;
         return 0;
     }
     if (request == VIDIOC_DQBUF) {
@@ -60,7 +63,17 @@ static int fault_ioctl(int fd, unsigned long request, void *arg)
             if (mode == 4) b->flags |= V4L2_BUF_FLAG_ERROR;
         } else {
             b->index = mode == 6 ? 39 : queued_cap;
+            b->timestamp = submitted_time; b->m.planes[0].bytesused = 384;
             if (mode == 5) b->flags |= V4L2_BUF_FLAG_ERROR;
+            if (mode == 20) b->m.planes[0].bytesused = 0;
+            if (mode == 21) b->m.planes[0].bytesused = 383;
+            if (mode == 22) b->m.planes[0].bytesused = 385;
+            if (mode == 23) b->m.planes[0].data_offset = 1;
+            if (mode == 24) b->length = 2;
+            if (mode == 25) b->memory = V4L2_MEMORY_DMABUF;
+            if (mode == 26) b->timestamp.tv_usec++;
+            if (mode == 27) b->timestamp.tv_sec = -1;
+            if (mode == 28) { b->m.planes[0].bytesused = 0; b->flags = V4L2_BUF_FLAG_LAST; }
         }
         return 0;
     }
@@ -71,7 +84,8 @@ static void recovery_case(int test_mode)
 {
     struct vav4l2_driver_data dd = {0};
     struct vav4l2_context c = {.driver_data = &dd, .output_bufs_allocd = 1, .output_buf_size = 64,
-        .output_plane_len = {64}, .capture_bufs_allocd = 2, .streamed = 1, .media_fd = -1};
+        .output_plane_len = {64}, .capture_bufs_allocd = 2, .streamed = 1, .media_fd = -1,
+        .cap_width = 16, .cap_height = 16, .cap_stride = 16, .cap_sizeimage = 384, .cap_pixelformat = V4L2_PIX_FMT_NV12};
     struct vav4l2_surface s = {.surface_id = 1, .buf_index = 1, .capture_ctx = &c};
     c.v4l2_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
     c.request_fd = dup(c.v4l2_fd);
@@ -82,9 +96,9 @@ static void recovery_case(int test_mode)
     c.n_free_cap = 1; c.free_cap_bufs[0] = 0;
     mode = test_mode; stopped = 0;
     vav4l2_set_ioctl_hook(fault_ioctl);
-    int result = mode == 8 ? vav4l2_ensure_capture(&c, 8, 8, V4L2_PIX_FMT_NV12) :
+    int result = mode == 8 ? vav4l2_ensure_capture(&c, 32, 32, V4L2_PIX_FMT_NV12) :
         vav4l2_decode_submit(&c, 0, 8, 1000);
-    if (mode >= 7) {
+    if (mode == 7 || mode == 8) {
         expect(result == -1 && stopped == 2 && c.v4l2_fd == -1 && c.request_fd == -1 && !c.streamed &&
                !c.n_free_out && !c.n_free_cap && fcntl(video_fd, F_GETFD) < 0 && fcntl(request_fd, F_GETFD) < 0,
                "failed-streamoff-closes-device-without-recycling-uncertain-buffers");
@@ -92,13 +106,14 @@ static void recovery_case(int test_mode)
                "failed-stop-invalidates-capture-views");
         expect(vav4l2_decode_submit(&c, 0, 8, 2000) == -1 && !c.n_free_cap && !c.n_free_out,
                "dead-context-cannot-resubmit-old-indices");
-    } else if (mode == 1 || mode == 2 || mode == 6) {
+    } else if (mode == 1 || mode == 2 || mode == 6 || mode >= 20) {
         expect(result == -1 && stopped == 2 && !c.streamed && c.request_fd == -1, "failure-resets-both-queues");
         expect(c.n_free_out == 1 && c.n_free_cap == 1 && c.free_cap_bufs[0] == 0,
                "reset-preserves-unregistered-claimed-capture");
     } else if (mode == 3) {
         expect(result == 1 && c.request_fd == -1 && stopped == 0, "reinit-ebusy-drops-request");
-    } else {
+    } else if (!mode) expect(result == 1 && !stopped, "valid-payload-and-timestamp-complete");
+    else {
         expect(result == -2 && c.n_free_cap == 1 && c.free_cap_bufs[0] == 0,
                "error-does-not-free-claimed-capture");
     }
@@ -132,6 +147,7 @@ static int field_ioctl(int fd, unsigned long request, void *arg)
             field_dequeues++;
             expect(field_stage == 2, "first-field-never-dequeues-held-CAPTURE");
             b->index = field_fault == 11 ? 39 : queued_cap;
+            b->timestamp.tv_usec = 1; b->m.planes[0].bytesused = 384;
             if (field_fault == 6) b->flags = V4L2_BUF_FLAG_ERROR;
         }
     }
@@ -147,7 +163,8 @@ static void fields_case(int fault, int preclaimed)
 {
     struct vav4l2_driver_data dd = {0};
     struct vav4l2_context c = {.driver_data = &dd, .output_bufs_allocd = 1, .output_buf_size = 64,
-        .output_plane_len = {64}, .capture_bufs_allocd = 2, .streamed = 1, .media_fd = -1};
+        .output_plane_len = {64}, .capture_bufs_allocd = 2, .streamed = 1, .media_fd = -1,
+        .cap_width = 16, .cap_height = 16, .cap_stride = 16, .cap_sizeimage = 384, .cap_pixelformat = V4L2_PIX_FMT_NV12};
     struct vav4l2_surface s = {.surface_id = 1, .buf_index = preclaimed ? 1 : -1, .capture_ctx = preclaimed ? &c : NULL,
         .status = VASurfaceRendering};
     dd.surfaces[1] = &s; c.current_surface = &s;
@@ -182,7 +199,8 @@ static void fields_case(int fault, int preclaimed)
 int main(void)
 {
     setenv("VAV4L2_EXPBUF_EXPORT", "1", 1);
-    for (int i = 1; i <= 8; i++) recovery_case(i);
+    for (int i = 0; i <= 8; i++) recovery_case(i);
+    for (int i = 20; i <= 28; i++) recovery_case(i);
     vav4l2_set_ioctl_hook(fault_ioctl);
     for (mode = 9; mode <= 12; mode++) {
         allocations = 0;

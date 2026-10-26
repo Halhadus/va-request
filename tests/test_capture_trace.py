@@ -6,18 +6,22 @@ from check_capture_trace import check
 
 
 class CaptureEvidence(unittest.TestCase):
-    def fixture(self, root, memory=4, frames=8, missing=None, stage="complete"):
+    def fixture(self, root, memory=4, frames=8, missing=None, stage="complete", codecs=(0, 1, 3, 5)):
         path = root / "trace.tsv"
         with path.open("w") as file:
             writer = csv.writer(file, delimiter="\t")
             writer.writerow(["STAGE", "CODEC", "FORMAT", "MEMORY", "ERRNO", "SURFACE", "SIZEIMAGE", "STRIDE"])
-            for codec in (0, 1, 3, 4):
+            for codec in codecs:
                 if codec != missing:
                     for frame in range(frames): writer.writerow([stage, codec, "3231564e", memory, 0, frame, 4096, 64])
         return path
 
     def test_four_existing_codecs(self):
         with tempfile.TemporaryDirectory() as directory: self.assertEqual(sum(check(self.fixture(Path(directory))).values()), 32)
+
+    def test_vp9_cannot_substitute_for_mpeg2(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError): check(self.fixture(Path(directory), codecs=(0, 1, 3, 4)))
 
     def test_staging_is_not_direct_capture(self):
         with tempfile.TemporaryDirectory() as directory:

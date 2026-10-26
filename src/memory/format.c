@@ -19,9 +19,15 @@
 struct capture_format { uint32_t v4l2, va, drm, rt; unsigned depth, chroma; };
 static const struct capture_format capture_formats[] = {
     {V4L2_PIX_FMT_NV12, VA_FOURCC_NV12, DRM_FORMAT_NV12, VA_RT_FORMAT_YUV420, 8, 1},
+    {V4L2_PIX_FMT_NV12_4L4, VA_FOURCC_NV12, DRM_FORMAT_NV12, VA_RT_FORMAT_YUV420, 8, 1},
+    {V4L2_PIX_FMT_NV12_16L16, VA_FOURCC_NV12, DRM_FORMAT_NV12, VA_RT_FORMAT_YUV420, 8, 1},
+    {V4L2_PIX_FMT_NV12_32L32, VA_FOURCC_NV12, DRM_FORMAT_NV12, VA_RT_FORMAT_YUV420, 8, 1},
     {V4L2_PIX_FMT_NV15, VA_FOURCC_P010, DRM_FORMAT_NV15, VA_RT_FORMAT_YUV420_10, 10, 1},
+    {V4L2_PIX_FMT_P010, VA_FOURCC_P010, DRM_FORMAT_P010, VA_RT_FORMAT_YUV420_10, 10, 1},
     {V4L2_PIX_FMT_NV16, VA_FOURCC_YUY2, DRM_FORMAT_NV16, VA_RT_FORMAT_YUV422, 8, 2},
     {V4L2_PIX_FMT_NV20, VA_FOURCC_YUY2, DRM_FORMAT_NV20, VA_RT_FORMAT_YUV422_10, 10, 2},
+    {V4L2_PIX_FMT_NV12_8L128, VA_FOURCC_NV12, DRM_FORMAT_NV12, VA_RT_FORMAT_YUV420, 8, 1},
+    {V4L2_PIX_FMT_P010_4L4, VA_FOURCC_P010, DRM_FORMAT_P010, VA_RT_FORMAT_YUV420_10, 10, 1},
 };
 uint32_t vav4l2_capture_fourcc_from_rt(unsigned int rt)
 {
@@ -44,11 +50,44 @@ uint32_t vav4l2_drm_fourcc_for_capture(uint32_t fcc)
     return 0;
 }
 
+static unsigned tile_geometry(uint32_t f, unsigned *height)
+{
+    unsigned width = f == V4L2_PIX_FMT_NV12_4L4 ? 4 : f == V4L2_PIX_FMT_NV12_16L16 ? 16 :
+        f == V4L2_PIX_FMT_NV12_32L32 ? 32 : f == V4L2_PIX_FMT_NV12_8L128 || f == V4L2_PIX_FMT_P010_4L4 ? 8 : 0;
+    *height = f == V4L2_PIX_FMT_NV12_8L128 ? 128 : f == V4L2_PIX_FMT_P010_4L4 ? 4 : width;
+    return width;
+}
+unsigned vav4l2_capture_tile(uint32_t f)
+{
+    unsigned height; return tile_geometry(f, &height);
+}
+int vav4l2_detile_capture(uint8_t *dst, unsigned pitch, unsigned size, const uint8_t *src, unsigned span,
+    unsigned stride, unsigned rows, unsigned width, unsigned height, uint32_t fourcc)
+{
+    unsigned th, tw = tile_geometry(fourcc, &th), required = vav4l2_capture_plane_size(fourcc, stride, rows);
+    unsigned bytes = fourcc == V4L2_PIX_FMT_P010_4L4 ? 2 : 1;
+    uint64_t target = (uint64_t)pitch * (height + ((uint64_t)height + 1) / 2);
+    if (!tw || !dst || !src || !width || !height || (uint64_t)width * bytes > stride || height > rows ||
+        pitch < ((uint64_t)width + 1) / 2 * 2 * bytes || !required || span < required || target > size) return -1;
+    for (unsigned plane = 0; plane < 2; plane++) {
+        unsigned h = plane ? (height + 1) / 2 : height, w = (plane ? (width + 1) & ~1u : width) * bytes;
+        size_t start = plane ? (size_t)stride * rows : 0, output = plane ? (size_t)pitch * height : 0;
+        for (unsigned y = 0; y < h; y++) for (unsigned x = 0; x < w;) {
+            size_t offset = (size_t)(y / th) * stride * th + (size_t)(x / tw) * tw * th + (y % th) * tw + x % tw;
+            unsigned n = tw - x % tw; if (n > w - x) n = w - x;
+            memcpy(dst + output + (size_t)y * pitch + x, src + start + offset, n); x += n;
+        }
+    }
+    return 0;
+}
 uint32_t vav4l2_capture_plane_size(uint32_t fourcc, uint32_t stride, uint32_t aligned_h)
 {
     if ((!vav4l2_drm_fourcc_for_capture(fourcc) && fourcc != V4L2_PIX_FMT_NV61) || !stride || !aligned_h) return 0;
+    unsigned th, tile = tile_geometry(fourcc, &th);
+    if (tile && ((stride % tile) || (aligned_h % th))) return 0;
     uint64_t rows = aligned_h;
-    rows += (fourcc == V4L2_PIX_FMT_NV16 || fourcc == V4L2_PIX_FMT_NV61 || fourcc == V4L2_PIX_FMT_NV20)
+    if (tile) rows += ((((uint64_t)aligned_h + 1) / 2 + th - 1) / th) * th;
+    else rows += (fourcc == V4L2_PIX_FMT_NV16 || fourcc == V4L2_PIX_FMT_NV61 || fourcc == V4L2_PIX_FMT_NV20)
         ? (uint64_t)aligned_h : ((uint64_t)aligned_h + 1) / 2;
     uint64_t size = (uint64_t)stride * rows;
     return size <= UINT32_MAX ? (uint32_t)size : 0;
@@ -56,7 +95,7 @@ uint32_t vav4l2_capture_plane_size(uint32_t fourcc, uint32_t stride, uint32_t al
 
 /*
  * Shared per-row 10-bit unpack scratch: heap, grows on demand, sized for
- * one Y row + one UV row. Every caller runs under g_vav4l2_lock
+ * one Y row + one UV row. Every caller runs under vav4l2_api_lock
  * (get_image / put_image / vpp), so one buffer serves all converters and
  * wide frames never hit a silent width clamp. Returns NULL on OOM.
  */
@@ -413,7 +452,8 @@ static VAStatus packetize_slices(enum vav4l2_codec codec, struct vav4l2_buffer *
     int pending = -1;
     size_t param_size = codec == VAV4L2_CODEC_H264 ? sizeof(VASliceParameterBufferH264) :
         codec == VAV4L2_CODEC_HEVC ? sizeof(VASliceParameterBufferHEVC) :
-        codec == VAV4L2_CODEC_MPEG2 ? sizeof(VASliceParameterBufferMPEG2) : sizeof(VASliceParameterBufferVP8);
+        codec == VAV4L2_CODEC_MPEG2 ? sizeof(VASliceParameterBufferMPEG2) :
+        codec == VAV4L2_CODEC_VP9 ? sizeof(VASliceParameterBufferVP9) : sizeof(VASliceParameterBufferVP8);
     for (int i = 0; i < n; i++) {
         struct vav4l2_buffer *b = buffers[i];
         if (!b) return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -454,10 +494,10 @@ VAStatus vav4l2_packetize_slices(enum vav4l2_codec codec, struct vav4l2_buffer *
 {
     if (!bytes) return VA_STATUS_ERROR_INVALID_PARAMETER;
     *bytes = 0;
-    if ((codec != VAV4L2_CODEC_H264 && codec != VAV4L2_CODEC_HEVC && codec != VAV4L2_CODEC_VP8 && codec != VAV4L2_CODEC_MPEG2) || n <= 0 || !buffers)
+    if ((codec != VAV4L2_CODEC_H264 && codec != VAV4L2_CODEC_HEVC && codec != VAV4L2_CODEC_VP8 && codec != VAV4L2_CODEC_VP9 && codec != VAV4L2_CODEC_MPEG2) || n <= 0 || !buffers)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     struct slice_writer w = {.capacity = dst_cap, .prefix_len = codec == VAV4L2_CODEC_H264 ? 3 : codec == VAV4L2_CODEC_HEVC ? 4 : 0,
-        .single_unit = codec == VAV4L2_CODEC_VP8};
+        .single_unit = codec == VAV4L2_CODEC_VP8 || codec == VAV4L2_CODEC_VP9};
     VAStatus status = packetize_slices(codec, buffers, n, &w);
     if (status != VA_STATUS_SUCCESS) return status;
     if (dst) {

@@ -12,7 +12,7 @@
 #include <drm_fourcc.h>
 #include <linux/dma-buf.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 struct fake_bo { uint32_t width, height, pitch; int fd; size_t map_size; unsigned char *pixels; };
 static int use_shared_storage, coherent_calls, coherent_fail, last_coherent = -1;
 int __wrap_vav4l2_alloc_coherent_storage(unsigned bytes, unsigned rows)
@@ -194,7 +194,7 @@ static void display_device_checks(void)
 static void import_checks(void)
 {
     struct VADriverVTable va = {0}; struct VADriverContext driver = {.vtable = &va};
-    expect(__vaDriverInit_1_20(&driver) == VA_STATUS_SUCCESS, "import-driver-init");
+    expect(VAV4L2_DRIVER_INIT(&driver) == VA_STATUS_SUCCESS, "import-driver-init");
     int client = memfd_create("import-client", 0), owner = -1;
     if (client < 0 || ftruncate(client, 112) < 0) { expect(0, "import-fixture-storage"); va.vaTerminate(&driver); if (client >= 0) close(client); return; }
     owner = dup(client); unsigned char data[112], got[112]; pattern(data, 1);
@@ -358,7 +358,7 @@ static void import_checks(void)
 static void export_formats(void)
 {
     struct VADriverVTable v = {0}; struct VADriverContext d = {.vtable = &v};
-    if (__vaDriverInit_1_20(&d)) { expect(0, "format-export-init"); return; }
+    if (VAV4L2_DRIVER_INIT(&d)) { expect(0, "format-export-init"); return; }
     const struct { uint32_t va, drm, rt; } formats[] = {
         {VA_FOURCC_NV12, DRM_FORMAT_NV12, VA_RT_FORMAT_YUV420}, {VA_FOURCC_NV21, DRM_FORMAT_NV21, VA_RT_FORMAT_YUV420},
         {VA_FOURCC_I420, DRM_FORMAT_YUV420, VA_RT_FORMAT_YUV420}, {VA_FOURCC_YV12, DRM_FORMAT_YVU420, VA_RT_FORMAT_YUV420},
@@ -592,7 +592,7 @@ int main(int argc, char **argv)
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1); setenv("VAV4L2_RENDER_NODE", "/dev/null", 1);
     setenv("VAV4L2_SHARED_STORAGE", "auto", 1);
     setenv("VAV4L2_EXPBUF_EXPORT", argc > 1 ? "1" : "0", 1);
-    if (__vaDriverInit_1_20(&a) || __vaDriverInit_1_20(&b)) return 1;
+    if (VAV4L2_DRIVER_INIT(&a) || VAV4L2_DRIVER_INIT(&b)) return 1;
     VASurfaceID sa, sb;
     if (va.vaCreateSurfaces(&a, 3, 3, VA_RT_FORMAT_YUV420, 1, &sa) ||
         vb.vaCreateSurfaces(&b, 3, 3, VA_RT_FORMAT_YUV420, 1, &sb)) return 1;
@@ -694,7 +694,7 @@ int main(int argc, char **argv)
     vb.vaTerminate(&b);
     expect(device_destroys == 2 && fcntl(fd, F_GETFD) < 0, "last-terminate-releases-backend-and-render-fd");
     struct VADriverVTable vc = {0}; struct VADriverContext c = {.vtable = &vc};
-    if (__vaDriverInit_1_20(&c)) return 1;
+    if (VAV4L2_DRIVER_INIT(&c)) return 1;
     VASurfaceID sc; if (vc.vaCreateSurfaces(&c, 4, 4, VA_RT_FORMAT_YUV420, 1, &sc)) return 1;
     expect(vav4l2_gbm_surface_ensure(((struct vav4l2_driver_data *)c.pDriverData)->surfaces[sc]) == 0,
            "backend-can-initialize-again-after-last-terminate");

@@ -187,6 +187,7 @@ int vav4l2_codec_prepare_controls(struct vav4l2_context *ctx, int request_fd, st
 
 int vav4l2_codec_controls(struct vav4l2_context *ctx, int request_fd, struct v4l2_ext_controls *controls)
 {
+    if (request_fd < 0 && vav4l2_request_drain(ctx) < 0) return -1;
     if (vav4l2_codec_prepare_controls(ctx, request_fd, controls) < 0) return -1;
     return request_fd >= 0 ? vav4l2_set_request_controls(request_fd, ctx->v4l2_fd, controls) : vav4l2_set_global_controls(ctx->v4l2_fd, controls);
 }
@@ -236,12 +237,15 @@ static int setup_output_queue(struct vav4l2_context *ctx, int fd, uint32_t codec
     uint64_t coded_size = 0;
     if (codec_format == V4L2_PIX_FMT_AV1_FRAME ||
         codec_format == V4L2_PIX_FMT_VP8_FRAME ||
+        codec_format == V4L2_PIX_FMT_VP9_FRAME ||
         codec_format == V4L2_PIX_FMT_MPEG2_SLICE)
         coded_size = (uint64_t)width * (uint64_t)height;
     else if (codec_format == V4L2_PIX_FMT_H264_SLICE)
         coded_size = (uint64_t)width * (uint64_t)height * 15 / 8;
     else if (codec_format == V4L2_PIX_FMT_H264 || codec_format == V4L2_PIX_FMT_HEVC)
         coded_size = (uint64_t)width * (uint64_t)height * 2 + 8192;
+    else if (codec_format == V4L2_PIX_FMT_AV1)
+        coded_size = (uint64_t)width * (uint64_t)height * 4 + 16384;
     if (coded_size > UINT32_MAX) return -1;
     fmt.fmt.pix_mp.plane_fmt[0].sizeimage = coded_size;
 
@@ -258,22 +262,17 @@ static int setup_output_queue(struct vav4l2_context *ctx, int fd, uint32_t codec
     /* Set codec-specific controls */
     struct v4l2_control ctrl = { 0 };
 
-    if (codec_format == V4L2_PIX_FMT_H264_SLICE) {
-        ctrl.id = V4L2_CID_STATELESS_H264_DECODE_MODE;
-        ctrl.value = V4L2_STATELESS_H264_DECODE_MODE_FRAME_BASED;
+    if (codec_format == V4L2_PIX_FMT_H264_SLICE || codec_format == V4L2_PIX_FMT_HEVC_SLICE) {
+        enum vav4l2_codec codec = codec_format == V4L2_PIX_FMT_H264_SLICE ? VAV4L2_CODEC_H264 : VAV4L2_CODEC_HEVC;
+        int slice, raw;
+        if (vav4l2_request_modes(fd, codec, &slice, &raw) < 0) return -1;
+        ctrl.id = codec == VAV4L2_CODEC_H264 ? V4L2_CID_STATELESS_H264_DECODE_MODE : V4L2_CID_STATELESS_HEVC_DECODE_MODE;
+        ctrl.value = slice ? 0 : 1;
         if (codec_control(ctx, fd, &ctrl) < 0) return -1;
-
-        ctrl.id = V4L2_CID_STATELESS_H264_START_CODE;
-        ctrl.value = V4L2_STATELESS_H264_START_CODE_ANNEX_B;
+        ctrl.id = codec == VAV4L2_CODEC_H264 ? V4L2_CID_STATELESS_H264_START_CODE : V4L2_CID_STATELESS_HEVC_START_CODE;
+        ctrl.value = raw ? 0 : 1;
         if (codec_control(ctx, fd, &ctrl) < 0) return -1;
-    } else if (codec_format == V4L2_PIX_FMT_HEVC_SLICE) {
-        ctrl.id = V4L2_CID_STATELESS_HEVC_DECODE_MODE;
-        ctrl.value = V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED;
-        if (codec_control(ctx, fd, &ctrl) < 0) return -1;
-
-        ctrl.id = V4L2_CID_STATELESS_HEVC_START_CODE;
-        ctrl.value = V4L2_STATELESS_HEVC_START_CODE_ANNEX_B;
-        if (codec_control(ctx, fd, &ctrl) < 0) return -1;
+        if (ctx) { ctx->request_slice_based = slice; ctx->request_no_start_code = raw; }
     }
 
     /* Decode waits for OUTPUT DQBUF before the next submission. Four slots
@@ -337,18 +336,23 @@ static int setup_capture_queue(struct vav4l2_context *ctx, int fd, int width, in
     fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
     fmt.fmt.pix_mp.num_planes = 1;
 
-    if ((ctx ? vav4l2_codec_format(ctx, &fmt) : xioctl(fd, VIDIOC_S_FMT, &fmt)) < 0) {
-        fprintf(stderr, "v4l2: S_FMT capture failed: %s\n", strerror(errno));
-        return -1;
+    int formatted = ctx ? vav4l2_codec_format(ctx, &fmt) : xioctl(fd, VIDIOC_S_FMT, &fmt);
+    if (formatted < 0 && ctx && (errno == EINVAL || errno == ENOTSUP)) {
+        uint32_t menu[VAV4L2_MAX_FORMATS]; int n = vav4l2_enum_capture_fourccs(fd, menu, VAV4L2_MAX_FORMATS);
+        for (int i = 0; i < n; i++) {
+            if (vav4l2_capture_layout_format(menu[i]) != pixelformat) continue;
+            fmt.fmt.pix_mp.pixelformat = menu[i]; fmt.fmt.pix_mp.num_planes = vav4l2_capture_layout_planes(menu[i]);
+            formatted = vav4l2_codec_format(ctx, &fmt);
+            if (formatted == 0 || (errno != EINVAL && errno != ENOTSUP)) break;
+        }
     }
-
-    if (fmt.fmt.pix_mp.width < (uint32_t)width || fmt.fmt.pix_mp.height < (uint32_t)height ||
-        fmt.fmt.pix_mp.pixelformat != (pixelformat ? pixelformat : V4L2_PIX_FMT_NV12) ||
-        fmt.fmt.pix_mp.num_planes != 1) {
-        fprintf(stderr, "v4l2: capture cannot hold requested %dx%d %.4s (got %ux%u %.4s, %u planes)\n",
-                width, height, (char *)&pixelformat, fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height,
-                (char *)&fmt.fmt.pix_mp.pixelformat, fmt.fmt.pix_mp.num_planes);
-        return -1;
+    if (formatted < 0 || fmt.fmt.pix_mp.width < (unsigned)width || fmt.fmt.pix_mp.height < (unsigned)height) return -1;
+    if (ctx && vav4l2_capture_layout_format(fmt.fmt.pix_mp.pixelformat) == pixelformat) {
+        if (ctx->capture_bufs_allocd) { errno = EBUSY; return -1; }
+        vav4l2_capture_layout_release(ctx);
+        if (vav4l2_capture_layout_set(ctx, &fmt.fmt.pix_mp) < 0) return -1;
+    } else if (fmt.fmt.pix_mp.pixelformat != (pixelformat ? pixelformat : V4L2_PIX_FMT_NV12) || fmt.fmt.pix_mp.num_planes != 1) {
+        errno = ENOTSUP; return -1;
     }
 
     /* Request capture buffers */
@@ -474,13 +478,15 @@ void vav4l2_m2m_teardown(struct vav4l2_context *ctx, struct vav4l2_m2m_state *q)
 
 void vav4l2_release_context_device(struct vav4l2_context *ctx)
 {
-    vav4l2_h264_discard_field(ctx, 1);
     int i;
 
     if (!ctx)
         return;
 
+    vav4l2_h264_discard_field(ctx, 1);
+    free(ctx->vp9_state); ctx->vp9_state = NULL;
     vav4l2_stateful_finish(ctx);
+    vav4l2_packet_state_release(&ctx->packet_state);
     /* Persistent M2M queues hold V4L2 MMAP mappings — release them while
      * the device fd is still open. */
     vav4l2_m2m_teardown(ctx, &ctx->vpp_q);
@@ -492,6 +498,7 @@ void vav4l2_release_context_device(struct vav4l2_context *ctx)
         ctx->streamed = 0;
     }
 
+    vav4l2_request_finish(ctx);
     if (ctx->request_fd >= 0) {
         close(ctx->request_fd);
         ctx->request_fd = -1;
@@ -604,7 +611,9 @@ void vav4l2_unmap_capture_buffers(struct vav4l2_context *ctx)
 
     if (!ctx)
         return;
+    vav4l2_capture_exports_release(ctx);
     vav4l2_capture_dma_release(ctx);
+    vav4l2_capture_layout_release(ctx);
     for (i = 0; i < VAV4L2_MAX_CAPTURE_BUFS; i++) {
         if (!ctx->capture_buf_ptr[i] || ctx->capture_buf_ptr[i] == MAP_FAILED) {
             ctx->capture_buf_ptr[i] = NULL;
@@ -847,10 +856,17 @@ void *vav4l2_surface_map_memfd(struct vav4l2_surface *s, uint32_t need)
 int vav4l2_surface_pull_capture(struct vav4l2_context *ctx,
                                 struct vav4l2_surface *surf, int buf_index)
 {
+    if (ctx && surf && vav4l2_request_pending(ctx, surf->surface_id)) {
+        surf->buf_index = buf_index; surf->capture_ctx = ctx; surf->has_pic = 0;
+        surf->stride = ctx->cap_stride; surf->aligned_h = ctx->cap_height; surf->cap_fourcc = ctx->cap_pixelformat;
+        surf->cap_view = NULL; surf->status = VASurfaceRendering; return 0;
+    }
+
     if (!ctx || !surf || ctx->v4l2_fd < 0 || buf_index < 0 || buf_index >= ctx->capture_bufs_allocd) return -1;
     vav4l2_decode_trace(ctx, "pull-begin", 0, buf_index);
     surf->h264_frame_num_valid = 0;
     if (ctx->capture_memory == V4L2_MEMORY_DMABUF) return vav4l2_capture_dma_complete(ctx, surf, buf_index);
+    if (ctx->capture_layout) return vav4l2_capture_layout_pull(ctx, surf, buf_index);
     if (vav4l2_mmap_one_capture(ctx, buf_index) < 0) { vav4l2_decode_trace(ctx, "pull-map", -1, buf_index); return -1; }
     void *src = ctx->capture_buf_ptr[buf_index];
     if (!src || src == MAP_FAILED) return -1;
@@ -868,8 +884,18 @@ int vav4l2_surface_store_capture(struct vav4l2_context *ctx, struct vav4l2_surfa
         sz = ctx->cap_sizeimage;
     uint32_t need = vav4l2_capture_plane_size(fcc, stride, alh);
     uint32_t row = (fcc == V4L2_PIX_FMT_NV15 || fcc == V4L2_PIX_FMT_NV20)
-        ? ((surf->width + 3) / 4) * 5 : (surf->width + 1) & ~1u;
+        ? ((surf->width + 3) / 4) * 5 : ((surf->width + 1) & ~1u) * (vav4l2_va_fourcc_for_capture(fcc) == VA_FOURCC_P010 ? 2u : 1u);
     if (!need || sz < need || stride < row || alh < surf->height) { vav4l2_decode_trace(ctx, "pull-geometry", -1, sz); return -1; }
+
+    if (vav4l2_capture_tile(fcc)) {
+        if (surf->format != vav4l2_va_fourcc_for_capture(fcc) || vav4l2_surface_ensure_cpu(surf) < 0 ||
+            vav4l2_detile_capture(surf->cpu_ptr, surf->cpu_stride, surf->cpu_size, src, sz, stride, alh, surf->width, surf->height, fcc)) return -1;
+        if (surf->prime && vav4l2_prime_write(surf) < 0) return -1;
+        if (surf->gbm_bo && vav4l2_gbm_surface_upload(surf, surf->cpu_ptr, surf->cpu_stride, surf->height) < 0) return -1;
+        surf->has_pic = surf->prime_capture_valid = 1; surf->buf_index = buf_index; surf->capture_ctx = ctx;
+        surf->stride = stride; surf->aligned_h = alh; surf->cap_fourcc = fcc;
+        surf->cap_view = NULL; surf->last_writer = VAV4L2_WRITER_CPU; return 0;
+    }
 
     /* A client may still hold the GBM fd exported before EXPBUF became
      * available. That object must receive every new frame in either mode. */
@@ -1104,25 +1130,13 @@ int vav4l2_expbuf_export_wanted(void)
 
 int vav4l2_capture_expbuf(struct vav4l2_context *ctx, int buf_index)
 {
-    struct v4l2_exportbuffer exp;
-
     if (!ctx || ctx->v4l2_fd < 0 || buf_index < 0)
         return -1;
-    memset(&exp, 0, sizeof(exp));
     if (ctx->capture_internal) {
         if (buf_index >= ctx->capture_bufs_allocd || !ctx->capture_dma[buf_index].active) return -1;
         return fcntl(ctx->capture_dma[buf_index].fd, F_DUPFD_CLOEXEC, 0);
     }
-    exp.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    exp.index = (unsigned)buf_index;
-    exp.plane = 0;
-    exp.flags = O_CLOEXEC | O_RDWR;
-    if (vav4l2_xioctl(ctx->v4l2_fd, VIDIOC_EXPBUF, &exp) < 0) {
-        fprintf(stderr, "v4l2: EXPBUF capture[%d] failed: %s\n",
-                buf_index, strerror(errno));
-        return -1;
-    }
-    return exp.fd;
+    return vav4l2_capture_export_plane(ctx, buf_index, 0);
 }
 
 int vav4l2_claim_capture_for_export(struct vav4l2_context *ctx,
@@ -1156,4 +1170,17 @@ int vav4l2_claim_capture_for_export(struct vav4l2_context *ctx,
     vav4l2_explog("v4l2: claim capture idx=%d surf=%u\n",
                   idx, (unsigned)surf->surface_id);
     return 0;
+}
+
+int vav4l2_decode_pending(const struct vav4l2_context *ctx, VASurfaceID id)
+{
+    return ctx->stateful ? vav4l2_stateful_pending(ctx, id) : vav4l2_request_busy(ctx, id);
+}
+int vav4l2_decode_pump(struct vav4l2_context *ctx)
+{
+    return ctx->stateful ? vav4l2_stateful_pump(ctx) : vav4l2_request_pump(ctx);
+}
+VAStatus vav4l2_decode_sync(struct vav4l2_context *ctx, struct vav4l2_surface *s, uint64_t timeout)
+{
+    return ctx->stateful ? vav4l2_stateful_sync(ctx, s, timeout) : vav4l2_request_sync(ctx, s, timeout);
 }

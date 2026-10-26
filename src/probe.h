@@ -53,10 +53,11 @@ void vav4l2_scan_vpp_devices(struct vav4l2_driver_data *dd);
 /* Fresh, bounded scan of all numeric /dev/video* names, irrespective of index. */
 int vav4l2_list_video_nodes(char (*paths)[64], unsigned capacity);
 int vav4l2_codec_enabled(enum vav4l2_codec codec);
+int vav4l2_request_modes(int, enum vav4l2_codec, int *, int *);
 int vav4l2_codec_controls_usable(int fd, enum vav4l2_codec codec);
 int vav4l2_node_is_m2m(const struct v4l2_capability *cap);
 int vav4l2_scan_decoder_paths_ex(char *h264, char *hevc, char *av1, char *vp8, char *mpeg2, unsigned len);
 int vav4l2_enum_capture_fourccs(int fd, uint32_t *out, unsigned max);
 /* Boot/topology-keyed cache; selected nodes are revalidated before reuse. */
-int vav4l2_scan_all_cached(char *h264, char *hevc, char *av1, char *vp8, char *mpeg2, char *jpeg, char *vpp, unsigned len);
+int vav4l2_scan_all_cached(char *h264, char *hevc, char *av1, char *vp8, char *mpeg2, char *jpeg, char *vpp, char *vp9, unsigned len);
 #endif

@@ -14,6 +14,7 @@ static int failures, fault, queries, cap_index, cap_queues, out_queues, freed_dm
 static unsigned char decoded = 0x69;
 static struct vav4l2_context *current;
 static struct v4l2_format negotiated;
+static struct timeval submitted_time;
 static void expect(int value, const char *tag) { if (!value) { fprintf(stderr, "FAIL %s fault=%d\n", tag, fault); failures++; } }
 int __wrap_poll(struct pollfd *p, nfds_t n, int timeout)
 {
@@ -29,6 +30,10 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 {
     (void)fd;
     if (request == DMA_BUF_IOCTL_SYNC) return 0;
+    if (request == VIDIOC_ENUM_FMT) {
+        struct v4l2_fmtdesc *f = arg; if (f->index) { errno = EINVAL; return -1; }
+        f->pixelformat = V4L2_PIX_FMT_NV15; return 0;
+    }
     if (request == VIDIOC_S_FMT) { format(arg); negotiated = *(struct v4l2_format *)arg; return 0; }
     if (request == VIDIOC_G_FMT) {
         *(struct v4l2_format *)arg = negotiated; return 0;
@@ -46,6 +51,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
         struct v4l2_buffer *b = arg;
         if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
             out_queues++;
+            submitted_time = b->timestamp;
             expect(b->memory == V4L2_MEMORY_MMAP && (b->flags & V4L2_BUF_FLAG_REQUEST_FD), "compressed-output-keeps-request-binding");
         } else {
             cap_queues++; cap_index = b->index;
@@ -61,7 +67,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
     if (request == VIDIOC_DQBUF) {
         struct v4l2_buffer *b = arg;
         if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-            b->index = cap_index; b->m.planes[0].bytesused = 4096;
+            b->index = cap_index; b->m.planes[0].bytesused = 4096; b->timestamp = submitted_time;
             if (fault == 2) b->flags = V4L2_BUF_FLAG_ERROR;
             if (fault == 3) b->m.planes[0].bytesused = 4095;
             if (fault == 4) b->m.planes[0].data_offset = 1;

@@ -66,6 +66,10 @@ static int ioctl_hook(int fd, unsigned long request, void *arg)
         if (++allocations == 1 && fail_first) { errno = EINVAL; return -1; }
         f->fmt.pix_mp.plane_fmt[0].bytesperline = f->fmt.pix_mp.width;
         f->fmt.pix_mp.plane_fmt[0].sizeimage = 4096;
+    } else if (codec_mode && request == VIDIOC_QUERYCTRL) {
+        struct v4l2_queryctrl *q = arg; q->minimum = 0; q->maximum = 1;
+    } else if (codec_mode && request == VIDIOC_QUERYMENU) {
+        return 0;
     } else if (codec_mode && request == VIDIOC_S_CTRL) {
         struct v4l2_control *control = arg;
         assert(control->value >= 7);

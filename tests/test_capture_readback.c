@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 void *__real_realloc(void *p, size_t size);
 static int failures, fail_scratch;
 void *__wrap_realloc(void *p, size_t size)
@@ -70,13 +70,14 @@ static void readback(VADriverContextP ctx, unsigned cap, unsigned rt, unsigned f
         ctx->vtable->vaCreateImage(ctx, &fmt, 5, 3, &crop)) {
         expect(0, "capture-readback-setup"); return;
     }
-    uint8_t capture[240] = {0}, *pixels, *cropped;
-    unsigned stride = cap == V4L2_PIX_FMT_NV16 ? 12 : 15, aligned_h = 8;
+    uint8_t capture[384] = {0}, *pixels, *cropped;
+    unsigned stride = cap == V4L2_PIX_FMT_P010 ? 32 : cap == V4L2_PIX_FMT_NV16 ? 12 : 15, aligned_h = 8;
     for (unsigned p = 0; p < 2; p++)
-        for (unsigned y = 0; y < (p && cap == V4L2_PIX_FMT_NV15 ? 3 : 5); y++)
+        for (unsigned y = 0; y < (p && (cap == V4L2_PIX_FMT_NV15 || cap == V4L2_PIX_FMT_P010) ? 3 : 5); y++)
             for (unsigned x = 0; x < (p ? 8 : 7); x++) {
                 uint8_t *row = capture + (p * aligned_h + y) * stride;
-                if (cap == V4L2_PIX_FMT_NV16) row[x] = sample(p, x, y) >> 2;
+                if (cap == V4L2_PIX_FMT_P010) ((uint16_t *)row)[x] = sample(p, x, y) << 6;
+                else if (cap == V4L2_PIX_FMT_NV16) row[x] = sample(p, x, y) >> 2;
                 else pack(row, x, sample(p, x, y));
             }
     struct vav4l2_surface *s = ((struct vav4l2_driver_data *)ctx->pDriverData)->surfaces[sid];
@@ -133,7 +134,8 @@ int main(void)
     struct VADriverVTable v = {0};
     struct VADriverContext ctx = {.vtable = &v};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
-    if (__vaDriverInit_1_20(&ctx)) return 1;
+    if (VAV4L2_DRIVER_INIT(&ctx)) return 1;
+    readback(&ctx, V4L2_PIX_FMT_P010, VA_RT_FORMAT_YUV420_10, VA_FOURCC_P010);
     readback(&ctx, V4L2_PIX_FMT_NV15, VA_RT_FORMAT_YUV420_10, VA_FOURCC_P010);
     readback(&ctx, V4L2_PIX_FMT_NV16, VA_RT_FORMAT_YUV422, VA_FOURCC_YUY2);
     readback(&ctx, V4L2_PIX_FMT_NV16, VA_RT_FORMAT_YUV422, VA_FOURCC_422H);

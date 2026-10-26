@@ -139,6 +139,9 @@ VAStatus vav4l2_derive_image(VADriverContextP ctx,
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
+    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_request_busy(c, surface)) {
+        pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_SURFACE_BUSY;
+    }
     if (surf->status == VASurfaceRendering) {
         pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_SURFACE_BUSY;
@@ -383,7 +386,7 @@ VAStatus vav4l2_surface_read_image_locked(struct vav4l2_driver_data *driver_data
 
     if (!dst_fourcc) {
         /* Legacy default when the image was made without a recorded fourcc */
-        if (cap_fcc == V4L2_PIX_FMT_NV15)
+        if (cap_fcc == V4L2_PIX_FMT_NV15 || cap_fcc == V4L2_PIX_FMT_P010)
             dst_fourcc = VA_FOURCC_P010;
         else if (cap_fcc == V4L2_PIX_FMT_NV16 || cap_fcc == V4L2_PIX_FMT_NV20)
             dst_fourcc = VA_FOURCC_YUY2;
@@ -430,8 +433,8 @@ VAStatus vav4l2_surface_read_image_locked(struct vav4l2_driver_data *driver_data
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
-    if (cap_fcc == V4L2_PIX_FMT_NV12) {
-        struct vav4l2_image_view source = {.data = (void *)src, .fourcc = VA_FOURCC_NV12,
+    if (cap_fcc == V4L2_PIX_FMT_NV12 || cap_fcc == V4L2_PIX_FMT_P010) {
+        struct vav4l2_image_view source = {.data = (void *)src, .fourcc = cap_fcc == V4L2_PIX_FMT_P010 ? VA_FOURCC_P010 : VA_FOURCC_NV12,
             .stride = src_stride, .width = surf->width, .height = surf->height, .alloc_height = src_alh,
             .size = vav4l2_capture_plane_size(cap_fcc, src_stride, src_alh)};
         struct vav4l2_image_view target = image_buffer_view(ib);
@@ -572,6 +575,9 @@ VAStatus vav4l2_put_image(VADriverContextP ctx,
     if (!surf) {
         pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_SURFACE;
+    }
+    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_request_busy(c, surface)) {
+        pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_SURFACE_BUSY;
     }
     if (surf->status == VASurfaceRendering) {
         pthread_mutex_unlock(&vav4l2_api_lock);

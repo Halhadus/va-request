@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 static int failures;
 static void expect(int ok, const char *tag)
 {
@@ -294,7 +294,7 @@ int main(void)
     struct VADriverVTable v = {0};
     struct VADriverContext ctx = {.vtable = &v};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1); setenv("VAV4L2_EXPBUF_EXPORT", "1", 1);
-    if (__vaDriverInit_1_20(&ctx)) return 1;
+    if (VAV4L2_DRIVER_INIT(&ctx)) return 1;
     static const struct { unsigned rt, fcc; } formats[] = {
         {VA_RT_FORMAT_YUV420, VA_FOURCC_NV12}, {VA_RT_FORMAT_YUV420, VA_FOURCC_I420},
         {VA_RT_FORMAT_YUV420, VA_FOURCC_NV21}, {VA_RT_FORMAT_YUV420, VA_FOURCC_YV12},

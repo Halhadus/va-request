@@ -23,7 +23,7 @@ int vav4l2_capture_pool_setup(struct vav4l2_context *ctx, unsigned width, unsign
     struct v4l2_pix_format_mplane *f = &fmt.fmt.pix_mp;
     unsigned stride = f->plane_fmt[0].bytesperline, size = f->plane_fmt[0].sizeimage;
     if (f->width < width || f->height < height || f->pixelformat != fourcc || f->num_planes != 1 || f->field != V4L2_FIELD_NONE || !stride || !size ||
-        (f->pixelformat != V4L2_PIX_FMT_NV12 && f->pixelformat != V4L2_PIX_FMT_NV15 &&
+        (f->pixelformat != V4L2_PIX_FMT_NV12 && f->pixelformat != V4L2_PIX_FMT_NV15 && f->pixelformat != V4L2_PIX_FMT_P010 &&
          f->pixelformat != V4L2_PIX_FMT_NV16 && f->pixelformat != V4L2_PIX_FMT_NV20) ||
         !vav4l2_capture_plane_size(f->pixelformat, stride, f->height) ||
         size < vav4l2_capture_plane_size(f->pixelformat, stride, f->height)) return 0;

@@ -14,7 +14,7 @@ VAStatus vav4l2_put_surface(VADriverContextP ctx,
 {
     (void)ctx; (void)surface; (void)draw; (void)src_x; (void)src_y; (void)src_w; (void)src_h;
     (void)dest_x; (void)dest_y; (void)dest_w; (void)dest_h; (void)cliprects; (void)number_cliprects; (void)flags;
-    /* Not needed for decode-only driver */
+    /* Surface presentation belongs to the external DRM/EGL consumer. */
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 

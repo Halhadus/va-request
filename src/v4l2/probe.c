@@ -119,14 +119,22 @@ int vav4l2_video_has_request_api(const char *video_path)
 
     int video = open(video_path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (video < 0) return 0;
-    int usable = vav4l2_queue_has_requests(video);
+    struct v4l2_capability cap = {0};
+    if (vav4l2_xioctl(video, VIDIOC_QUERYCAP, &cap) < 0 || !vav4l2_node_is_m2m(&cap)) { close(video); return 0; }
+    uint32_t formats[VAV4L2_PROBE_MAX_FOURCCS];
+    int count = vav4l2_enum_output_fourccs(video, formats, VAV4L2_PROBE_MAX_FOURCCS), usable = 0;
+    for (unsigned codec = VAV4L2_CODEC_H264; codec <= VAV4L2_CODEC_MPEG2 && !usable; codec++) {
+        uint32_t coded;
+        if (vav4l2_codec_coded_fourcc(codec, &coded) < 0) continue;
+        for (int i = 0; i < count; i++) if (formats[i] == coded && vav4l2_codec_controls_usable(video, codec) && vav4l2_queue_has_requests(video)) usable = 1;
+    }
     close(video); if (!usable) return 0;
     if (vav4l2_find_media_path(video_path, media_path, sizeof(media_path)) < 0)
         return 0;
     mfd = open(media_path, O_RDWR | O_CLOEXEC);
     if (mfd < 0)
         return 0;
-    if (ioctl(mfd, MEDIA_IOC_REQUEST_ALLOC, &reqfd) < 0) {
+    if (vav4l2_xioctl(mfd, MEDIA_IOC_REQUEST_ALLOC, &reqfd) < 0) {
         close(mfd);
         return 0;
     }
@@ -138,10 +146,10 @@ int vav4l2_video_has_request_api(const char *video_path)
 
 static int fourcc_is_coded(uint32_t fcc)
 {
-    return fcc == V4L2_PIX_FMT_H264 || fcc == V4L2_PIX_FMT_HEVC || fcc == V4L2_PIX_FMT_VP8 ||
+    return fcc == V4L2_PIX_FMT_VP9 || fcc == V4L2_PIX_FMT_VP9_FRAME || fcc == V4L2_PIX_FMT_H264 || fcc == V4L2_PIX_FMT_HEVC || fcc == V4L2_PIX_FMT_VP8 ||
            fcc == V4L2_PIX_FMT_H264_SLICE ||
            fcc == V4L2_PIX_FMT_HEVC_SLICE ||
-           fcc == V4L2_PIX_FMT_AV1_FRAME ||
+           fcc == V4L2_PIX_FMT_AV1_FRAME || fcc == V4L2_PIX_FMT_AV1 ||
            fcc == V4L2_PIX_FMT_VP8_FRAME ||
            fcc == V4L2_PIX_FMT_MPEG2_SLICE;
 }
@@ -246,22 +254,28 @@ int vav4l2_query_profiles(const char *path, uint32_t control, uint32_t *profiles
     if (!path || !profiles) return -1;
     int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return -1;
-    enum vav4l2_codec codec = control == V4L2_CID_MPEG_VIDEO_HEVC_PROFILE ? VAV4L2_CODEC_HEVC : VAV4L2_CODEC_H264;
+    struct v4l2_capability cap = {0};
+    if (vav4l2_xioctl(fd, VIDIOC_QUERYCAP, &cap) < 0 || !vav4l2_node_is_m2m(&cap)) { close(fd); return -1; }
+    enum vav4l2_codec codec = control == V4L2_CID_MPEG_VIDEO_HEVC_PROFILE ? VAV4L2_CODEC_HEVC :
+        control == V4L2_CID_MPEG_VIDEO_VP9_PROFILE ? VAV4L2_CODEC_VP9 : VAV4L2_CODEC_H264;
     uint32_t format;
-    int stateful = vav4l2_decoder_select(fd, codec, &format) == 1;
+    int protocol = vav4l2_decoder_select(fd, codec, &format);
+    if (protocol < 0) { close(fd); return -1; }
+    int stateful = protocol == 1;
     struct v4l2_queryctrl ctrl = {.id = control};
-    if (ioctl(fd, VIDIOC_QUERYCTRL, &ctrl) < 0 || (ctrl.flags & V4L2_CTRL_FLAG_DISABLED) ||
+    if (vav4l2_xioctl(fd, VIDIOC_QUERYCTRL, &ctrl) < 0 || (ctrl.flags & V4L2_CTRL_FLAG_DISABLED) ||
         ctrl.minimum < 0 || ctrl.maximum >= 32 || ctrl.minimum > ctrl.maximum) { close(fd); return -1; }
     uint32_t mask = 0;
     for (int i = ctrl.minimum; i <= ctrl.maximum; i++) {
         struct v4l2_querymenu menu = {.id = ctrl.id, .index = i};
-        if (ioctl(fd, VIDIOC_QUERYMENU, &menu) == 0) mask |= 1u << i;
+        if (vav4l2_xioctl(fd, VIDIOC_QUERYMENU, &menu) == 0) mask |= 1u << i;
     }
     if (stateful) {
         if (codec == VAV4L2_CODEC_H264) mask &= (1u << V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE) |
             (1u << V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE) | (1u << V4L2_MPEG_VIDEO_H264_PROFILE_MAIN) |
             (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH);
-        else mask &= 1u << V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN;
+        else if (codec == VAV4L2_CODEC_VP9) mask &= (1u << V4L2_MPEG_VIDEO_VP9_PROFILE_0) | (1u << V4L2_MPEG_VIDEO_VP9_PROFILE_2);
+        else mask &= (1u << V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN) | (1u << V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_10);
     }
     close(fd); *profiles = mask;
     return 0;
@@ -577,7 +591,7 @@ static int probe_read_boot_id(char *out, unsigned len)
 
 static int probe_cache_load(const char *path, const char *boot,
                             char *h264, char *hevc, char *av1, char *vp8,
-                            char *mpeg2, char *jpeg, char *vpp, unsigned len)
+                            char *mpeg2, char *jpeg, char *vpp, char *vp9, unsigned len)
 {
     char line[160];
     unsigned seen = 0;
@@ -594,7 +608,7 @@ static int probe_cache_load(const char *path, const char *boot,
         return -1;
     }
     line[strcspn(line, "\r\n")] = 0;
-    if (strncmp(line, "boot4 ", 6) != 0 || strcmp(line + 6, boot) != 0) {
+    if (strncmp(line, "boot5 ", 6) != 0 || strcmp(line + 6, boot) != 0) {
         fclose(f);
         return -1;
     }
@@ -617,18 +631,20 @@ static int probe_cache_load(const char *path, const char *boot,
             { if (strlen(val) >= len || (val[0] && !valid_video_path(val))) { fclose(f); return -1; } copy_path(mpeg2, len, val); seen |= 1u << 4; }
         else if (!strcmp(line, "jpeg"))
             { if (strlen(val) >= len || (val[0] && !valid_video_path(val))) { fclose(f); return -1; } copy_path(jpeg, len, val); seen |= 1u << 5; }
+        else if (!strcmp(line, "vp9"))
+            { if (strlen(val) >= len || (val[0] && !valid_video_path(val))) { fclose(f); return -1; } copy_path(vp9, len, val); seen |= 1u << 7; }
         else if (!strcmp(line, "vpp"))
             { if (strlen(val) >= len || (val[0] && !valid_video_path(val))) { fclose(f); return -1; } copy_path(vpp, len, val); seen |= 1u << 6; }
     }
     fclose(f);
-    return seen == 127 ? 0 : -1;
+    return seen == 255 ? 0 : -1;
 }
 
 static void probe_cache_store(const char *path, const char *boot,
                               const char *h264, const char *hevc,
                               const char *av1, const char *vp8,
                               const char *mpeg2, const char *jpeg,
-                              const char *vpp)
+                              const char *vpp, const char *vp9)
 {
     char tmp[300];
     FILE *f;
@@ -640,9 +656,9 @@ static void probe_cache_store(const char *path, const char *boot,
     if (!f) { close(fd); unlink(tmp); return; }
     if (!f)
         return;
-    fprintf(f, "boot4 %s\n", boot);
-    fprintf(f, "h264=%s\nhevc=%s\nav1=%s\nvp8=%s\nmpeg2=%s\njpeg=%s\nvpp=%s\n",
-            h264, hevc, av1, vp8, mpeg2, jpeg, vpp);
+    fprintf(f, "boot5 %s\n", boot);
+    fprintf(f, "h264=%s\nhevc=%s\nav1=%s\nvp8=%s\nmpeg2=%s\njpeg=%s\nvpp=%s\nvp9=%s\n",
+            h264, hevc, av1, vp8, mpeg2, jpeg, vpp, vp9);
     if (fclose(f) == 0)
         rename(tmp, path);
     else
@@ -652,7 +668,7 @@ static void probe_cache_store(const char *path, const char *boot,
 /* Select usable decoder, encoder and raw-processing nodes. */
 static int scan_all_uncached(char *h264_out, char *hevc_out, char *av1_out,
                              char *vp8_out, char *mpeg2_out,
-                             char *jpeg_enc_out, char *vpp_out, unsigned out_len)
+                             char *jpeg_enc_out, char *vpp_out, char *vp9_out, unsigned out_len)
 {
     struct vav4l2_node_fmts nodes[VAV4L2_PROBE_MAX_NODES];
     struct scan_node raw[VAV4L2_PROBE_MAX_NODES];
@@ -666,6 +682,7 @@ static int scan_all_uncached(char *h264_out, char *hevc_out, char *av1_out,
     if (mpeg2_out && out_len) mpeg2_out[0] = 0;
     if (jpeg_enc_out && out_len) jpeg_enc_out[0] = 0;
     if (vpp_out && out_len) vpp_out[0] = 0;
+    if (vp9_out && out_len) vp9_out[0] = 0;
 
     n_raw = scan_nodes(raw, VAV4L2_PROBE_MAX_NODES);
     for (i = 0; i < n_raw && n_nodes < VAV4L2_PROBE_MAX_NODES; i++) {
@@ -697,12 +714,14 @@ static int scan_all_uncached(char *h264_out, char *hevc_out, char *av1_out,
     copy_path(vp8_out, out_len, p);
     p = vav4l2_pick_device_for_codec(VAV4L2_CODEC_MPEG2, nodes, n_nodes);
     copy_path(mpeg2_out, out_len, p);
+    p = vav4l2_pick_device_for_codec(VAV4L2_CODEC_VP9, nodes, n_nodes);
+    copy_path(vp9_out, out_len, p);
     return 0;
 }
 
 int vav4l2_scan_all_cached(char *h264_out, char *hevc_out, char *av1_out,
                            char *vp8_out, char *mpeg2_out,
-                           char *jpeg_enc_out, char *vpp_out,
+                           char *jpeg_enc_out, char *vpp_out, char *vp9_out,
                            unsigned out_len)
 {
     char path[280];
@@ -715,16 +734,16 @@ int vav4l2_scan_all_cached(char *h264_out, char *hevc_out, char *av1_out,
     snprintf(boot, sizeof(boot), "%s-%016" PRIx64, id, key);
     if (path[0] && id[0] && key && !getenv("VAV4L2_PROBE_NOCACHE") &&
         probe_cache_load(path, boot, h264_out, hevc_out, av1_out, vp8_out,
-                         mpeg2_out, jpeg_enc_out, vpp_out, out_len) == 0 &&
+                         mpeg2_out, jpeg_enc_out, vpp_out, vp9_out, out_len) == 0 &&
         validate_cached_node(h264_out, VAV4L2_CODEC_H264) && validate_cached_node(hevc_out, VAV4L2_CODEC_HEVC) &&
         validate_cached_node(av1_out, VAV4L2_CODEC_AV1) && validate_cached_node(vp8_out, VAV4L2_CODEC_VP8) &&
-        validate_cached_node(mpeg2_out, VAV4L2_CODEC_MPEG2) && validate_cached_node(jpeg_enc_out, VAV4L2_CODEC_JPEG_ENC) && validate_cached_node(vpp_out, VAV4L2_CODEC_VPP)) {
+        validate_cached_node(mpeg2_out, VAV4L2_CODEC_MPEG2) && validate_cached_node(jpeg_enc_out, VAV4L2_CODEC_JPEG_ENC) && validate_cached_node(vpp_out, VAV4L2_CODEC_VPP) && validate_cached_node(vp9_out, VAV4L2_CODEC_VP9)) {
         fprintf(stderr, "v4l2: probe cache hit (%s)\n", path);
         return 0;
     }
 
     scan_all_uncached(h264_out, hevc_out, av1_out, vp8_out, mpeg2_out,
-                      jpeg_enc_out, vpp_out, out_len);
+                      jpeg_enc_out, vpp_out, vp9_out, out_len);
 
     if (path[0] && id[0] && key && !getenv("VAV4L2_PROBE_NOCACHE"))
         probe_cache_store(path, boot,
@@ -734,6 +753,7 @@ int vav4l2_scan_all_cached(char *h264_out, char *hevc_out, char *av1_out,
                           vp8_out && vp8_out[0] ? vp8_out : "",
                           mpeg2_out && mpeg2_out[0] ? mpeg2_out : "",
                           jpeg_enc_out && jpeg_enc_out[0] ? jpeg_enc_out : "",
-                          vpp_out && vpp_out[0] ? vpp_out : "");
+                          vpp_out && vpp_out[0] ? vpp_out : "",
+                          vp9_out && vp9_out[0] ? vp9_out : "");
     return 0;
 }

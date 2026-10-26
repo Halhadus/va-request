@@ -4,7 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 static pthread_mutex_t fixture_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fixture_ready = PTHREAD_COND_INITIALIZER;
 static int wait_decode, entered, released;
@@ -52,7 +52,7 @@ int main(void)
 {
     struct VADriverVTable v = {0}; struct VADriverContext ctx = {.vtable = &v};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
-    if (__vaDriverInit_1_20(&ctx)) return 1;
+    if (VAV4L2_DRIVER_INIT(&ctx)) return 1;
     struct vav4l2_driver_data *dd = ctx.pDriverData;
     struct vav4l2_context *a = context(dd, VAV4L2_CODEC_VPP), *b = context(dd, VAV4L2_CODEC_VPP);
     struct vav4l2_context *jpeg = context(dd, VAV4L2_CODEC_JPEG_ENC);

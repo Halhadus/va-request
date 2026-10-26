@@ -3,6 +3,8 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
 #include <limits.h>
 #include <string.h>
 #include <stdint.h>
@@ -150,8 +152,29 @@ static void test_annexb_bounds(void)
                 vav4l2_annexb_concat(parts, sizes, -1, 3, out, sizeof(out)) == 0 &&
                 vav4l2_annexb_concat(parts, sizes, 1, 8, out, sizeof(out)) == 0, "annexb-input-contract");
 }
+static void tiled_layouts(void)
+{
+    const uint32_t formats[] = {V4L2_PIX_FMT_NV12_4L4, V4L2_PIX_FMT_NV12_16L16, V4L2_PIX_FMT_NV12_32L32, V4L2_PIX_FMT_NV12_8L128, V4L2_PIX_FMT_P010_4L4};
+    for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+        unsigned t = vav4l2_capture_tile(formats[i]), th = i == 3 ? 128 : i == 4 ? 4 : t;
+        unsigned bytes = i == 4 ? 2 : 1, stride = t*2, rows = th*2;
+        uint32_t size = vav4l2_capture_plane_size(formats[i], stride, rows);
+        uint8_t *source = malloc(size), *result = malloc(size); assert(source && result); memset(result, 0xa5, size);
+        for (unsigned plane = 0; plane < 2; plane++) for (unsigned y = 0; y < (plane ? rows/2 : rows); y++) for (unsigned x = 0; x < stride; x++) {
+            unsigned offset = (y/th)*stride*th+(x/t)*t*th+(y%th)*t+x%t;
+            source[(plane ? stride*rows : 0)+offset] = (uint8_t)(plane*71+y*13+x);
+        }
+        assert(!vav4l2_detile_capture(result, stride, size, source, size, stride, rows, stride/bytes, rows, formats[i]));
+        for (unsigned y = 0; y < rows*3/2; y++) for (unsigned x = 0; x < stride; x++)
+            assert(result[y*stride+x] == (uint8_t)((y >= rows ? 71 : 0)+(y >= rows ? y-rows : y)*13+x));
+        memset(result, 0xa5, size);
+        assert(vav4l2_detile_capture(result, stride, size, source, size-1, stride, rows, stride/bytes, rows, formats[i]) < 0 && result[0] == 0xa5);
+        assert(!vav4l2_capture_plane_size(formats[i], stride-1, rows)); free(source); free(result);
+    }
+}
 int main(void)
 {
+    tiled_layouts();
     test_fourcc_map();
     test_copy_nv12();
     test_nv15_to_p010();

@@ -15,7 +15,8 @@
 #include <sys/ioctl.h>
 #include "probe.h"
 #include "compat/compat.h"
-static uint32_t missing;
+static uint32_t missing, selected;
+static int format_dependent;
 static int disabled, fail_menu, calls;
 static int media_owner, media_cursor, media_roles[1024];
 static unsigned video_major, video_minor;
@@ -49,6 +50,22 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
         assert(fmt->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE && fmt->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_JPEG);
         jpeg_selected[fd] = 1; return 0;
     }
+    if (!raw_inventory && (request == VIDIOC_G_FMT || request == VIDIOC_S_FMT)) {
+        struct v4l2_format *f = arg;
+        if (request == VIDIOC_S_FMT) selected = f->fmt.pix_mp.pixelformat;
+        if (request == VIDIOC_G_FMT) { f->fmt.pix_mp.pixelformat = selected ? selected : V4L2_PIX_FMT_NV12; f->fmt.pix_mp.num_planes = 1; }
+        return 0;
+    }
+    if (format_dependent && request == VIDIOC_ENUM_FMT) {
+        struct v4l2_fmtdesc *f = arg;
+        if (f->index) { errno = EINVAL; return -1; }
+        f->pixelformat = V4L2_PIX_FMT_H264_SLICE; return 0;
+    }
+    if (format_dependent && request == VIDIOC_CREATE_BUFS) {
+        struct v4l2_create_buffers *b = arg;
+        assert(selected == V4L2_PIX_FMT_H264_SLICE && b->format.fmt.pix_mp.pixelformat == selected);
+        b->capabilities = V4L2_BUF_CAP_SUPPORTS_REQUESTS; return 0;
+    }
     if (request == MEDIA_IOC_G_TOPOLOGY) {
         struct media_v2_topology *top = arg;
         if (!top->ptr_interfaces) { top->num_interfaces = 1; return 0; }
@@ -58,6 +75,7 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
     }
     if (request == VIDIOC_QUERY_EXT_CTRL) {
         struct v4l2_query_ext_ctrl *q = arg;
+        if (format_dependent) assert(selected == V4L2_PIX_FMT_H264_SLICE);
         if (q->id == missing) { errno = EINVAL; return -1; }
         q->flags = (disabled ? V4L2_CTRL_FLAG_DISABLED : 0) | (readonly ? V4L2_CTRL_FLAG_READ_ONLY : 0); return 0;
     }
@@ -152,17 +170,17 @@ static void test_jpeg_discovery(void)
     media_owner = __real_open("/dev/null", O_RDWR | O_CLOEXEC); assert(media_owner >= 0);
     raw_inventory = 2; setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     const uint32_t formats[] = {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12M, V4L2_PIX_FMT_YUV420M, V4L2_PIX_FMT_YUYV};
-    char paths[7][64];
+    char paths[8][64];
     for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
         jpeg_input = formats[i];
-        assert(vav4l2_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], 64) == 0);
+        assert(vav4l2_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], paths[7], 64) == 0);
         assert(i == 3 ? !paths[5][0] : !strcmp(paths[5], "/dev/video2"));
     }
     jpeg_input = V4L2_PIX_FMT_NV12;
     for (unsigned fault = 0; fault < 4; fault++) {
         missing = fault == 0 ? V4L2_CID_JPEG_COMPRESSION_QUALITY : 0;
         disabled = fault == 1; readonly = fault == 2; jpeg_reject = fault == 3;
-        assert(vav4l2_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], 64) == 0 && !paths[5][0]);
+        assert(vav4l2_scan_all_cached(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], paths[7], 64) == 0 && !paths[5][0]);
     }
     missing = disabled = readonly = jpeg_reject = raw_inventory = 0; close(media_owner);
 }
@@ -176,6 +194,9 @@ int main(void)
     struct v4l2_capability cap = {.capabilities = V4L2_CAP_DEVICE_CAPS | V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING};
     assert(!vav4l2_node_is_m2m(&cap)); cap.device_caps = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING; assert(vav4l2_node_is_m2m(&cap));
     cap.device_caps = V4L2_CAP_VIDEO_M2M_MPLANE; assert(!vav4l2_node_is_m2m(&cap));
+    format_dependent = 1; selected = 0; uint32_t coded;
+    assert(vav4l2_decoder_select(42, VAV4L2_CODEC_H264, &coded) == 0 && coded == V4L2_PIX_FMT_H264_SLICE);
+    format_dependent = 0;
     assert(vav4l2_codec_controls_usable(42, VAV4L2_CODEC_H264));
     missing = V4L2_CID_STATELESS_H264_PPS; assert(!vav4l2_codec_controls_usable(42, VAV4L2_CODEC_H264)); missing = 0;
     disabled = 1; assert(!vav4l2_codec_controls_usable(42, VAV4L2_CODEC_HEVC)); disabled = 0;

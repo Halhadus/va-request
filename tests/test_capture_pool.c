@@ -11,7 +11,7 @@
 #include <linux/media.h>
 #include <drm_fourcc.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 static int failures, fault, allocations, mmap_freed, dma_freed, dma_requests, queued, current_index, sync_reads, sync_writes;
 static int owned[64], n_owned, query_calls, export_calls;
 static unsigned frame, native_count = 2;
@@ -19,6 +19,7 @@ static void *pool_mapping;
 static int pool_mapped;
 static struct vav4l2_context *current;
 static struct v4l2_format format;
+static struct timeval submitted_time;
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL capture pool %s fault=%d\n", tag, fault); failures++; } }
 int __wrap_poll(struct pollfd *p, nfds_t n, int timeout) { (void)timeout; expect(n == 1, "single-device-wait"); p->revents = p->events; return 1; }
 int __wrap_vav4l2_alloc_shared_storage(unsigned bytes, unsigned rows)
@@ -57,6 +58,7 @@ int __wrap_munmap(void *map, size_t size) { int result = __real_munmap(map, size
 static int mock_ioctl(int fd, unsigned long req, void *arg)
 {
     (void)fd;
+    if (req == VIDIOC_ENUM_FMT) { struct v4l2_fmtdesc *f = arg; if (f->index) { errno = EINVAL; return -1; } f->pixelformat = V4L2_PIX_FMT_NV15; return 0; }
     if (req == DMA_BUF_IOCTL_SYNC) {
         struct dma_buf_sync *s = arg;
         if (s->flags & DMA_BUF_SYNC_END) expect(!pool_mapped, "pool-unmapped-before-CPU-END");
@@ -87,7 +89,7 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
             expect(b->memory == V4L2_MEMORY_DMABUF && !(b->flags & V4L2_BUF_FLAG_REQUEST_FD) && b->length == 1 && b->m.planes[0].length >= 8192,
                 "internal-pool-capture-queues-bare-full-auxiliary-allocation");
             current_index = b->index; queued++;
-        }
+        } else submitted_time = b->timestamp;
         return 0;
     }
     if (req == MEDIA_REQUEST_IOC_QUEUE) {
@@ -96,7 +98,7 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
     }
     if (req == VIDIOC_DQBUF) {
         struct v4l2_buffer *b = arg;
-        if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) { b->index = current_index; b->m.planes[0].bytesused = 8192; }
+        if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) { b->index = current_index; b->m.planes[0].bytesused = 8192; b->timestamp = submitted_time; }
         else b->index = 0;
         return 0;
     }
@@ -119,7 +121,7 @@ int main(void)
 {
     struct VADriverVTable v = {0}; struct VADriverContext va = {.vtable = &v};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1); setenv("VAV4L2_CAPTURE_DMABUF", "0", 1); unsetenv("VAV4L2_CAPTURE_POOL_DMABUF");
-    if (__vaDriverInit_1_20(&va)) return 1;
+    if (VAV4L2_DRIVER_INIT(&va)) return 1;
     struct vav4l2_driver_data *dd = va.pDriverData; struct vav4l2_context c;
     int backing = memfd_create("decode device fixture", MFD_CLOEXEC); if (backing < 0) return 1;
     for (unsigned mode = 0; mode < 2; mode++) {

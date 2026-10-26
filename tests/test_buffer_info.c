@@ -6,7 +6,7 @@
 #include "va_v4l2.h"
 #include "driver_identity.h"
 
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 extern VAStatus vaBufferInfo(VADisplay display, VAContextID context, VABufferID id,
                               VABufferType *type, unsigned *size, unsigned *elements);
 static int failures;
@@ -54,7 +54,7 @@ int main(int argc, char **argv)
     struct VADriverVTable v = {0}; struct VADriverContext driver = {.vtable = &v};
     struct VADisplayContext display = {.vadpy_magic = VA_DISPLAY_MAGIC, .pDriverContext = &driver};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
-    if (__vaDriverInit_1_20(&driver)) return 1;
+    if (VAV4L2_DRIVER_INIT(&driver)) return 1;
     expect(vav4l2_test_driver_identity(driver.str_vendor), "acceptance-client-recognizes-current-driver");
     expect(!vav4l2_test_driver_identity(NULL) && !vav4l2_test_driver_identity("another-driver") && !vav4l2_test_driver_identity("other libva-v4l2 0.1.0"), "acceptance-client-rejects-unrelated-drivers");
     expect(v.vaBufferInfo != NULL, "buffer-info-callback-is-registered");

@@ -5,7 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP);
 static int failures, controls, submits, pulls, fail_submit, fail_pull, no_hold;
 static uint8_t expected[256], output[256], remapped[256];
 static size_t expected_size, first_size;
@@ -153,9 +153,15 @@ static void pending_api(struct VADriverContext *d, struct vav4l2_context *c, VAS
 }
 int main(void)
 {
+    VAPictureParameterBufferH264 level = {.picture_width_in_mbs_minus1 = 79, .picture_height_in_mbs_minus1 = 44, .num_ref_frames = 1};
+    expect(vav4l2_h264_level(&level) == 31, "720p-level-follows-frame-size");
+    level.picture_width_in_mbs_minus1 = 239; level.picture_height_in_mbs_minus1 = 134;
+    expect(vav4l2_h264_level(&level) == 51, "4k-does-not-use-level-4");
+    level.num_ref_frames = 16; expect(vav4l2_h264_level(&level) == 60, "DPB-capacity-constrains-normalized-level");
+    level.num_ref_frames = 17; expect(!vav4l2_h264_level(&level), "unrepresentable-DPB-is-not-given-a-level");
     struct VADriverVTable v = {0}; struct VADriverContext driver = {.vtable = &v};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1); setenv("VAV4L2_EXPBUF_EXPORT", "1", 1);
-    if (__vaDriverInit_1_20(&driver)) return 1;
+    if (VAV4L2_DRIVER_INIT(&driver)) return 1;
     struct vav4l2_driver_data *dd = driver.pDriverData; struct vav4l2_context *c = context(dd);
     VASurfaceID surfaces[2]; if (v.vaCreateSurfaces(&driver, 16, 32, VA_RT_FORMAT_YUV420, 2, surfaces)) return 1;
     vav4l2_set_ioctl_hook(ioctl_hook);

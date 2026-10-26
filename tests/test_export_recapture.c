@@ -22,10 +22,18 @@
 
 #include "va_v4l2.h"
 
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 extern int __real_vav4l2_open_device(const char *path);
 extern int __real_vav4l2_open_media_for_device(const char *path);
 static int g_context_fd = -1;
+static int g_export_fixture, g_export_fallbacks;
+extern int __real_vav4l2_gbm_surface_ensure_export(struct vav4l2_surface *, uint32_t);
+
+int __wrap_vav4l2_gbm_surface_ensure_export(struct vav4l2_surface *surface, uint32_t flags)
+{
+    if (!g_export_fixture) return __real_vav4l2_gbm_surface_ensure_export(surface, flags);
+    g_export_fallbacks++; errno = ENOTSUP; return -1;
+}
 
 int __wrap_vav4l2_open_device(const char *path)
 {
@@ -89,12 +97,15 @@ static void test_request_control_binding(void)
 static char g_ops[32][24];
 static int g_nops;
 static uint32_t g_last_cap_w, g_last_cap_h;
+static uint32_t g_last_cap_fourcc = V4L2_PIX_FMT_NV12;
+static int g_p010_only;
+static struct timeval g_output_time;
 static int g_streamoff, g_reqbufs0, g_reqbufs_n, g_sfmt_cap;
 static int g_fds_live_at_reqbufs0;
 static int g_small_output, g_capture_query_error, g_require_hevc_sps_first;
 static int g_clamp_capture, g_bad_capture_format, g_clamp_get_format;
 static unsigned g_queued_cap, g_queued_out;
-static int g_export_short, g_export_fd = -1;
+static int g_export_short, g_export_error, g_export_fd = -1;
 static struct vav4l2_context *g_ctx;
 
 static void log_op(const char *op)
@@ -121,6 +132,10 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 
     if (request == VIDIOC_ENUM_FMT) {
         struct v4l2_fmtdesc *f = arg;
+        if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            if (f->index) { errno = EINVAL; return -1; }
+            f->pixelformat = g_p010_only ? V4L2_PIX_FMT_P010 : V4L2_PIX_FMT_NV15; return 0;
+        }
         if (!f->index) { f->pixelformat = V4L2_PIX_FMT_HEVC_SLICE; return 0; }
         errno = EINVAL; return -1;
     }
@@ -178,6 +193,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
                 fmt->fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
             g_last_cap_w = fmt->fmt.pix_mp.width;
             g_last_cap_h = fmt->fmt.pix_mp.height;
+            g_last_cap_fourcc = fmt->fmt.pix_mp.pixelformat;
             log_op("S_FMT_CAP");
         }
         return 0;
@@ -192,11 +208,12 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
                 fmt->fmt.pix_mp.width = 1920;
                 fmt->fmt.pix_mp.height = 1088;
             }
-            fmt->fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
+            fmt->fmt.pix_mp.pixelformat = g_last_cap_fourcc;
             fmt->fmt.pix_mp.num_planes = 1;
-            fmt->fmt.pix_mp.plane_fmt[0].bytesperline = fmt->fmt.pix_mp.width;
+            fmt->fmt.pix_mp.plane_fmt[0].bytesperline = g_last_cap_fourcc == V4L2_PIX_FMT_P010 ? 2 * fmt->fmt.pix_mp.width :
+                g_last_cap_fourcc == V4L2_PIX_FMT_NV15 ? (fmt->fmt.pix_mp.width + 3) / 4 * 5 : fmt->fmt.pix_mp.width;
             fmt->fmt.pix_mp.plane_fmt[0].sizeimage =
-                fmt->fmt.pix_mp.width * fmt->fmt.pix_mp.height * 3 / 2;
+                fmt->fmt.pix_mp.plane_fmt[0].bytesperline * fmt->fmt.pix_mp.height * 3 / 2;
         } else {
             /* Capture-only tests keep the coded queue large enough. */
             fmt->fmt.pix_mp.width = g_small_output ? 320 : 4096;
@@ -208,6 +225,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
     }
     if (request == VIDIOC_EXPBUF) {
         struct v4l2_exportbuffer *exp = arg;
+        if (g_export_error) { errno = g_export_error; return -1; }
         int mfd = memfd_create("vav4l2-exp", MFD_CLOEXEC);
 
         if (mfd < 0)
@@ -257,13 +275,17 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
     if (request == VIDIOC_QBUF) {
         struct v4l2_buffer *buf = arg;
         if (buf->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) g_queued_cap = buf->index;
-        else g_queued_out = buf->index;
+        else { g_queued_out = buf->index; g_output_time = buf->timestamp; }
         return 0;
     }
     if (request == VIDIOC_DQBUF) {
         struct v4l2_buffer *buf = arg;
 
         buf->index = buf->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ? g_queued_cap : g_queued_out;
+        if (buf->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            buf->timestamp = g_output_time;
+            buf->m.planes[0].bytesused = vav4l2_capture_plane_size(g_ctx->cap_pixelformat, g_ctx->cap_stride, g_ctx->cap_height);
+        }
         return 0;
     }
 #ifdef MEDIA_REQUEST_IOC_QUEUE
@@ -509,6 +531,7 @@ static void test_av1_translate_recapture(void)
 
     memset(&pic, 0, sizeof(pic));
     memset(tile, 0xab, sizeof(tile));
+    pic.primary_ref_frame = 7;
     pic.frame_width_minus1 = 1919;
     pic.frame_height_minus1 = 1079;
     pic.bit_depth_idx = 0;
@@ -572,6 +595,22 @@ static void test_ensure_noop_shrink_fmt(void)
     expect_true(ctx.cap_pixelformat == V4L2_PIX_FMT_NV15, "fmt-nv15");
     vav4l2_set_ioctl_hook(NULL);
     g_ctx = NULL;
+}
+
+static void test_p010_capture(void)
+{
+    struct vav4l2_context c = {.v4l2_fd = memfd_create("p010-capture", MFD_CLOEXEC), .media_fd = -1, .request_fd = -1,
+        .codec = VAV4L2_CODEC_HEVC, .rt_format = VA_RT_FORMAT_YUV420_10};
+    expect_true(c.v4l2_fd >= 0, "p010-fixture-fd");
+    g_ctx = &c; g_p010_only = 1; g_clamp_get_format = g_bad_capture_format = g_clamp_capture = 0;
+    vav4l2_set_ioctl_hook(mock_ioctl);
+    expect_true(vav4l2_ensure_capture(&c, 1280, 720, V4L2_PIX_FMT_NV15) == 0 && c.cap_pixelformat == V4L2_PIX_FMT_P010 &&
+        c.cap_stride == 2560 && c.cap_sizeimage == 2764800, "P010-only-node-uses-implemented-matching-depth-layout");
+    int count = g_reqbufs_n;
+    expect_true(vav4l2_ensure_capture(&c, 1280, 720, V4L2_PIX_FMT_NV15) == 0 && g_reqbufs_n == count,
+        "matching-P010-capture-is-reused-without-NV15-renegotiation");
+    vav4l2_release_context_device(&c); vav4l2_set_ioctl_hook(NULL);
+    g_ctx = NULL; g_p010_only = 0; g_last_cap_fourcc = V4L2_PIX_FMT_NV12;
 }
 
 static void test_capture_clamping(void)
@@ -819,7 +858,7 @@ static void test_hevc_first_picture_order(void)
     struct vav4l2_buffer *buffers[] = {&picture, &params, &data};
 
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
-    if (__vaDriverInit_1_20(&driver) != VA_STATUS_SUCCESS) {
+    if (VAV4L2_DRIVER_INIT(&driver) != VA_STATUS_SUCCESS) {
         expect_true(0, "hevc-startup-driver");
         return;
     }
@@ -898,7 +937,7 @@ static void test_export_fd_ownership(void)
     VADRMPRIMESurfaceDescriptor first = {0}, second = {0};
     VASurfaceID sid;
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
-    if (__vaDriverInit_1_20(&driver) != VA_STATUS_SUCCESS) { g_fail++; return; }
+    if (VAV4L2_DRIVER_INIT(&driver) != VA_STATUS_SUCCESS) { g_fail++; return; }
     struct vav4l2_driver_data *dd = driver.pDriverData;
     struct vav4l2_context *c = calloc(1, sizeof(*c));
     if (!c) { g_fail++; table.vaTerminate(&driver); return; }
@@ -913,6 +952,11 @@ static void test_export_fd_ownership(void)
     vav4l2_set_ioctl_hook(mock_ioctl);
     expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME, 0, &first) ==
                 VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE, "legacy-export-layout-rejected");
+    c->cap_pixelformat = V4L2_PIX_FMT_NV12_16L16; g_export_fixture = 1; g_export_fallbacks = 0;
+    expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &first) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                g_export_fallbacks == 1 && !first.num_objects && !c->capture_exports[0].count && dd->surfaces[sid]->buf_index == -1,
+                "tiled-pool-before-first-picture-never-exports-as-linear");
+    c->cap_pixelformat = V4L2_PIX_FMT_NV12; g_export_fixture = 0; g_export_fallbacks = 0;
     expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &first) == VA_STATUS_SUCCESS,
                 "export-first-fd");
     expect_true(first.objects[0].size == 448 && (fcntl(first.objects[0].fd, F_GETFD) & FD_CLOEXEC),
@@ -921,11 +965,25 @@ static void test_export_fd_ownership(void)
                 first.objects[0].fd != second.objects[0].fd && fcntl(first.objects[0].fd, F_GETFD) >= 0,
                 "repeat-export-keeps-first-client-fd-open");
     VADRMPRIMESurfaceDescriptor rejected = first;
+    vav4l2_capture_exports_release(c);
+    g_export_fixture = 1; g_export_fallbacks = 0;
     g_export_short = 1;
     expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &rejected) == VA_STATUS_ERROR_OPERATION_FAILED &&
                 !memcmp(&rejected, &first, sizeof(first)) && fcntl(g_export_fd, F_GETFD) < 0 &&
                 fcntl(first.objects[0].fd, F_GETFD) >= 0, "short-native-export-closes-only-new-fd-and-preserves-client-descriptor");
+    expect_true(!g_export_fallbacks && !c->capture_exports[0].count,
+                "short-native-export-does-not-fallback-or-cache-invalid-object");
     g_export_short = 0;
+    VADRMPRIMESurfaceDescriptor retry = {0};
+    expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &retry) == VA_STATUS_SUCCESS &&
+                retry.objects[0].size == 448 && c->capture_exports[0].count == 1 && !g_export_fallbacks,
+                "valid-export-after-short-object-succeeds");
+    if (retry.num_objects) close(retry.objects[0].fd);
+    vav4l2_capture_exports_release(c); g_export_error = EINVAL;
+    expect_true(table.vaExportSurfaceHandle(&driver, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &rejected) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                g_export_fallbacks == 1 && !memcmp(&rejected, &first, sizeof(first)),
+                "unsupported-expbuf-retains-gbm-fallback-and-atomic-descriptor");
+    g_export_error = 0; g_export_fixture = 0;
     expect_true(table.vaDestroySurfaces(&driver, &sid, 1) == VA_STATUS_SUCCESS &&
                 fcntl(second.objects[0].fd, F_GETFD) >= 0 && c->n_free_cap == 1,
                 "surface-destroy-keeps-client-fd-and-recycles-unlisted-slot");
@@ -944,6 +1002,7 @@ int main(void)
     test_request_control_binding();
     test_recapture_small_to_large();
     test_ensure_noop_shrink_fmt();
+    test_p010_capture();
     test_av1_translate_recapture();
     test_output_remap_failure();
     test_capture_clamping();

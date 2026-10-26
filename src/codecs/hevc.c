@@ -19,6 +19,7 @@
 #include <linux/videodev2.h>
 
 #include "va_v4l2.h"
+#include "request_slices.h"
 
 static void hevc_fill_sps(struct v4l2_ctrl_hevc_sps *sps,
                           const VAPictureParameterBufferHEVC *pic)
@@ -348,6 +349,20 @@ VAStatus vav4l2_hevc_translate(struct vav4l2_context *ctx,
     packet_status = vav4l2_packetize_slices(VAV4L2_CODEC_HEVC, buffers, num_buffers, header_data,
         temporary ? total : ctx->output_buf_size, &total);
     if (packet_status == VA_STATUS_SUCCESS) packet_status = vav4l2_hevc_parse_headers(header_data, total, pic_param, &pps, &dec);
+    struct v4l2_query_ext_ctrl array = {.id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS};
+    int frame_array = !ctx->request_slice_based && vav4l2_xioctl(ctx->v4l2_fd, VIDIOC_QUERY_EXT_CTRL, &array) == 0 &&
+        array.nr_of_dims == 1 && !(array.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY)) && (array.flags & V4L2_CTRL_FLAG_DYNAMIC_ARRAY) && array.elem_size == sizeof(struct v4l2_ctrl_hevc_slice_params);
+    if (packet_status == VA_STATUS_SUCCESS && (ctx->request_slice_based || frame_array)) {
+        struct vav4l2_slice_plan *plan = NULL;
+        packet_status = vav4l2_request_slice_plan(ctx, buffers, num_buffers, header_data, total, pic_param, &dec, &plan);
+        if (temporary) free(header_data);
+        struct v4l2_ctrl_hevc_scaling_matrix sm;
+        if (qm) memcpy(&sm, qm, sizeof(sm)); else memset(&sm, 16, sizeof(sm));
+        if (packet_status == VA_STATUS_SUCCESS) packet_status = vav4l2_request_slice_decode(ctx, plan, &sps, &pps, &dec, &sm, 1,
+            pic_param->pic_width_in_luma_samples, pic_param->pic_height_in_luma_samples,
+            vav4l2_capture_fourcc_from_sps(pic_param->bit_depth_luma_minus8, pic_param->pic_fields.bits.chroma_format_idc));
+        vav4l2_request_slice_free(plan); return packet_status;
+    }
     if (temporary) free(header_data);
     if (packet_status != VA_STATUS_SUCCESS) return packet_status;
     vav4l2_decode_trace(ctx, "hevc-header", 0, pps.pic_parameter_set_id);
@@ -462,11 +477,7 @@ VAStatus vav4l2_hevc_translate(struct vav4l2_context *ctx,
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
-    /*
-     * Synchronous decode pipeline — mirrors the H.264 path: pop buffers
-     * from the pools, queue, submit, wait, and hand the decoded frame to
-     * the target surface.
-     */
+    /* The Request backend owns the coded slot through queue completion. */
     if (ctx->n_free_out == 0) {
         fprintf(stderr, "v4l2: HEVC no free output buffer\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;

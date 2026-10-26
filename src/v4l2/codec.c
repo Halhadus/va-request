@@ -3,13 +3,14 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include "probe.h"
-extern const int vav4l2_has_h264, vav4l2_has_hevc, vav4l2_has_av1, vav4l2_has_vp8, vav4l2_has_mpeg2, vav4l2_has_jpeg, vav4l2_has_vpp;
+extern const int vav4l2_has_h264, vav4l2_has_hevc, vav4l2_has_av1, vav4l2_has_vp8, vav4l2_has_vp9, vav4l2_has_mpeg2, vav4l2_has_jpeg, vav4l2_has_vpp;
 struct codec_descriptor { enum vav4l2_codec codec; const char *name; uint32_t fourcc; const int *available; uint32_t controls[6]; };
 static const struct codec_descriptor codecs[] = {
     {VAV4L2_CODEC_H264, "H.264", V4L2_PIX_FMT_H264_SLICE, &vav4l2_has_h264, {V4L2_CID_STATELESS_H264_SPS, V4L2_CID_STATELESS_H264_PPS, V4L2_CID_STATELESS_H264_SCALING_MATRIX, V4L2_CID_STATELESS_H264_DECODE_PARAMS}},
     {VAV4L2_CODEC_HEVC, "HEVC", V4L2_PIX_FMT_HEVC_SLICE, &vav4l2_has_hevc, {V4L2_CID_STATELESS_HEVC_SPS, V4L2_CID_STATELESS_HEVC_PPS, V4L2_CID_STATELESS_HEVC_SCALING_MATRIX, V4L2_CID_STATELESS_HEVC_DECODE_PARAMS}},
     {VAV4L2_CODEC_AV1, "AV1", V4L2_PIX_FMT_AV1_FRAME, &vav4l2_has_av1, {V4L2_CID_STATELESS_AV1_SEQUENCE, V4L2_CID_STATELESS_AV1_FRAME, V4L2_CID_STATELESS_AV1_TILE_GROUP_ENTRY}},
     {VAV4L2_CODEC_VP8, "VP8", V4L2_PIX_FMT_VP8_FRAME, &vav4l2_has_vp8, {V4L2_CID_STATELESS_VP8_FRAME}},
+    {VAV4L2_CODEC_VP9, "VP9", V4L2_PIX_FMT_VP9_FRAME, &vav4l2_has_vp9, {V4L2_CID_STATELESS_VP9_FRAME}},
     {VAV4L2_CODEC_MPEG2, "MPEG-2", V4L2_PIX_FMT_MPEG2_SLICE, &vav4l2_has_mpeg2, {V4L2_CID_STATELESS_MPEG2_SEQUENCE, V4L2_CID_STATELESS_MPEG2_PICTURE, V4L2_CID_STATELESS_MPEG2_QUANTISATION}},
     {VAV4L2_CODEC_JPEG_ENC, "JPEG encode", 0, &vav4l2_has_jpeg, {V4L2_CID_JPEG_COMPRESSION_QUALITY}},
     {VAV4L2_CODEC_VPP, "VPP", 0, &vav4l2_has_vpp, {0}},
@@ -29,6 +30,14 @@ int vav4l2_codec_coded_fourcc(enum vav4l2_codec codec, uint32_t *fourcc)
 }
 int vav4l2_codec_controls_usable(int fd, enum vav4l2_codec codec)
 {
+    if (fd < 0) return 0;
+    uint32_t coded;
+    if (vav4l2_codec_coded_fourcc(codec, &coded) == 0) {
+        struct v4l2_format f = {.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE};
+        if (vav4l2_xioctl(fd, VIDIOC_G_FMT, &f) < 0) return 0;
+        f.fmt.pix_mp.pixelformat = coded; f.fmt.pix_mp.num_planes = 1;
+        if (vav4l2_xioctl(fd, VIDIOC_S_FMT, &f) < 0 || f.fmt.pix_mp.pixelformat != coded || f.fmt.pix_mp.num_planes != 1) return 0;
+    }
     const struct codec_descriptor *d = descriptor(codec);
     if (!d || !*d->available || fd < 0) return 0;
     for (unsigned i = 0; i < sizeof(d->controls) / sizeof(d->controls[0]) && d->controls[i]; i++) {
@@ -36,14 +45,8 @@ int vav4l2_codec_controls_usable(int fd, enum vav4l2_codec codec)
         if (vav4l2_xioctl(fd, VIDIOC_QUERY_EXT_CTRL, &q) < 0 || (q.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY))) return 0;
     }
     if (codec == VAV4L2_CODEC_H264 || codec == VAV4L2_CODEC_HEVC) {
-        const uint32_t ids[] = {codec == VAV4L2_CODEC_H264 ? V4L2_CID_STATELESS_H264_DECODE_MODE : V4L2_CID_STATELESS_HEVC_DECODE_MODE,
-            codec == VAV4L2_CODEC_H264 ? V4L2_CID_STATELESS_H264_START_CODE : V4L2_CID_STATELESS_HEVC_START_CODE};
-        const int values[] = {codec == VAV4L2_CODEC_H264 ? V4L2_STATELESS_H264_DECODE_MODE_FRAME_BASED : V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED,
-            codec == VAV4L2_CODEC_H264 ? V4L2_STATELESS_H264_START_CODE_ANNEX_B : V4L2_STATELESS_HEVC_START_CODE_ANNEX_B};
-        for (unsigned i = 0; i < 2; i++) {
-            struct v4l2_queryctrl q = {.id = ids[i]}; struct v4l2_querymenu menu = {.id = ids[i], .index = values[i]};
-            if (vav4l2_xioctl(fd, VIDIOC_QUERYCTRL, &q) < 0 || (q.flags & V4L2_CTRL_FLAG_DISABLED) || q.minimum > values[i] || q.maximum < values[i] || vav4l2_xioctl(fd, VIDIOC_QUERYMENU, &menu) < 0) return 0;
-        }
+        int slice, raw;
+        if (vav4l2_request_modes(fd, codec, &slice, &raw) < 0) return 0;
     }
     return 1;
 }
@@ -59,6 +62,8 @@ uint32_t vav4l2_stateful_fourcc(enum vav4l2_codec codec)
     switch (codec) {
     case VAV4L2_CODEC_H264: return V4L2_PIX_FMT_H264;
     case VAV4L2_CODEC_HEVC: return V4L2_PIX_FMT_HEVC;
+    case VAV4L2_CODEC_VP9: return V4L2_PIX_FMT_VP9;
+    case VAV4L2_CODEC_AV1: return V4L2_PIX_FMT_AV1;
     default: return 0;
     }
 }
@@ -70,12 +75,16 @@ int vav4l2_stateful_usable(int fd, enum vav4l2_codec codec)
     format.fmt.pix_mp.pixelformat = vav4l2_stateful_fourcc(codec); format.fmt.pix_mp.num_planes = 1;
     if (vav4l2_xioctl(fd, VIDIOC_S_FMT, &format) < 0 || format.fmt.pix_mp.pixelformat != vav4l2_stateful_fourcc(codec) ||
         format.fmt.pix_mp.num_planes != 1) return 0;
-    struct v4l2_queryctrl profile = {.id = codec == VAV4L2_CODEC_H264 ? V4L2_CID_MPEG_VIDEO_H264_PROFILE : V4L2_CID_MPEG_VIDEO_HEVC_PROFILE};
+    struct v4l2_queryctrl profile = {.id = codec == VAV4L2_CODEC_H264 ? V4L2_CID_MPEG_VIDEO_H264_PROFILE :
+        codec == VAV4L2_CODEC_VP9 ? V4L2_CID_MPEG_VIDEO_VP9_PROFILE :
+        codec == VAV4L2_CODEC_AV1 ? V4L2_CID_MPEG_VIDEO_AV1_PROFILE : V4L2_CID_MPEG_VIDEO_HEVC_PROFILE};
     if (vav4l2_xioctl(fd, VIDIOC_QUERYCTRL, &profile) < 0 || (profile.flags & V4L2_CTRL_FLAG_DISABLED) ||
         profile.minimum < 0 || profile.maximum >= 32 || profile.minimum > profile.maximum) return 0;
     unsigned mask = codec == VAV4L2_CODEC_H264 ? (1u << V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE) |
         (1u << V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE) | (1u << V4L2_MPEG_VIDEO_H264_PROFILE_MAIN) |
-        (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH) : 1u << V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN;
+        (1u << V4L2_MPEG_VIDEO_H264_PROFILE_HIGH) : codec == VAV4L2_CODEC_AV1 ? (1u << V4L2_MPEG_VIDEO_AV1_PROFILE_MAIN) :
+        codec == VAV4L2_CODEC_VP9 ? (1u << V4L2_MPEG_VIDEO_VP9_PROFILE_0) | (1u << V4L2_MPEG_VIDEO_VP9_PROFILE_2) :
+        (1u << V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN) | (1u << V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_10);
     int found = 0;
     for (int i = profile.minimum; i <= profile.maximum; i++) if (mask & (1u << i)) {
         struct v4l2_querymenu menu = {.id = profile.id, .index = i};
@@ -98,4 +107,29 @@ int vav4l2_decoder_select(int fd, enum vav4l2_codec codec, uint32_t *format)
     for (int i = 0; i < count; i++) if (formats[i] == request && vav4l2_codec_controls_usable(fd, codec) && vav4l2_queue_has_requests(fd)) { *format = request; return 0; }
     for (int i = 0; i < count; i++) if (stream && formats[i] == stream && vav4l2_stateful_usable(fd, codec)) { *format = stream; return 1; }
     errno = ENOTSUP; return -1;
+}
+
+static int menu_has(int fd, uint32_t id, int value)
+{
+    struct v4l2_queryctrl q = {.id = id};
+    struct v4l2_querymenu menu = {.id = id, .index = value};
+    return vav4l2_xioctl(fd, VIDIOC_QUERYCTRL, &q) == 0 && !(q.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY)) &&
+        q.minimum <= value && q.maximum >= value && vav4l2_xioctl(fd, VIDIOC_QUERYMENU, &menu) == 0;
+}
+int vav4l2_request_modes(int fd, enum vav4l2_codec codec, int *slice, int *raw)
+{
+    uint32_t mode = codec == VAV4L2_CODEC_H264 ? V4L2_CID_STATELESS_H264_DECODE_MODE : V4L2_CID_STATELESS_HEVC_DECODE_MODE;
+    uint32_t start = codec == VAV4L2_CODEC_H264 ? V4L2_CID_STATELESS_H264_START_CODE : V4L2_CID_STATELESS_HEVC_START_CODE;
+    /* Both codecs use 0 for slice/NONE and 1 for frame/ANNEX_B. */
+    if (menu_has(fd, mode, 1) && menu_has(fd, start, 1)) { *slice = 0; *raw = 0; return 0; }
+    if (!menu_has(fd, mode, 0)) return -1;
+    int none = menu_has(fd, start, 0);
+    if (!none && !menu_has(fd, start, 1)) return -1;
+    struct v4l2_query_ext_ctrl q = {.id = codec == VAV4L2_CODEC_H264 ?
+        V4L2_CID_STATELESS_H264_SLICE_PARAMS : V4L2_CID_STATELESS_HEVC_SLICE_PARAMS};
+    if (vav4l2_xioctl(fd, VIDIOC_QUERY_EXT_CTRL, &q) < 0 ||
+        (q.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY))) return -1;
+    struct vav4l2_context probe = {.v4l2_fd = fd};
+    if (!vav4l2_h264_field_supported(&probe)) return -1;
+    *slice = 1; *raw = none; return 0;
 }

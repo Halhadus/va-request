@@ -16,8 +16,8 @@ def check(path):
             if row["MEMORY"] != "4" or row["FORMAT"] != "3231564e" or row["ERRNO"] != "0" or int(row["SIZEIMAGE"]) <= 0 or int(row["STRIDE"]) <= 0:
                 raise ValueError("invalid direct CAPTURE completion")
             counts[int(row["CODEC"])] += 1
-    # H264=0, HEVC=1, VP8=3, MPEG2=4; AV1 remains deferred.
-    for codec in (0, 1, 3, 4):
+    # H264=0, HEVC=1, VP8=3, VP9=4, MPEG2=5; AV1 remains deferred.
+    for codec in (0, 1, 3, 5):
         if counts[codec] < 8: raise ValueError(f"codec{codec}: {counts[codec]}/8 direct frames; staged imports cannot substitute")
     return counts
 

@@ -49,6 +49,8 @@ static const VAProfile vav4l2_profiles[] = {
     VAProfileH264High422,
     VAProfileHEVCMain,
     VAProfileHEVCMain10,
+    VAProfileVP9Profile0,
+    VAProfileVP9Profile2,
     /* Experimental AV1 is opt-in; normal profile queries omit it. */
     VAProfileAV1Profile0,
     VAProfileVP8Version0_3,
@@ -71,8 +73,10 @@ static const struct {
     { VAProfileH264High10,     VA_RT_FORMAT_YUV420_10 },
     { VAProfileH264High422,    VA_RT_FORMAT_YUV422 | VA_RT_FORMAT_YUV422_10 },
     { VAProfileHEVCMain,       VA_RT_FORMAT_YUV420 },
-    { VAProfileHEVCMain10,     VA_RT_FORMAT_YUV420_10 },
-    { VAProfileAV1Profile0,    VA_RT_FORMAT_YUV420 },
+    { VAProfileHEVCMain10,     VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV420_10 },
+    { VAProfileVP9Profile0,    VA_RT_FORMAT_YUV420 },
+    { VAProfileVP9Profile2,    VA_RT_FORMAT_YUV420_10 },
+    { VAProfileAV1Profile0,    VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV420_10 },
     { VAProfileVP8Version0_3,  VA_RT_FORMAT_YUV420 },
     { VAProfileMPEG2Simple,    VA_RT_FORMAT_YUV420 },
     { VAProfileMPEG2Main,      VA_RT_FORMAT_YUV420 },
@@ -92,6 +96,8 @@ static const struct {
     { VAProfileH264High422, VAV4L2_CODEC_H264 },
     { VAProfileHEVCMain,    VAV4L2_CODEC_HEVC },
     { VAProfileHEVCMain10,  VAV4L2_CODEC_HEVC },
+    { VAProfileVP9Profile0, VAV4L2_CODEC_VP9 },
+    { VAProfileVP9Profile2, VAV4L2_CODEC_VP9 },
     { VAProfileAV1Profile0, VAV4L2_CODEC_AV1 },
     { VAProfileVP8Version0_3, VAV4L2_CODEC_VP8 },
     { VAProfileMPEG2Simple, VAV4L2_CODEC_MPEG2 },
@@ -120,6 +126,7 @@ static const char *cached_device(const struct vav4l2_driver_data *dd, enum vav4l
     switch (codec) {
     case VAV4L2_CODEC_H264:  p = dd->dev_h264;  break;
     case VAV4L2_CODEC_HEVC:  p = dd->dev_hevc;  break;
+    case VAV4L2_CODEC_VP9:   p = dd->dev_vp9;   break;
     case VAV4L2_CODEC_AV1:   p = dd->dev_av1;   break;
     case VAV4L2_CODEC_VP8:      p = dd->dev_vp8;      break;
     case VAV4L2_CODEC_MPEG2:    p = dd->dev_mpeg2;    break;
@@ -132,6 +139,10 @@ static const char *cached_device(const struct vav4l2_driver_data *dd, enum vav4l
 
 static int kernel_profile_available(const struct vav4l2_driver_data *dd, VAProfile profile)
 {
+    if (profile == VAProfileVP9Profile0 || profile == VAProfileVP9Profile2) {
+        unsigned bit = profile == VAProfileVP9Profile0 ? V4L2_MPEG_VIDEO_VP9_PROFILE_0 : V4L2_MPEG_VIDEO_VP9_PROFILE_2;
+        return dd->vp9_profiles_known && !!(dd->vp9_profiles & (1u << bit));
+    }
     if (profile == VAProfileHEVCMain || profile == VAProfileHEVCMain10) {
         unsigned bit = profile == VAProfileHEVCMain ? V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN : V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_10;
         return !dd->hevc_profiles_known || !!(dd->hevc_profiles & (1u << bit));
@@ -1076,7 +1087,7 @@ vav4l2_destroy_surfaces(VADriverContextP ctx,
             pthread_mutex_unlock(&vav4l2_api_lock);
             return VA_STATUS_ERROR_INVALID_SURFACE;
         }
-        for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, surfaces[i])) {
+        for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_decode_pending(c, surfaces[i])) {
             pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_SURFACE_BUSY;
         }
         if (surface && surface->memfd_borrows) {
@@ -1574,8 +1585,12 @@ vav4l2_begin_picture(VADriverContextP ctx,
         goto out;
     }
 
-    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, render_target)) {
-        st = VA_STATUS_ERROR_SURFACE_BUSY; goto out;
+    /* Queued readers may outlive the application's previous SyncSurface.
+     * Retargeting waits for them before releasing native reference storage. */
+    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_decode_pending(c, render_target)) {
+        if (surface->status == VASurfaceRendering) { st = VA_STATUS_ERROR_SURFACE_BUSY; goto out; }
+        st = vav4l2_decode_sync(c, surface, UINT64_C(5000000000));
+        if (st != VA_STATUS_SUCCESS) goto out;
     }
     int field_continue = vav4l2_h264_field_pending(context, render_target);
 
@@ -1648,6 +1663,7 @@ vav4l2_begin_picture(VADriverContextP ctx,
 
     /* Only decoded pictures need a request and a new DPB timestamp. */
     if (context->codec != VAV4L2_CODEC_JPEG_ENC && context->codec != VAV4L2_CODEC_VPP) {
+        if (vav4l2_request_begin(context) < 0) { context->current_surface = NULL; surface->status = VASurfaceSkipped; st = VA_STATUS_ERROR_DECODING_ERROR; goto out; }
         if (context->media_fd >= 0 && context->request_fd < 0)
             context->request_fd = vav4l2_request_alloc(context->media_fd);
         /* Nanoseconds in 1us steps, matching vb2's OUTPUT timeval. */
@@ -1723,6 +1739,7 @@ static int valid_parameter_buffer(enum vav4l2_codec codec, const struct vav4l2_b
         case VAV4L2_CODEC_H264: need = sizeof(VAPictureParameterBufferH264); break;
         case VAV4L2_CODEC_HEVC: need = sizeof(VAPictureParameterBufferHEVC); break;
         case VAV4L2_CODEC_VP8: need = sizeof(VAPictureParameterBufferVP8); break;
+        case VAV4L2_CODEC_VP9: need = sizeof(VADecPictureParameterBufferVP9); break;
         case VAV4L2_CODEC_MPEG2: need = sizeof(VAPictureParameterBufferMPEG2); break;
         case VAV4L2_CODEC_AV1: need = sizeof(VADecPictureParameterBufferAV1); break;
         default: return 0;
@@ -1732,6 +1749,7 @@ static int valid_parameter_buffer(enum vav4l2_codec codec, const struct vav4l2_b
         case VAV4L2_CODEC_H264: need = sizeof(VASliceParameterBufferH264); break;
         case VAV4L2_CODEC_HEVC: need = sizeof(VASliceParameterBufferHEVC); break;
         case VAV4L2_CODEC_VP8: need = sizeof(VASliceParameterBufferVP8); break;
+        case VAV4L2_CODEC_VP9: need = sizeof(VASliceParameterBufferVP9); break;
         case VAV4L2_CODEC_MPEG2: need = sizeof(VASliceParameterBufferMPEG2); break;
         case VAV4L2_CODEC_AV1: need = sizeof(VASliceParameterBufferAV1); break;
         default: return 0;
@@ -1882,8 +1900,8 @@ vav4l2_end_picture(VADriverContextP ctx,
         return va_status;
     }
 
-    /* Request decoding completes here; stateful pictures may still be pending. */
-    if (!context->stateful) context->current_surface->status = context->h264_field ? VASurfaceRendering : VASurfaceReady;
+    /* Queued pictures retain Rendering until both queues and their request complete. */
+    if (!context->stateful) context->current_surface->status = context->h264_field || vav4l2_request_pending(context, context->current_surface_id) ? VASurfaceRendering : VASurfaceReady;
     context->current_surface = NULL;
     context->num_pending_buffers = 0;
 
@@ -1911,12 +1929,11 @@ vav4l2_sync_surface(VADriverContextP ctx, VASurfaceID render_target)
         return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
-    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, render_target)) {
-        VAStatus result = vav4l2_stateful_sync(c, surface, UINT64_C(5000000000));
+    for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next) if (vav4l2_decode_pending(c, render_target)) {
+        VAStatus result = vav4l2_decode_sync(c, surface, UINT64_C(5000000000));
         pthread_mutex_unlock(&vav4l2_api_lock); return result;
     }
-    /* Request decoding has already completed in vaEndPicture. Pending
-     * stateful pictures are handled by the wait above. */
+    /* Both decoder protocols resolve pending work through the wait above. */
     if (surface->status == VASurfaceSkipped) {
         pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_DECODING_ERROR;
@@ -1962,11 +1979,11 @@ static VAStatus vav4l2_sync_object(VADriverContextP ctx, unsigned int id, uint64
                 if (!s) status = VA_STATUS_ERROR_INVALID_SURFACE;
                 else if (s->status == VASurfaceRendering) {
                     status = VA_STATUS_ERROR_TIMEDOUT;
-                    for (struct vav4l2_context *c = dd->contexts; c; c = c->next) if (vav4l2_stateful_pending(c, id)) {
+                    for (struct vav4l2_context *c = dd->contexts; c; c = c->next) if (vav4l2_decode_pending(c, id)) {
                         if (clock_gettime(CLOCK_MONOTONIC, &now)) { status = VA_STATUS_ERROR_OPERATION_FAILED; break; }
                         uint64_t spent = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + now.tv_nsec - start.tv_nsec;
                         uint64_t left = timeout == VA_TIMEOUT_INFINITE ? timeout : spent >= timeout ? 0 : timeout - spent;
-                        status = vav4l2_stateful_sync(c, s, left); break;
+                        status = vav4l2_decode_sync(c, s, left); break;
                     }
                 }
                 else if (s->status == VASurfaceSkipped) status = VA_STATUS_ERROR_DECODING_ERROR;
@@ -2010,7 +2027,7 @@ vav4l2_query_surface_status(VADriverContextP ctx,
     surface = vav4l2_surface_by_id(driver_data, render_target);
     if (surface) {
         for (struct vav4l2_context *c = driver_data->contexts; c; c = c->next)
-            if (vav4l2_stateful_pending(c, render_target)) (void)vav4l2_stateful_pump(c);
+            if (vav4l2_decode_pending(c, render_target)) (void)vav4l2_decode_pump(c);
         *status = surface->status;
         st = VA_STATUS_SUCCESS;
     }
@@ -2110,6 +2127,13 @@ vav4l2_export_surface_handle2(VADriverContextP ctx, VASurfaceID surface_id,
     if (surf->status == VASurfaceRendering || ((flags & VA_EXPORT_SURFACE_WRITE_ONLY) && surf->memfd_borrows)) {
         pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_SURFACE_BUSY;
     }
+    if (flags & VA_EXPORT_SURFACE_WRITE_ONLY) {
+        for (c = driver_data->contexts; c; c = c->next) {
+            if (vav4l2_decode_pending(c, surface_id)) {
+                pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_SURFACE_BUSY;
+            }
+        }
+    }
     if (surf->prime) {
         st = vav4l2_prime_export(surf, flags, descriptor);
         pthread_mutex_unlock(&vav4l2_api_lock); return st;
@@ -2131,8 +2155,7 @@ vav4l2_export_surface_handle2(VADriverContextP ctx, VASurfaceID surface_id,
         if (surf->buf_index >= 0 && surf->last_writer != VAV4L2_WRITER_CPU) surf->prime_capture_valid = 1;
     }
     /*
-     * Decode surfaces: EXPBUF the VPU capture buffer (single-object NV12
-     * dma-buf). Chrome exports the pool before the first picture; we
+     * Decode surfaces: EXPBUF single-object NV12/P010 capture storage. Chrome exports the pool before the first picture; we
      * claim a capture index at first export and decode into that same
      * slot. VAV4L2_EXPBUF_EXPORT=0 restores the GBM-copy fallback.
      */
@@ -2143,10 +2166,22 @@ vav4l2_export_surface_handle2(VADriverContextP ctx, VASurfaceID surface_id,
             vav4l2_expbuf_export_wanted(), (void *)c,
             c ? c->v4l2_fd : -1);
     fflush(stderr);
+    /* Stateful completion chooses CAPTURE by timestamp, not by VA target.
+     * Export persistent surface storage so retained imports see later frames. */
+    if (c && !c->stateful && vav4l2_capture_layout_exportable(c) && surf->format == VA_FOURCC_NV12 && !surf->gbm_imported && !surf->gbm_writable &&
+        !(flags & VA_EXPORT_SURFACE_WRITE_ONLY) && surf->last_writer != VAV4L2_WRITER_CPU && vav4l2_expbuf_export_wanted()) {
+        if (surf->buf_index < 0 && vav4l2_claim_capture_for_export(c, surf) < 0) {
+            pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_OPERATION_FAILED;
+        }
+        st = vav4l2_capture_layout_export(c, surf, flags, descriptor);
+        pthread_mutex_unlock(&vav4l2_api_lock); return st;
+    }
     if (!surf->gbm_imported && !surf->gbm_writable && !(flags & VA_EXPORT_SURFACE_WRITE_ONLY) &&
-        surf->format == VA_FOURCC_NV12 && vav4l2_expbuf_export_wanted() && c && c->v4l2_fd >= 0 &&
+        (surf->format == VA_FOURCC_NV12 || (surf->format == VA_FOURCC_P010 && surf->cap_fourcc == V4L2_PIX_FMT_P010)) &&
+        vav4l2_expbuf_export_wanted() && c && !c->stateful && !c->capture_layout && c->v4l2_fd >= 0 &&
+        (!c->cap_pixelformat || c->cap_pixelformat == V4L2_PIX_FMT_NV12 || c->cap_pixelformat == V4L2_PIX_FMT_P010) &&
         surf->last_writer != VAV4L2_WRITER_CPU &&
-        (!surf->cap_fourcc || surf->cap_fourcc == V4L2_PIX_FMT_NV12)) {
+        (!surf->cap_fourcc || surf->cap_fourcc == V4L2_PIX_FMT_NV12 || surf->cap_fourcc == V4L2_PIX_FMT_P010)) {
         if (surf->buf_index < 0)
             (void)vav4l2_claim_capture_for_export(c, surf);
         int efd = (surf->buf_index >= 0)
@@ -2160,8 +2195,8 @@ vav4l2_export_surface_handle2(VADriverContextP ctx, VASurfaceID surface_id,
                 surf->cap_fourcc ? surf->cap_fourcc : V4L2_PIX_FMT_NV12,
                 stride, alh);
             uint32_t object_size;
-            if (stride < surf->width + (surf->width & 1) || alh < surf->height ||
-                vav4l2_export_fd_validate(efd, plane, &object_size) < 0) {
+            if (stride < (surf->width + (surf->width & 1)) * (surf->format == VA_FOURCC_P010 ? 2u : 1u) || alh < surf->height ||
+                vav4l2_export_fd_validate(efd, plane > c->cap_sizeimage ? plane : c->cap_sizeimage, &object_size) < 0) {
                 close(efd);
                 pthread_mutex_unlock(&vav4l2_api_lock);
                 return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -2172,16 +2207,20 @@ vav4l2_export_surface_handle2(VADriverContextP ctx, VASurfaceID surface_id,
             fflush(stderr);
             vav4l2_fill_prime_layers(descriptor, efd, object_size,
                                      DRM_FORMAT_MOD_LINEAR,
-                                     VA_FOURCC_NV12, surf->width, surf->height,
+                                     surf->format, surf->width, surf->height,
                                      stride, alh,
-                                     DRM_FORMAT_NV12, DRM_FORMAT_R8,
-                                     DRM_FORMAT_GR88, flags);
+                                     surf->format == VA_FOURCC_P010 ? DRM_FORMAT_P010 : DRM_FORMAT_NV12,
+                                     surf->format == VA_FOURCC_P010 ? DRM_FORMAT_R16 : DRM_FORMAT_R8,
+                                     surf->format == VA_FOURCC_P010 ? DRM_FORMAT_GR1616 : DRM_FORMAT_GR88, flags);
             pthread_mutex_unlock(&vav4l2_api_lock);
             return VA_STATUS_SUCCESS;
         }
+        if (surf->buf_index >= 0 && errno == EPROTO) {
+            pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_OPERATION_FAILED;
+        }
         fprintf(stderr, "v4l2: EXPBUF export failed, falling back\n");
     }
-    if (vav4l2_gbm_surface_ensure(surf) < 0) {
+    if (vav4l2_gbm_surface_ensure_export(surf, flags) < 0) {
         pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
@@ -2231,12 +2270,15 @@ vav4l2_init(VADriverContextP ctx)
     vav4l2_scan_all_cached(driver_data->dev_h264, driver_data->dev_hevc,
                            driver_data->dev_av1, driver_data->dev_vp8,
                            driver_data->dev_mpeg2,
-                           driver_data->dev_jpeg_enc, driver_data->dev_vpp,
+                           driver_data->dev_jpeg_enc, driver_data->dev_vpp, driver_data->dev_vp9,
                            sizeof(driver_data->dev_h264));
     if (driver_data->dev_h264[0])
         driver_data->h264_profiles_known = vav4l2_query_h264_profiles(driver_data->dev_h264, &driver_data->h264_profiles) == 0;
     if (driver_data->dev_hevc[0])
         driver_data->hevc_profiles_known = vav4l2_query_profiles(driver_data->dev_hevc, V4L2_CID_MPEG_VIDEO_HEVC_PROFILE, &driver_data->hevc_profiles) == 0;
+    if (driver_data->dev_vp9[0])
+        driver_data->vp9_profiles_known = vav4l2_query_profiles(driver_data->dev_vp9, V4L2_CID_MPEG_VIDEO_VP9_PROFILE, &driver_data->vp9_profiles) == 0;
+    fprintf(stderr, "v4l2: probe VP9    -> %s\n", driver_data->dev_vp9[0] ? driver_data->dev_vp9 : "(none)");
     fprintf(stderr, "v4l2: probe H.264  -> %s\n",
             driver_data->dev_h264[0] ? driver_data->dev_h264 : "(none)");
     fprintf(stderr, "v4l2: probe HEVC   -> %s\n",
@@ -2331,7 +2373,7 @@ vav4l2_init(VADriverContextP ctx)
 /*
  * libva entry point
  */
-VAStatus __attribute__((visibility("default"))) __vaDriverInit_1_20(VADriverContextP ctx)
+VAStatus __attribute__((visibility("default"))) VAV4L2_DRIVER_INIT(VADriverContextP ctx)
 {
     return vav4l2_init(ctx);
 }

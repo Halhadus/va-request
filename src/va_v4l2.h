@@ -12,6 +12,7 @@
 #include <va/va.h>
 #include <va/va_backend.h>
 #include <va/va_dec_vp8.h>
+#include <va/va_dec_vp9.h>
 #include <va/va_dec_av1.h>
 #include <va/va_vpp.h>
 #include <va/va_enc_jpeg.h>
@@ -20,6 +21,10 @@
 #include <linux/videodev2.h>
 #include "compat/compat.h"
 
+#define VAV4L2_DRIVER_INIT_NAME(major, minor) __vaDriverInit_##major##_##minor
+#define VAV4L2_DRIVER_INIT_VERSION(major, minor) VAV4L2_DRIVER_INIT_NAME(major, minor)
+#define VAV4L2_DRIVER_INIT VAV4L2_DRIVER_INIT_VERSION(VA_MAJOR_VERSION, VA_MINOR_VERSION)
+
 /* Packed 10-bit formats are stable UAPI; older distro headers omit them. */
 #ifndef V4L2_PIX_FMT_NV15
 #define V4L2_PIX_FMT_NV15 v4l2_fourcc('N', 'V', '1', '5')
@@ -27,10 +32,15 @@
 #ifndef V4L2_PIX_FMT_NV20
 #define V4L2_PIX_FMT_NV20 v4l2_fourcc('N', 'V', '2', '0')
 #endif
+#ifndef V4L2_PIX_FMT_AV1
+#define V4L2_PIX_FMT_AV1 v4l2_fourcc('A', 'V', '0', '1')
+#endif
 
 struct vav4l2_prime_import;
 struct vav4l2_h264_field;
 struct vav4l2_stateful;
+struct vav4l2_requests;
+struct vav4l2_av1_packet;
 struct gbm_bo;   /* opaque — only gbm.c includes <gbm.h> */
 
 /* Codec identifiers */
@@ -39,9 +49,27 @@ enum vav4l2_codec {
     VAV4L2_CODEC_HEVC,
     VAV4L2_CODEC_AV1,
     VAV4L2_CODEC_VP8,
+    VAV4L2_CODEC_VP9,
     VAV4L2_CODEC_MPEG2,
     VAV4L2_CODEC_JPEG_ENC,
     VAV4L2_CODEC_VPP,
+};
+
+/* Committed only after all frames of a VA picture have been queued. */
+struct vav4l2_packet_state {
+    int64_t h264_msb;
+    unsigned h264_lsb, h264_valid, hevc_started, hevc_no_rasl;
+    struct vav4l2_av1_packet *av1;
+};
+/* Frame boundaries in prepared OUTPUT bytes; zero terminates the list. */
+struct vav4l2_packet_layout { size_t frame_size[2]; };
+struct vav4l2_av1_header {
+    unsigned valid, reduced, screen_tools, integer_mv, frame_id_bits, order_hint_bits;
+    unsigned decoder_model, equal_interval, removal_bits, presentation_bits, points;
+    uint16_t point_idc[32];
+    uint8_t model_present[32];
+    uint32_t frame_id, removal_time[32];
+    unsigned removal_present;
 };
 
 /* Per-config state */
@@ -90,7 +118,6 @@ struct vav4l2_surface {
     uint16_t h264_frame_num;
     uint8_t h264_frame_num_valid;
     uint32_t order_hint;     /* AV1 OrderHint of the frame last decoded here */
-    uint8_t av1_level1;      /* AV1 KEY / level-1 ARF (hidden skip=0,0) */
     uint32_t stride;         /* negotiated capture geometry, set at decode */
     uint32_t aligned_h;
     uint32_t cap_fourcc;     /* V4L2 capture fourcc of attached decode buf */
@@ -204,7 +231,11 @@ struct vav4l2_context {
     int v4l2_fd;                 /* V4L2 video device fd */
     int media_fd;                /* V4L2 media device fd (for request alloc) */
     int request_fd;              /* Current V4L2 request */
+    struct vav4l2_requests *requests; /* bounded Request jobs and completion */
     uint32_t coded_format;
+    int request_slice_based, request_no_start_code;
+    struct vav4l2_packet_state packet_state;
+    struct vav4l2_vp9_state *vp9_state; /* committed Request header state */
     struct vav4l2_stateful *stateful; /* independent bytestream queue state */
     unsigned vpp_controls;
     unsigned vpp_behaviors;
@@ -232,9 +263,11 @@ struct vav4l2_context {
     int n_free_out;
 
     /* Capture (decoded frame) buffer management */
+    struct vav4l2_capture_layout *capture_layout; /* independent native capture planes */
     unsigned capture_memory; /* zero is native MMAP; DMABUF may be client or pool owned */
     int capture_internal; /* independent pool;surface snapshots never retain CPU DMA mappings */
     struct { int active, fd; uint32_t length; VASurfaceID owner; } capture_dma[VAV4L2_MAX_CAPTURE_BUFS];
+    struct { unsigned count; int fd[3]; } capture_exports[VAV4L2_MAX_CAPTURE_BUFS];
     int capture_bufs_allocd;
     int streamed;         /* STREAMON done (HEVC defers it past SPS) */
     void *capture_buf_ptr[VAV4L2_MAX_CAPTURE_BUFS];
@@ -246,7 +279,7 @@ struct vav4l2_context {
     uint32_t cap_height;       /* aligned height (e.g. 1088 for 1080p) */
     uint32_t cap_stride;       /* bytes per row, may exceed width */
     uint32_t cap_sizeimage;    /* per-buffer plane size */
-    uint32_t cap_pixelformat;  /* V4L2 capture fourcc (NV12/NV15/NV16/NV20) */
+    uint32_t cap_pixelformat;  /* negotiated native V4L2 CAPTURE fourcc */
 
     /* Frame counter for V4L2 timestamps (DPB reference matching) */
     uint64_t frame_count;
@@ -256,27 +289,19 @@ struct vav4l2_context {
      * (sequence-level) control payload. Codec translates memcmp against
      * it and skip the global ioctl when unchanged. Contexts are
      * single-codec, so one slot suffices. All translates run under
-     * g_vav4l2_lock. */
+     * vav4l2_api_lock. */
     uint8_t g_ctrl_valid;
     /* 1088: this UAPI's padded v4l2_ctrl_h264_sps is 1048 bytes */
     uint8_t g_ctrl_payload[1088];
 
-    /* AV1 refresh_frame_flags inference heuristics: VA does not expose
-     * the bitmask. style: 0 = unknown, 1 = libaom-style (free slots from
-     * index 1), 2 = SVT-AV1 RA pyramid. */
+    /* AV1 DPB ownership follows validated OBU refresh flags. */
     struct {
-        uint8_t style;
-        uint8_t gop;           /* first hidden ARF order_hint (mini-GOP) */
-        uint8_t l0_toggle;     /* SVT L0 slots 0-1-2 */
-        uint8_t l1_toggle;     /* SVT L1 slots 3-4 */
-        uint8_t have_first_arf;
-        uint32_t key_oh;       /* order_hint of the current GOP's KEY */
-        uint32_t l0_oh;        /* last SVT L0 ARF order_hint */
-        uint32_t prev_l0_oh;   /* previous L0 ARF (mini-GOP length) */
         /* Kernel-DPB model for the AV1 copy-out release: which capture
          * buffer each reference slot holds, and which surface owns a
          * given buffer (to clear buf_index when it is released). */
         int model_active;      /* slot model owns releases (parsed truth) */
+        int grain_checked, has_grain;
+        struct vav4l2_av1_header header;
         int slot_buf[V4L2_AV1_TOTAL_REFS_PER_FRAME];
         VASurfaceID buf_owner[VAV4L2_MAX_CAPTURE_BUFS];
     } av1;
@@ -327,12 +352,15 @@ struct vav4l2_driver_data {
     char dev_av1[64];
     char dev_vp8[64];
     char dev_mpeg2[64];
+    char dev_vp9[64];
     char dev_jpeg_enc[64];
     char dev_vpp[64];
     uint32_t h264_profiles;
     int h264_profiles_known;
     uint32_t hevc_profiles;
     int hevc_profiles_known;
+    uint32_t vp9_profiles;
+    int vp9_profiles_known;
     struct vav4l2_vpp_device vpp_devices[VAV4L2_VPP_MAX_DEVICES];
     unsigned num_vpp_devices;
     int vpp_devices_scanned;
@@ -441,6 +469,18 @@ VAStatus vav4l2_stateful_sync(struct vav4l2_context *ctx, struct vav4l2_surface 
 int vav4l2_stateful_pump(struct vav4l2_context *ctx);
 
 /* Stateless decoder backend (v4l2/stateless.c). */
+int vav4l2_request_pipeline_init(struct vav4l2_context *);
+int vav4l2_request_busy(const struct vav4l2_context *, VASurfaceID);
+int vav4l2_request_pending(const struct vav4l2_context *, VASurfaceID);
+int vav4l2_request_pump(struct vav4l2_context *);
+int vav4l2_request_begin(struct vav4l2_context *);
+VAStatus vav4l2_request_sync(struct vav4l2_context *, struct vav4l2_surface *, uint64_t);
+int vav4l2_request_drain(struct vav4l2_context *);
+void vav4l2_request_cancel(struct vav4l2_context *);
+void vav4l2_request_finish(struct vav4l2_context *);
+int vav4l2_decode_pending(const struct vav4l2_context *, VASurfaceID);
+int vav4l2_decode_pump(struct vav4l2_context *);
+VAStatus vav4l2_decode_sync(struct vav4l2_context *, struct vav4l2_surface *, uint64_t);
 int vav4l2_stateless_init(struct vav4l2_context *ctx);
 VAStatus vav4l2_stateless_translate(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count);
 int vav4l2_request_alloc(int media_fd);
@@ -470,6 +510,8 @@ void vav4l2_decode_reset(struct vav4l2_context *ctx);
 int vav4l2_set_request_controls(int request_fd, int v4l2_fd, struct v4l2_ext_controls *ctrls);
 int vav4l2_submit_request(int request_fd);
 /* A hardware reference must retain decoded CAPTURE storage in this context. */
+VAStatus vav4l2_av1_validate_references(const struct vav4l2_context *, const VADecPictureParameterBufferAV1 *);
+VAStatus vav4l2_av1_refresh_flags(struct vav4l2_av1_header *, const VADecPictureParameterBufferAV1 *, const uint8_t *, size_t, uint8_t *);
 VAStatus vav4l2_validate_reference(const struct vav4l2_context *ctx, VASurfaceID id);
 
 /* Common device and storage helpers (v4l2/device.c). */
@@ -521,14 +563,17 @@ int vav4l2_export_fd_validate(int fd, uint64_t required, uint32_t *size);
 /* GBM-backed NV12 copy surfaces (gbm.c). Default decoder
  * export uses native EXPBUF; GBM covers CPU-written pixels and the
  * VAV4L2_EXPBUF_EXPORT=0 copy path. */
+int vav4l2_alloc_drm_storage(int fd, unsigned bytes, unsigned rows, int coherent);
 int vav4l2_alloc_shared_storage(unsigned bytes, unsigned rows);
 int vav4l2_alloc_coherent_storage(unsigned bytes, unsigned rows);
 void vav4l2_allocator_cleanup(void);
 int vav4l2_gbm_surface_ensure(struct vav4l2_surface *s);
+int vav4l2_gbm_surface_ensure_export(struct vav4l2_surface *s, uint32_t flags);
 void vav4l2_gbm_driver_cleanup(struct vav4l2_driver_data *dd);
 struct vav4l2_prime_layout {
     uint32_t drm_format, planes, row[3], rows[3], plane_format[3];
 };
+VAStatus vav4l2_prime_legacy(const VASurfaceAttribExternalBuffers *, unsigned, unsigned, unsigned, VADRMPRIMESurfaceDescriptor **);
 int vav4l2_prime_layout(uint32_t fourcc, unsigned width, unsigned height, struct vav4l2_prime_layout *layout);
 int vav4l2_dmabuf_wait(int fd, int write);
 void vav4l2_prime_device_written(struct vav4l2_surface *s, int success);
@@ -556,6 +601,17 @@ int vav4l2_gbm_surface_upload(struct vav4l2_surface *s, const void *src,
 void vav4l2_gbm_surface_destroy(struct vav4l2_surface *s);
 VAStatus vav4l2_surface_fill_prime_gbm(const struct vav4l2_surface *surf,
                                        uint32_t flags, void *descriptor);
+unsigned vav4l2_capture_layout_planes(uint32_t);
+uint32_t vav4l2_capture_layout_format(uint32_t);
+int vav4l2_capture_layout_set(struct vav4l2_context *, const struct v4l2_pix_format_mplane *);
+void vav4l2_capture_layout_release(struct vav4l2_context *);
+int vav4l2_capture_layout_pull(struct vav4l2_context *, struct vav4l2_surface *, int);
+int vav4l2_capture_layout_exportable(const struct vav4l2_context *ctx);
+VAStatus vav4l2_capture_layout_export(struct vav4l2_context *, struct vav4l2_surface *, unsigned, VADRMPRIMESurfaceDescriptor *);
+int vav4l2_decoder_queue_capture(struct vav4l2_context *, int);
+int vav4l2_decoder_dequeue_capture(struct vav4l2_context *, struct v4l2_buffer *);
+int vav4l2_capture_export_plane(struct vav4l2_context *, int, unsigned);
+void vav4l2_capture_exports_release(struct vav4l2_context *);
 int vav4l2_capture_expbuf(struct vav4l2_context *ctx, int buf_index);
 int vav4l2_claim_capture_for_export(struct vav4l2_context *ctx,
                                    struct vav4l2_surface *surf);
@@ -573,8 +629,13 @@ int vav4l2_set_global_controls(int v4l2_fd, struct v4l2_ext_controls *ctrls);
  * call before the context's device fd goes away. */
 int vav4l2_m2m_finish_output(struct vav4l2_context *ctx, const struct vav4l2_m2m_state *q);
 void vav4l2_m2m_teardown(struct vav4l2_context *ctx, struct vav4l2_m2m_state *q);
-/* Annex-B reconstruction (codecs/bytestream.c). */
+VAStatus vav4l2_vp9_translate(struct vav4l2_context *, struct vav4l2_buffer **, int);
+VAStatus vav4l2_vp9_packet(struct vav4l2_context *, struct vav4l2_buffer **, int, uint8_t *, size_t, size_t *, struct vav4l2_packet_layout *);
+/* Bytestream reconstruction (codecs/). */
+VAStatus vav4l2_stateful_packet_prepare(struct vav4l2_context *, struct vav4l2_buffer **, int, uint8_t *, size_t, size_t *, struct vav4l2_packet_state *, struct vav4l2_packet_layout *);
 VAStatus vav4l2_stateful_packet(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count, uint8_t *dst, size_t capacity, size_t *size);
+void vav4l2_packet_state_release(struct vav4l2_packet_state *);
+void vav4l2_packet_state_commit(struct vav4l2_context *, struct vav4l2_packet_state *);
 /* One-pass decode-buffer collection shared by every codec translate. */
 void vav4l2_collect_decode_buffers(struct vav4l2_buffer **buffers, int n,
                                    struct vav4l2_collected *cb);
@@ -673,8 +734,11 @@ void vav4l2_vpp_transform_controls(unsigned behaviors, int *rotate, int *hflip, 
 /* Pixel format helpers (format.c) */
 uint32_t vav4l2_capture_fourcc_from_rt(unsigned int rt_format);
 uint32_t vav4l2_capture_fourcc_from_sps(int bit_depth_minus8, int chroma_format_idc);
+unsigned vav4l2_h264_level(const VAPictureParameterBufferH264 *);
 uint32_t vav4l2_va_fourcc_for_capture(uint32_t v4l2_fourcc);
 uint32_t vav4l2_drm_fourcc_for_capture(uint32_t v4l2_fourcc);
+unsigned vav4l2_capture_tile(uint32_t);
+int vav4l2_detile_capture(uint8_t *, unsigned, unsigned, const uint8_t *, unsigned, unsigned, unsigned, unsigned, unsigned, uint32_t);
 uint32_t vav4l2_capture_plane_size(uint32_t fourcc, uint32_t stride, uint32_t aligned_h);
 struct vav4l2_image_view {
     void *data;
@@ -717,6 +781,7 @@ VAStatus vav4l2_av1_prepare_tiles(const VADecPictureParameterBufferAV1 *pic,
                                   uint32_t *start, uint32_t *length);
 
 int vav4l2_annexb_next(const uint8_t *data, size_t size, size_t *offset, const uint8_t **nal, size_t *length);
+VAStatus vav4l2_h264_validate_headers_reset(const uint8_t *, size_t, const VAPictureParameterBufferH264 *, struct vav4l2_buffer **, int, struct v4l2_ctrl_h264_pps *, struct v4l2_ctrl_h264_decode_params *, int *);
 VAStatus vav4l2_h264_validate_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
     struct vav4l2_buffer **buffers, int count, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec);
 VAStatus vav4l2_hevc_parse_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferHEVC *pic,

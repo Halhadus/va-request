@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 static int calls, fail_upload;
 int __wrap_vav4l2_gbm_surface_sync(struct vav4l2_surface *s)
 {
@@ -15,7 +15,7 @@ int main(void)
     struct VADriverVTable v = {0};
     struct VADriverContext ctx = {.vtable = &v};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
-    if (__vaDriverInit_1_20(&ctx)) return 1;
+    if (VAV4L2_DRIVER_INIT(&ctx)) return 1;
     VASurfaceID sid;
     VAImage derived;
     if (v.vaCreateSurfaces(&ctx, 4, 4, VA_RT_FORMAT_YUV420, 1, &sid)) return 1;

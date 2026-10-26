@@ -6,7 +6,7 @@
 #include <unistd.h>
 #include "va_v4l2.h"
 
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 static int failures, ioctls;
 static void expect(int ok, const char *tag)
 {
@@ -35,7 +35,7 @@ static int run(int expbuf)
     struct VADriverContext ctx = {.vtable = &v};
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     setenv("VAV4L2_EXPBUF_EXPORT", expbuf ? "1" : "0", 1);
-    if (__vaDriverInit_1_20(&ctx) != VA_STATUS_SUCCESS) return 1;
+    if (VAV4L2_DRIVER_INIT(&ctx) != VA_STATUS_SUCCESS) return 1;
     struct vav4l2_driver_data *dd = ctx.pDriverData;
     struct vav4l2_context *a = context(dd, VAV4L2_CODEC_H264);
     struct vav4l2_context *b = context(dd, VAV4L2_CODEC_HEVC);

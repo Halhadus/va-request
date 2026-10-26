@@ -8,9 +8,9 @@
  *   1. Translate VAPictureParameterBufferH264 → SPS + PPS + decode_params
  *   2. Translate VAIQMatrixBufferH264 → scaling_matrix
  *   3. Translate VASliceParameterBufferH264 → slice_params
- *   4. Set all controls via VIDIOC_S_EXT_CTRLS (bound to request)
+ *   4. Set sequence controls globally and picture controls on the request
  *   5. Write slice data into output buffer (pre-mapped mmap)
- *   6. Queue output + capture buffers with request_fd
+ *   6. Bind OUTPUT to request_fd and queue CAPTURE independently
  *   7. Submit request via MEDIA_REQUEST_IOC_QUEUE
  */
 
@@ -28,6 +28,7 @@
 #include <linux/videodev2.h>
 
 #include "va_v4l2.h"
+#include "request_slices.h"
 
 /* Convert VA-API SPS fields to V4L2 SPS flags */
 static uint32_t h264_sps_flags(const VAPictureParameterBufferH264 *pic)
@@ -127,9 +128,20 @@ static void h264_fill_dpb_entry(struct v4l2_h264_dpb_entry *dpb,
         dpb->fields = V4L2_H264_FRAME_REF;
 }
 
-/*
- * Translate VA-API picture parameters to V4L2 H.264 SPS
- */
+/* VA omits the original level. Choose one sufficient for geometry and DPB. */
+unsigned vav4l2_h264_level(const VAPictureParameterBufferH264 *pic)
+{
+    static const unsigned levels[][3] = {{30,1620,8100},{31,3600,18000},{32,5120,20480},{40,8192,32768},
+        {42,8704,34816},{50,22080,110400},{51,36864,184320},{60,139264,696320}};
+    uint64_t w = pic->picture_width_in_mbs_minus1 + 1u, h = pic->picture_height_in_mbs_minus1 + 1u;
+    unsigned refs = pic->num_ref_frames ? pic->num_ref_frames : 1;
+    for (unsigned i = 0; i < sizeof(levels) / sizeof(levels[0]); i++)
+        if (refs <= 16 && w * h <= levels[i][1] && w * w <= 8u * levels[i][1] && h * h <= 8u * levels[i][1] &&
+            w * h * refs <= levels[i][2]) return levels[i][0];
+    return 0;
+}
+
+/* Translate VA-API picture parameters to V4L2 H.264 SPS. */
 void h264_fill_sps(struct v4l2_ctrl_h264_sps *sps,
                    const VAPictureParameterBufferH264 *pic,
                    VAProfile profile)
@@ -168,7 +180,7 @@ void h264_fill_sps(struct v4l2_ctrl_h264_sps *sps,
         sps->profile_idc = 100; /* High */
         sps->constraint_set_flags = 0;
     }
-    sps->level_idc = 40;     /* Level 4.0 (covers 1080p) */
+    sps->level_idc = vav4l2_h264_level(pic);
 
     sps->flags = h264_sps_flags(pic);
 }
@@ -483,6 +495,7 @@ static VAStatus h264_validate_headers(const uint8_t *data, size_t size, const VA
             }
             if (!slices) { result_pps = current_pps; first = current; first_marking = marking; }
             unsigned type = slice->slice_type % 5;
+            if (type > 2) return VA_STATUS_ERROR_UNIMPLEMENTED;
             if ((all_type >= 0 && type != (unsigned)all_type) || (slice->slice_type >= 5 && (seen_types & ~(1u << type)))) return VA_STATUS_ERROR_INVALID_PARAMETER;
             seen_types |= 1u << type;
             if (slice->slice_type >= 5) all_type = type;
@@ -507,6 +520,13 @@ static VAStatus h264_validate_headers(const uint8_t *data, size_t size, const VA
     if (defaults) *defaults = (default_l0 >= 0) | ((default_l1 >= 0) << 1);
     *pps = result_pps; *dec = first;
     return VA_STATUS_SUCCESS;
+}
+
+VAStatus vav4l2_h264_validate_headers_reset(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
+    struct vav4l2_buffer **buffers, int count, struct v4l2_ctrl_h264_pps *pps, struct v4l2_ctrl_h264_decode_params *dec, int *reset)
+{
+    *reset = 0;
+    return h264_validate_headers(data, size, pic, buffers, count, pps, dec, NULL, reset);
 }
 
 VAStatus vav4l2_h264_validate_headers(const uint8_t *data, size_t size, const VAPictureParameterBufferH264 *pic,
@@ -698,6 +718,12 @@ VAStatus vav4l2_h264_translate(struct vav4l2_context *ctx,
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
 
+    /* The deprecated FMO fields remain in the VA ABI; reject their use. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    if (pic_param->num_slice_groups_minus1) return VA_STATUS_ERROR_UNIMPLEMENTED;
+#pragma GCC diagnostic pop
+
     if (n_slice_data == 0) {
         fprintf(stderr, "v4l2: H.264 decode missing slice data\n");
         return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -745,13 +771,8 @@ VAStatus vav4l2_h264_translate(struct vav4l2_context *ctx,
     struct v4l2_ctrl_h264_pps pps;
     struct v4l2_ctrl_h264_decode_params dec;
     struct v4l2_ctrl_h264_scaling_matrix sm;
-    /*
-     * Note: VDPU381 (kernel 7.0+ refactored rkvdec) uses the frame-based
-     * UAPI — V4L2_CID_STATELESS_H264_SLICE_PARAMS is not registered and the
-     * kernel parses the slice header itself from the Annex B bitstream.
-     */
-
     h264_fill_sps(&sps, pic_param, ctx->profile);
+    if (!sps.level_idc) return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     h264_fill_pps(&pps, pic_param, slice_param);
     h264_fill_decode_params(&dec, pic_param, ctx->driver_data, slice_param);
     if (ctx->n_free_out == 0) return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -779,6 +800,21 @@ VAStatus vav4l2_h264_translate(struct vav4l2_context *ctx,
     else
         memset(&sm, 0, sizeof(sm));
 
+    if (ctx->request_slice_based) {
+        struct vav4l2_slice_plan *plan = NULL;
+        if (pic_param->pic_fields.bits.field_pic_flag) packet_status = VA_STATUS_ERROR_UNIMPLEMENTED;
+        else packet_status = vav4l2_request_slice_plan(ctx, buffers, num_buffers, header_data, total, pic_param, &dec, &plan);
+        if (temporary) free(header_data);
+        if (packet_status == VA_STATUS_SUCCESS) packet_status = vav4l2_request_slice_decode(ctx, plan, &sps, &pps, &dec, &sm,
+            iq_matrix != NULL, (pic_param->picture_width_in_mbs_minus1 + 1u) * 16,
+            (pic_param->picture_height_in_mbs_minus1 + 1u) * 16,
+            vav4l2_capture_fourcc_from_sps(pic_param->bit_depth_luma_minus8, pic_param->seq_fields.bits.chroma_format_idc));
+        vav4l2_request_slice_free(plan);
+        if (packet_status == VA_STATUS_SUCCESS && ctx->current_surface) {
+            ctx->current_surface->h264_frame_num = pic_param->frame_num; ctx->current_surface->h264_frame_num_valid = 1;
+        }
+        return packet_status;
+    }
     uint8_t *paired = NULL;
     struct vav4l2_h264_field *first = NULL;
     struct v4l2_ctrl_h264_decode_params second_dec = dec;
@@ -921,19 +957,11 @@ static VAStatus h264_submit_picture(struct vav4l2_context *ctx, const VAPictureP
         }
     }
 
-    /*
-     * VDPU381 frame-based UAPI: no slice-params control to set here —
-     * the kernel parses the slice header from the bitstream we queue below.
-     */
+    /* Slice-mode controls were submitted by the owned picture plan above.
+     * Frame-mode decoders parse their own queued slice headers. */
 
-    /*
-     * Step 3: write the bitstream, submit the request, and wait for it.
-     *
-     * VA-API clients call vaSyncSurface after vaEndPicture anyway, so we run
-     * the pipeline synchronously with a single request in flight: every
-     * buffer we queue is dequeued again before returning. This keeps buffer
-     * ownership unambiguous — the free pools in the context never lie.
-     */
+    /* Fill one leased OUTPUT slot. The Request backend retains queued slots
+     * until completion and serializes submissions that need fixed ownership. */
     if (ctx->n_free_out == 0) {
         fprintf(stderr, "v4l2: no free output buffer\n");
         return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -958,10 +986,7 @@ static VAStatus h264_submit_picture(struct vav4l2_context *ctx, const VAPictureP
         return packet_status;
     }
 
-    /*
-     * Submit synchronously. On failure decode_submit resets both queues so
-     * nothing is left queued in the kernel — do NOT push out_buf_idx back.
-     */
+    /* Submission owns OUTPUT from here, including failure recovery. */
     int done_cap = field_capture ? vav4l2_decode_submit_field(ctx, out_buf_idx, (uint32_t)total, timestamp, *field_capture, hold) :
         vav4l2_decode_submit(ctx, out_buf_idx, (uint32_t)total, timestamp);
     if (done_cap == -2)

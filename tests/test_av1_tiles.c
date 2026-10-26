@@ -1,9 +1,17 @@
 /* Exercise the shipped AV1 geometry and payload validation without a VPU. */
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include "va_v4l2.h"
 
 static int failures, ioctls;
+static int submitted, pull_error, grain_missing, grain_sent;
+int __wrap_vav4l2_ensure_capture(struct vav4l2_context *c, int w, int h, uint32_t f)
+{ (void)c; (void)w; (void)h; (void)f; return 0; }
+int __wrap_vav4l2_decode_submit(struct vav4l2_context *c, int i, uint32_t bytes, uint64_t timestamp)
+{ (void)c; (void)i; (void)bytes; (void)timestamp; submitted++; return 0; }
+int __wrap_vav4l2_surface_pull_capture(struct vav4l2_context *c, struct vav4l2_surface *s, int i)
+{ (void)c; (void)s; (void)i; return pull_error ? -1 : 0; }
 static void expect(int ok, const char *tag)
 {
     if (!ok) { fprintf(stderr, "FAIL %s\n", tag); failures++; }
@@ -127,9 +135,96 @@ static void reject_before_ioctl(void)
     expect(vav4l2_av1_translate(&ctx, buffers, 3) == VA_STATUS_ERROR_INVALID_PARAMETER && ioctls == 0, "short-picture-no-ioctl");
     vav4l2_set_ioctl_hook(NULL);
 }
+static int controls(int fd, unsigned long request, void *arg)
+{
+    (void)fd;
+    if (request == VIDIOC_QUERY_EXT_CTRL && grain_missing) { errno = EINVAL; return -1; }
+    if (request == VIDIOC_S_EXT_CTRLS) {
+        struct v4l2_ext_controls *batch = arg;
+        for (unsigned i = 0; i < batch->count; i++) grain_sent += batch->controls[i].id == V4L2_CID_STATELESS_AV1_FILM_GRAIN;
+    }
+    return 0;
+}
+static void completion(void)
+{
+    uint8_t output[64], data[] = {1,2,3,4};
+    VADecPictureParameterBufferAV1 p = picture(16, 16, 1, 1);
+    p.primary_ref_frame = 7; p.pic_info_fields.bits.show_frame = 1;
+    p.seq_info_fields.fields.subsampling_x = p.seq_info_fields.fields.subsampling_y = 1;
+    struct vav4l2_buffer b[] = {{.type = VAPictureParameterBufferType, .size = sizeof(p), .data = &p},
+        {.type = VASliceDataBufferType, .size = sizeof(data), .data = data}};
+    struct vav4l2_buffer *batch[] = {b, b + 1};
+    for (unsigned mode = 0; mode < 4; mode++) {
+        struct vav4l2_surface s = {.status = VASurfaceRendering, .buf_index = -1};
+        struct vav4l2_context c = {.current_surface = &s, .v4l2_fd = 8, .request_fd = 9, .streamed = 1,
+            .n_free_out = 1, .output_buf_ptr = {output}, .output_buf_size = sizeof(output), .capture_bufs_allocd = 4};
+        submitted = grain_sent = 0; grain_missing = mode != 2; pull_error = mode == 0;
+        p.film_grain_info.film_grain_info_fields.bits.apply_grain = mode == 3;
+        vav4l2_set_ioctl_hook(controls);
+        VAStatus status = vav4l2_av1_translate(&c, batch, 2);
+        if (!mode) expect(status == VA_STATUS_ERROR_OPERATION_FAILED && submitted == 1 && !s.has_pic && c.n_free_cap == 1, "capture-transfer-failure-is-not-success");
+        if (mode == 1) expect(status == VA_STATUS_SUCCESS && submitted == 1 && !grain_sent, "grainless-node-omits-optional-control");
+        if (mode == 2) expect(status == VA_STATUS_SUCCESS && submitted == 1 && grain_sent == 1, "available-grain-control-is-submitted");
+        if (mode == 3) expect(status == VA_STATUS_ERROR_UNIMPLEMENTED && !submitted, "missing-grain-feature-rejects-before-submit");
+    }
+    vav4l2_set_ioctl_hook(NULL);
+    struct vav4l2_av1_header header = {0}; uint8_t refresh;
+    p.pic_info_fields.bits.frame_type = 1;
+    expect(vav4l2_av1_refresh_flags(&header, &p, data, sizeof(data), &refresh) == VA_STATUS_ERROR_UNIMPLEMENTED,
+        "raw-inter-tiles-never-guess-encoder-GOP-refresh");
+    p.pic_info_fields.bits.frame_type = 3;
+    expect(vav4l2_av1_refresh_flags(&header, &p, data, sizeof(data), &refresh) == VA_STATUS_SUCCESS && refresh == 255,
+        "switch-frame-refresh-is-defined-by-specification");
+}
+struct bits { uint8_t data[128]; unsigned bit; };
+static void put(struct bits *b, unsigned value, unsigned n)
+{
+    while (n--) { b->data[b->bit / 8] |= (value >> n & 1) << (7 - b->bit % 8); b->bit++; }
+}
+static void metadata(void)
+{
+    for (unsigned equal = 0; equal < 2; equal++) for (unsigned included = 0; included < 2; included++) {
+        struct bits sequence = {0}, frame = {0};
+        put(&sequence, 0, 3); put(&sequence, 0, 1); put(&sequence, 0, 1);
+        put(&sequence, 1, 1); put(&sequence, 1, 32); put(&sequence, 30, 32);
+        put(&sequence, equal, 1); if (equal) put(&sequence, 1, 1); /* UVLC zero */
+        put(&sequence, 1, 1); put(&sequence, 3, 5); put(&sequence, 1, 32); put(&sequence, 5, 5); put(&sequence, 4, 5);
+        put(&sequence, 0, 1); put(&sequence, 1, 5); /* two operating points */
+        for (unsigned i = 0; i < 2; i++) {
+            put(&sequence, i ? (1u << (included ? 2 : 1)) | (1u << 9) : 0, 12); put(&sequence, 0, 5);
+            put(&sequence, 1, 1); put(&sequence, 7, 4); put(&sequence, 3, 4); put(&sequence, 0, 1);
+        }
+        put(&sequence, 0, 4); put(&sequence, 0, 4); put(&sequence, 0, 1); put(&sequence, 0, 1);
+        put(&sequence, 1, 1); put(&sequence, 1, 4); put(&sequence, 1, 3); /* five frame-id bits */
+        put(&sequence, 0, 3); put(&sequence, 0, 4); put(&sequence, 1, 1); put(&sequence, 0, 2);
+        put(&sequence, 0, 1); put(&sequence, 0, 1); put(&sequence, 2, 3); /* fixed screen tools off, order hints */
+        put(&frame, 0, 1); put(&frame, 1, 2); put(&frame, 1, 1);
+        if (!equal) put(&frame, 17, 5);
+        put(&frame, 0, 1); put(&frame, 0, 1); put(&frame, 19, 5); put(&frame, 0, 1);
+        put(&frame, 3, 3); put(&frame, 2, 3); put(&frame, 1, 1); put(&frame, 37, 6);
+        if (included) put(&frame, 12, 6);
+        put(&frame, 0x52, 8);
+        uint8_t obu[256]; unsigned seq_size = (sequence.bit + 7) / 8, frame_size = (frame.bit + 7) / 8;
+        obu[0] = 0x0a; obu[1] = seq_size; memcpy(obu + 2, sequence.data, seq_size);
+        unsigned at = seq_size + 2; obu[at++] = 0x1e; obu[at++] = (2 << 5) | (1 << 3); obu[at++] = frame_size;
+        memcpy(obu + at, frame.data, frame_size); unsigned size = at + frame_size;
+        VADecPictureParameterBufferAV1 p = {0}; p.pic_info_fields.bits.frame_type = 1; p.pic_info_fields.bits.show_frame = 1;
+        p.seq_info_fields.fields.enable_order_hint = 1; p.order_hint_bits_minus_1 = 2; p.order_hint = 3; p.primary_ref_frame = 2;
+        struct vav4l2_av1_header header = {0}; uint8_t refresh = 0;
+        expect(vav4l2_av1_refresh_flags(&header, &p, obu, size, &refresh) == VA_STATUS_SUCCESS && refresh == 0x52 &&
+            header.frame_id == 19 && header.removal_present && header.removal_time[0] == 37 && header.removal_time[1] == (included ? 12u : 0u),
+            "original-OBU-timing-frame-id-and-operating-point-membership");
+        struct vav4l2_av1_header saved = header;
+        expect(vav4l2_av1_refresh_flags(&header, &p, obu, size - 1, &refresh) == VA_STATUS_ERROR_UNIMPLEMENTED && !memcmp(&header, &saved, sizeof(header)),
+            "truncated-original-metadata-does-not-commit");
+        p.primary_ref_frame++;
+        expect(vav4l2_av1_refresh_flags(&header, &p, obu, size, &refresh) == VA_STATUS_ERROR_UNIMPLEMENTED && !memcmp(&header, &saved, sizeof(header)),
+            "VA-and-original-header-mismatch-does-not-commit");
+    }
+}
 int main(void)
 {
-    geometry(); payload(); reject_before_ioctl();
+    geometry(); payload(); reject_before_ioctl(); completion(); metadata();
     printf("AV1 tile failures: %d\n", failures);
     return failures != 0;
 }

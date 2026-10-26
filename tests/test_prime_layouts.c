@@ -10,7 +10,7 @@
 #include <linux/dma-buf.h>
 #include <drm_fourcc.h>
 #include "va_v4l2.h"
-extern VAStatus __vaDriverInit_1_20(VADriverContextP ctx);
+extern VAStatus VAV4L2_DRIVER_INIT(VADriverContextP ctx);
 static int failures, starts, ends, active, fail_start, fail_end, poll_failure, poll_calls, sync_again;
 static int stale_import_map, fail_cpu_map;
 void *__real_mmap(void *, size_t, int, int, int, off_t);
@@ -311,7 +311,7 @@ int main(void)
     external_mapping_checks();
     setenv("VAV4L2_PROBE_NOCACHE", "1", 1);
     struct VADriverVTable v = {0}; struct VADriverContext driver = {.vtable = &v};
-    if (__vaDriverInit_1_20(&driver)) return 1;
+    if (VAV4L2_DRIVER_INIT(&driver)) return 1;
     uint32_t formats[] = {VA_FOURCC_NV12, VA_FOURCC_NV21, VA_FOURCC_I420, VA_FOURCC_YV12, VA_FOURCC_P010,
         VA_FOURCC_YUY2, VA_FOURCC_UYVY, VA_FOURCC_VYUY, VA_FOURCC_YVYU, VA_FOURCC_422H, VA_FOURCC_YV16,
         VA_FOURCC_Y210, VA_FOURCC_ARGB, VA_FOURCC_BGRA, VA_FOURCC_BGRX, VA_FOURCC_RGB565, VA_FOURCC_RGBA, VA_FOURCC_RGBX};
