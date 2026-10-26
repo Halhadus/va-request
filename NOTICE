@@ -1,0 +1,45 @@
+The combined libva-v4l2 driver is distributed under GPL-3.0-or-later.
+Individual MIT and LGPL-2.1-or-later source notices remain in force for
+those files when used separately. COPYING contains GPLv3; LICENSES
+contains the retained LGPL text.
+
+The VP9 Request parser and H.264/HEVC slice controls adapt code by
+Ondrej Jirman <megi@xff.cz> from Omacom libva-v4l2_request, commit
+4f60c51f7841dd74bb61c94a4ad31e630bbdab01 (GPL-3.0-or-later):
+https://github.com/omacom/libva-v4l2_request
+Adaptations use the libva-v4l2 queue, storage and reference validation
+interfaces. Original copyright and license notices are retained.
+
+libva-v4l2 incorporates source from vaapi-v4l2-bridge by liyifan and
+contributors. The original MIT notice is retained in src/api/driver.c.
+
+The bytestream normalizers, VP9 packet construction and private GPU copy
+worker adapt work from
+Radxa libva-v4l2, commit 6d03c3f8fb19b86f84b2b6c60ff20d1402f0ac41:
+https://github.com/radxa-pkg/libva-v4l2
+
+The AV1 OBU normalizer adapts Radxa src/av1.cpp at commit
+deee2557dc3ccd00e174ca1249831c008a6d092f, using the shared packet and
+queue interfaces. Its MIT notice is retained.
+
+MIT License
+
+Copyright (c) 2026 libva-v4l2 contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

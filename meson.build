@@ -1,4 +1,4 @@
-project('libva-v4l2', 'c', version: '0.1.0', license: 'LGPL-2.1-or-later', meson_version: '>= 0.63', default_options: ['c_std=c11', 'warning_level=2', 'buildtype=release', 'b_ndebug=false'])
+project('libva-v4l2', 'c', version: '0.1.0', license: 'GPL-3.0-or-later', meson_version: '>= 0.63', default_options: ['c_std=c11', 'warning_level=2', 'buildtype=release', 'b_ndebug=false'])
 cc = meson.get_compiler('c')
 libva_dep = dependency('libva', version: '>= 1.23.0')
 libva_drm_dep = dependency('libva-drm', version: '>= 1.23.0')
@@ -168,3 +168,7 @@ if not get_option('hardware_tests').disabled()
   executable('vpp_dmabuf_probe', 'tests/vpp_dmabuf_probe.c', link_with: core, include_directories: inc, dependencies: core_deps)
   shared_library('prime_surface_interpose', 'tests/prime_surface_interpose.c', name_prefix: '', install: false, dependencies: core_deps + [dl_dep])
 endif
+
+install_data('COPYING', 'NOTICE', 'AUTHORS', install_dir: get_option('datadir') / 'doc/libva-v4l2')
+
+install_data('LICENSES/LGPL-2.1-or-later.txt', install_dir: get_option('datadir') / 'doc/libva-v4l2/LICENSES')

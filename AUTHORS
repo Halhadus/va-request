@@ -1,4 +1,14 @@
 Halhadus <halhadusmail@halhadus.rocks>
 
-Based on vaapi-v4l2-bridge by liyifan and contributors:
+VA frontend: liyifan and vaapi-v4l2-bridge contributors:
 https://github.com/pty819/vaapi-v4l2-bridge
+
+Bytestream normalization, AV1 reference mapping and VP9 packet design:
+Radxa libva-v4l2 contributors
+https://github.com/radxa-pkg/libva-v4l2
+
+Request API review and test methods:
+Omacom libva-v4l2_request contributors
+https://github.com/omacom/libva-v4l2_request
+
+Ondrej Jirman <megi@xff.cz> — VP9 Request parser and slice controls.

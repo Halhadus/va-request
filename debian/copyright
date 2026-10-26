@@ -2,19 +2,40 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: libva-v4l2
 Upstream-Contact: Halhadus <eneshakans45@proton.me>
 Source: https://github.com/Halhadus/va-v4l2
-Comment: Reorganized successor to pty819/vaapi-v4l2-bridge.
- The predecessor README and Meson project declare LGPL-2.1-or-later;
- its frontend's existing MIT notice is preserved separately.
+Comment: Includes the VA frontend from pty819/vaapi-v4l2-bridge,
+ MIT-licensed decoder work from radxa-pkg/libva-v4l2 and GPL-licensed
+ Request parsers from omacom/libva-v4l2_request. Original notices are
+ retained in the source and NOTICE.
 
 Files: *
 Copyright: 2026 liyifan and upstream contributors
            2026 Halhadus
 License: LGPL-2.1+
+Comment: The combined driver is distributed under GPL-3+; individual
+ source files retain their original license terms.
+
+Files: src/codecs/*_request.* src/codecs/request_bits.h src/codecs/request_slices.*
+Copyright: 2026 Ondrej Jirman <megi@xff.cz>
+           2026 Halhadus
+License: GPL-3+
 
 Files: src/api/*
 Copyright: 2026 vaapi-v4l2-bridge authors and contributors
            2026 Halhadus
 License: MIT
+
+Files: src/codecs/h264_bytestream.c src/codecs/hevc_bytestream.c
+ src/codecs/vp9.c src/memory/drm.c src/memory/gpu_copy.c
+Copyright: 2026 libva-v4l2 contributors
+           2026 Halhadus
+License: LGPL-2.1+ and MIT
+Comment: Adapted Radxa MIT source; the original permission notice is in NOTICE.
+
+Files: src/codecs/av1_bytestream.c
+Copyright: 2026 libva-v4l2 contributors
+           2026 Halhadus
+License: MIT
+Comment: Adapted from Radxa AV1 normalization; the permission notice is in NOTICE.
 
 License: LGPL-2.1+
  This software is free software; you can redistribute it and/or modify it
@@ -43,3 +64,12 @@ License: MIT
  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  DEALINGS IN THE SOFTWARE.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the
+ Free Software Foundation, either version 3 of the License, or (at your
+ option) any later version.
+ .
+ On Debian systems the complete text is available at
+ /usr/share/common-licenses/GPL-3.
