@@ -290,13 +290,14 @@ int main(void)
     f.buffers[2].data = hn; f.buffers[2].size = sizeof(hn);
     submit(&c, &surfaces[0], &f, 0);
     assert(c.cap_pixelformat == V4L2_PIX_FMT_P010 && c.cap_stride == 32 && c.cap_sizeimage == 768 && !c.num_render_targets);
-    result(0, 0, 0, 768); assert(vav4l2_stateful_pump(&c) == 0 && surfaces[0].status == VASurfaceReady);
+    result(0, 0, 0, 768); assert(surfaces[0].status == VASurfaceRendering);
     struct VADriverVTable native_table = {0}; struct VADriverContext native_driver = {.vtable = &native_table};
     assert(VAV4L2_DRIVER_INIT(&native_driver) == VA_STATUS_SUCCESS); void *native_original = native_driver.pDriverData;
     native_driver.pDriverData = &dd; dd.contexts = &c;
     VADRMPRIMESurfaceDescriptor descriptor;
     assert(native_table.vaExportSurfaceHandle(&native_driver, 0, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
         VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_COMPOSED_LAYERS, &descriptor) == VA_STATUS_SUCCESS);
+    assert(native_table.vaSyncSurface(&native_driver, 0) == VA_STATUS_SUCCESS && surfaces[0].status == VASurfaceReady);
     assert(descriptor.fourcc == VA_FOURCC_P010 && descriptor.layers[0].drm_format == DRM_FORMAT_P010 &&
         descriptor.layers[0].pitch[0] >= 32 && descriptor.layers[0].offset[1] == descriptor.layers[0].pitch[0] * 16);
     int retained = descriptor.objects[0].fd; struct stat first, second; assert(!fstat(retained, &first));
@@ -304,9 +305,10 @@ int main(void)
     assert(native_table.vaBeginPicture(&native_driver, c.context_id, 0) == VA_STATUS_SUCCESS);
     assert(vav4l2_stateful_translate(&c, f.batch, 3) == VA_STATUS_SUCCESS); c.current_surface = NULL;
     c.capture_buf_ptr[1] = calloc(1, 1024); assert(c.capture_buf_ptr[1]); memset(c.capture_buf_ptr[1], 0x22, 1024);
-    result(1, 1000, 0, 768); assert(!vav4l2_stateful_pump(&c));
+    result(1, 1000, 0, 768); assert(surfaces[0].status == VASurfaceRendering);
     assert(native_table.vaExportSurfaceHandle(&native_driver, 0, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
         VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS, &descriptor) == VA_STATUS_SUCCESS);
+    assert(native_table.vaSyncSurface(&native_driver, 0) == VA_STATUS_SUCCESS && surfaces[0].status == VASurfaceReady);
     assert(descriptor.num_layers == 2 && descriptor.layers[0].drm_format == DRM_FORMAT_R16 &&
         descriptor.layers[1].drm_format == DRM_FORMAT_GR1616 && descriptor.layers[1].offset[0] == descriptor.layers[0].pitch[0] * 16);
     assert(!fstat(descriptor.objects[0].fd, &second) && first.st_dev == second.st_dev && first.st_ino == second.st_ino && surfaces[0].buf_index == 1);

@@ -2135,6 +2135,15 @@ vav4l2_export_surface_handle2(VADriverContextP ctx, VASurfaceID surface_id,
         pthread_mutex_unlock(&vav4l2_api_lock);
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
+    /* Completion determines the backing to export; a queued CAPTURE slot
+     * may still belong to another picture. Clients may export before sync. */
+    if (surf->status == VASurfaceRendering && !(flags & VA_EXPORT_SURFACE_WRITE_ONLY)) {
+        for (c = driver_data->contexts; c; c = c->next) if (vav4l2_decode_pending(c, surface_id)) {
+            st = vav4l2_decode_sync(c, surf, UINT64_C(5000000000));
+            if (st != VA_STATUS_SUCCESS) { pthread_mutex_unlock(&vav4l2_api_lock); return st; }
+            break;
+        }
+    }
     if (surf->status == VASurfaceRendering || ((flags & VA_EXPORT_SURFACE_WRITE_ONLY) && surf->memfd_borrows)) {
         pthread_mutex_unlock(&vav4l2_api_lock); return VA_STATUS_ERROR_SURFACE_BUSY;
     }
