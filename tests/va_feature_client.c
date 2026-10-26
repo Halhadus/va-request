@@ -54,8 +54,9 @@ static int image(unsigned fourcc, unsigned w, unsigned h, VAImage *out)
 }
 static unsigned bpp(unsigned fcc)
 {
-    return fcc == VA_FOURCC_P010 || fcc == VA_FOURCC_YUY2 || fcc == VA_FOURCC_UYVY || fcc == VA_FOURCC_VYUY || fcc == VA_FOURCC_YVYU ? 2 :
-        fcc == VA_FOURCC_Y210 || fcc == VA_FOURCC_BGRX || fcc == VA_FOURCC_BGRA || fcc == VA_FOURCC_ARGB ? 4 : 1;
+    return fcc == VA_FOURCC_P010 || fcc == VA_FOURCC_YUY2 || fcc == VA_FOURCC_UYVY || fcc == VA_FOURCC_VYUY || fcc == VA_FOURCC_YVYU || fcc == VA_FOURCC_RGB565 || fcc == VA_FOURCC_BGR565 ? 2 :
+        fcc == VA_FOURCC_Y210 || fcc == VA_FOURCC_BGRX || fcc == VA_FOURCC_BGRA || fcc == VA_FOURCC_ARGB || fcc == VA_FOURCC_RGBA || fcc == VA_FOURCC_RGBX ||
+        fcc == VA_FOURCC_XRGB || fcc == VA_FOURCC_ABGR || fcc == VA_FOURCC_XBGR ? 4 : 1;
 }
 static int surface_size(unsigned rt, unsigned fcc, unsigned width, unsigned height, VASurfaceID *sid)
 {
@@ -282,18 +283,29 @@ static const struct dmabuf_format dmabuf_formats[] = {
     {VA_RT_FORMAT_YUV422_10, VA_FOURCC_Y210, DRM_FORMAT_Y210, 1, 4, 0, "Y210"},
     {VA_RT_FORMAT_RGB32, VA_FOURCC_ARGB, DRM_FORMAT_BGRA8888, 1, 4, 0, "ARGB"},
     {VA_RT_FORMAT_RGB32, VA_FOURCC_BGRA, DRM_FORMAT_ARGB8888, 1, 4, 0, "BGRA"},
-    {VA_RT_FORMAT_RGB32, VA_FOURCC_BGRX, DRM_FORMAT_XRGB8888, 1, 4, 0, "BGRX"}};
+    {VA_RT_FORMAT_RGB32, VA_FOURCC_BGRX, DRM_FORMAT_XRGB8888, 1, 4, 0, "BGRX"},
+    {VA_RT_FORMAT_RGB16, VA_FOURCC_RGB565, DRM_FORMAT_RGB565, 1, 2, 0, "RGB565"},
+    {VA_RT_FORMAT_RGB16, VA_FOURCC_BGR565, DRM_FORMAT_BGR565, 1, 2, 0, "BGR565"},
+    {VA_RT_FORMAT_RGB32, VA_FOURCC_RGBA, DRM_FORMAT_ABGR8888, 1, 4, 0, "RGBA"},
+    {VA_RT_FORMAT_RGB32, VA_FOURCC_RGBX, DRM_FORMAT_XBGR8888, 1, 4, 0, "RGBX"},
+    {VA_RT_FORMAT_RGB32, VA_FOURCC_XRGB, DRM_FORMAT_BGRX8888, 1, 4, 0, "XRGB"},
+    {VA_RT_FORMAT_RGB32, VA_FOURCC_ABGR, DRM_FORMAT_RGBA8888, 1, 4, 0, "ABGR"},
+    {VA_RT_FORMAT_RGB32, VA_FOURCC_XBGR, DRM_FORMAT_RGBX8888, 1, 4, 0, "XBGR"}};
 static uint8_t dmabuf_byte(const struct dmabuf_format *f, unsigned plane, unsigned y, unsigned x, unsigned frame)
 {
-    if ((f->va == VA_FOURCC_BGRX || frame == 5 || frame == 6) && f->rt == VA_RT_FORMAT_RGB32 && x % 4 == (f->va == VA_FOURCC_ARGB ? 0u : 3u)) return 255;
-    return 19 + plane * 71 + y * 3 + x * 7 + frame * 23;
+    unsigned alpha = f->va == VA_FOURCC_ARGB || f->va == VA_FOURCC_XRGB || f->va == VA_FOURCC_ABGR || f->va == VA_FOURCC_XBGR ? 0u : 3u;
+    int padding = f->va == VA_FOURCC_BGRX || f->va == VA_FOURCC_RGBX || f->va == VA_FOURCC_XRGB || f->va == VA_FOURCC_XBGR;
+    if ((padding || frame == 5 || frame == 6) && f->rt == VA_RT_FORMAT_RGB32 && x % 4 == alpha) return 255;
+    unsigned value = 19 + plane * 71 + y * 3 + x * 7 + frame * 23;
+    if ((frame == 5 || frame == 6) && (f->va == VA_FOURCC_P010 || f->va == VA_FOURCC_Y210) && !(x & 1)) value &= 0xc0;
+    return value;
 }
-/* Packed422 VPP uses RGA3, whose inspected minimum is128x128. Other DMA
- * formats keep64x64; enumeration does not imply64x64 VPP support. */
+/* Packed-format VPP fixtures use 128x128; format enumeration alone does
+ * not establish support for smaller jobs on the selected processing node. */
 static unsigned dmabuf_dimension(const struct dmabuf_format *f)
 {
     if (f->planes > 1) return (f->va == VA_FOURCC_422H || f->va == VA_FOURCC_YV16) ? f->chroma_rows : 2 * f->chroma_rows;
-    return f->rt == VA_RT_FORMAT_YUV422 ? VPP_SIZE : 64;
+    return VPP_SIZE;
 }
 static unsigned dmabuf_row(const struct dmabuf_format *f, unsigned p) { return p && f->planes == 3 ? dmabuf_dimension(f) / 2 : dmabuf_dimension(f) * f->bytes; }
 static unsigned dmabuf_rows(const struct dmabuf_format *f, unsigned p) { return p ? f->chroma_rows : dmabuf_dimension(f); }
@@ -365,16 +377,35 @@ static void dmabuf_close(VADRMPRIMESurfaceDescriptor *d)
 {
     for (unsigned i = 0; i < d->num_objects; i++) if (d->objects[i].fd >= 0) { close(d->objects[i].fd); d->objects[i].fd = -1; }
 }
+static int dmabuf_vpp_format(unsigned format)
+{
+    VAConfigID cfg = VA_INVALID_ID; VAContextID ctx = VA_INVALID_ID;
+    VAStatus st = vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc, NULL, 0, &cfg);
+    if (st == VA_STATUS_ERROR_UNSUPPORTED_PROFILE || st == VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT) return 0;
+    int ok = status(st, "format VPP config");
+    if (ok) ok = status(vaCreateContext(display, cfg, 128, 128, VA_PROGRESSIVE, NULL, 0, &ctx), "format VPP context");
+    VAProcPipelineCaps caps = {0};
+    if (ok) ok = status(vaQueryVideoProcPipelineCaps(display, ctx, NULL, 0, &caps), "format VPP caps");
+    int input = 0, output = 0;
+    if (ok) {
+        for (unsigned i = 0; i < caps.num_input_pixel_formats; i++) input |= caps.input_pixel_format[i] == format;
+        for (unsigned i = 0; i < caps.num_output_pixel_formats; i++) output |= caps.output_pixel_format[i] == format;
+    }
+    if (ctx != VA_INVALID_ID) vaDestroyContext(display, ctx);
+    if (cfg != VA_INVALID_ID) vaDestroyConfig(display, cfg);
+    return ok ? input && output : -1;
+}
 static void dmabuf_layout_checks(int render_fd)
 {
     struct gbm_device *dev = gbm_create_device(render_fd);
     for (unsigned n = 0; n < sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]); n++) {
         const struct dmabuf_format *f = &dmabuf_formats[n];
         unsigned size = dmabuf_dimension(f);
+        int processing = dmabuf_vpp_format(f->va);
         for (unsigned variant = 0; variant < 4; variant++) {
             VADRMPRIMESurfaceDescriptor d = {.fourcc = f->va, .width = size, .height = size,
                 .num_objects = variant & 1 ? f->planes : 1, .num_layers = variant & 2 ? f->planes : 1};
-            struct gbm_bo *bos[3] = {0}; int ok = dev != NULL;
+            struct gbm_bo *bos[3] = {0}; int ok = dev != NULL && processing >= 0;
             for (unsigned o = 0; o < d.num_objects; o++) d.objects[o].fd = -1;
             for (unsigned o = 0; o < d.num_objects && ok; o++) {
                 bos[o] = gbm_bo_create(dev, 512, 256, GBM_FORMAT_R8, GBM_BO_USE_LINEAR);
@@ -406,7 +437,7 @@ static void dmabuf_layout_checks(int render_fd)
             VADRMPRIMESurfaceDescriptor e = {0};
             ok = ok && status(vaExportSurfaceHandle(display, sid, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                 VA_EXPORT_SURFACE_READ_WRITE | (variant & 2 ? VA_EXPORT_SURFACE_COMPOSED_LAYERS : VA_EXPORT_SURFACE_SEPARATE_LAYERS), &e), "DMA-BUF layout reexport");
-            if (variant == 3 && f->va != VA_FOURCC_P010 && f->va != VA_FOURCC_Y210) {
+            if (variant == 3 && processing > 0) {
                 VAConfigID cfg = VA_INVALID_ID; VAContextID ctx = VA_INVALID_ID; VASurfaceID native = VA_INVALID_ID;
                 VAConfigAttrib rt = {.type = VAConfigAttribRTFormat, .value = f->rt};
                 ok = ok && status(vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc, &rt, 1, &cfg), "multi-object VPP config") &&
@@ -435,7 +466,20 @@ static void dmabuf_layout_checks(int render_fd)
         if (sid != VA_INVALID_ID) vaDestroySurfaces(display, &sid, 1);
         ok = ok && dmabuf_object(&e, f, 2, 0, 0);
         char tag[100]; snprintf(tag, sizeof(tag), "dmabuf-export-writeback-%s", f->name); result(tag, ok);
-        dmabuf_close(&e); if (im.image_id != VA_INVALID_ID) vaDestroyImage(display, im.image_id);
+        VASurfaceID legacy = VA_INVALID_ID; uintptr_t fd = e.num_objects == 1 ? (uintptr_t)e.objects[0].fd : (uintptr_t)-1;
+        VASurfaceAttribExternalBuffers external = {.pixel_format = f->va, .width = size, .height = size,
+            .data_size = e.objects[0].size, .num_planes = f->planes, .buffers = &fd, .num_buffers = 1};
+        for (unsigned p = 0; p < f->planes; p++) { external.pitches[p] = e.layers[0].pitch[p]; external.offsets[p] = e.layers[0].offset[p]; }
+        VASurfaceAttrib attrs[] = {
+            {.type = VASurfaceAttribMemoryType, .flags = VA_SURFACE_ATTRIB_SETTABLE, .value = {.type = VAGenericValueTypeInteger, .value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME}},
+            {.type = VASurfaceAttribExternalBufferDescriptor, .flags = VA_SURFACE_ATTRIB_SETTABLE, .value = {.type = VAGenericValueTypePointer, .value.p = &external}}};
+        int imported = ok && status(vaCreateSurfaces(display, f->rt, size, size, &legacy, 1, attrs, 2), "PRIME1 layout import");
+        dmabuf_close(&e);
+        imported = imported && dmabuf_image(legacy, &im, f, 2, 0) && dmabuf_image(legacy, &im, f, 3, 1) && dmabuf_image(legacy, &im, f, 3, 0);
+        snprintf(tag, sizeof(tag), "dmabuf-prime1-%s", f->name); result(tag, imported);
+        if (legacy != VA_INVALID_ID) vaDestroySurfaces(display, &legacy, 1);
+        if (im.image_id != VA_INVALID_ID) vaDestroyImage(display, im.image_id);
+
     }
     if (dev) gbm_device_destroy(dev);
 }
@@ -1082,18 +1126,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "Unexpected VA driver: %s\n", vendor ? vendor : "unknown");
         vaTerminate(display); close(fd); fclose(results); return 2;
     }
-    static const struct { unsigned rt, fcc; const char *name; } formats[] = {
-        {VA_RT_FORMAT_YUV420, VA_FOURCC_NV12, "NV12"}, {VA_RT_FORMAT_YUV420, VA_FOURCC_I420, "I420"},
-        {VA_RT_FORMAT_YUV420, VA_FOURCC_NV21, "NV21"}, {VA_RT_FORMAT_YUV420, VA_FOURCC_YV12, "YV12"},
-        {VA_RT_FORMAT_YUV420_10, VA_FOURCC_P010, "P010"}, {VA_RT_FORMAT_YUV422, VA_FOURCC_YUY2, "YUY2"}, {VA_RT_FORMAT_YUV422, VA_FOURCC_UYVY, "UYVY"},
-        {VA_RT_FORMAT_YUV422, VA_FOURCC_VYUY, "VYUY"}, {VA_RT_FORMAT_YUV422, VA_FOURCC_YVYU, "YVYU"},
-        {VA_RT_FORMAT_YUV422, VA_FOURCC_422H, "422H"}, {VA_RT_FORMAT_YUV422, VA_FOURCC_YV16, "YV16"},
-        {VA_RT_FORMAT_YUV422_10, VA_FOURCC_Y210, "Y210"}, {VA_RT_FORMAT_RGB32, VA_FOURCC_BGRX, "BGRX"},
-        {VA_RT_FORMAT_RGB32, VA_FOURCC_BGRA, "BGRA"}, {VA_RT_FORMAT_RGB32, VA_FOURCC_ARGB, "ARGB"},
-    };
-    for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
-        char name[80]; snprintf(name, sizeof(name), "image-transfer-%s", formats[i].name);
-        result(name, transfer(formats[i].rt, formats[i].fcc));
+    for (unsigned i = 0; i < sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]); i++) {
+        const struct dmabuf_format *f = &dmabuf_formats[i];
+        char name[80]; snprintf(name, sizeof(name), "image-transfer-%s", f->name);
+        result(name, transfer(f->rt, f->va));
     }
     vpp_checks();
     packed422_checks();

@@ -334,10 +334,7 @@ int VA_DMABUF_COMPLETE_MAIN(int argc, char **argv)
     if (!vav4l2_test_driver_identity(vendor)) { fprintf(stderr, "Unexpected VA driver\n"); vaTerminate(display); close(fd); fclose(results); return 2; }
     for (unsigned i = 0; i < sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]); i++)
         for (unsigned layer = 0; layer < 2; layer++) complete_prime(&dmabuf_formats[i], layer ? VA_EXPORT_SURFACE_SEPARATE_LAYERS : VA_EXPORT_SURFACE_COMPOSED_LAYERS);
-    for (unsigned i = 0; i < sizeof(additions) / sizeof(additions[0]); i++) {
-        for (unsigned layer = 0; layer < 2; layer++) complete_prime(&additions[i], layer ? VA_EXPORT_SURFACE_SEPARATE_LAYERS : VA_EXPORT_SURFACE_COMPOSED_LAYERS);
-        complete_rgb(&additions[i]);
-    }
+    for (unsigned i = 0; i < sizeof(additions) / sizeof(additions[0]); i++) complete_rgb(&additions[i]);
     complete_modifiers();
     complete_pressure();
     complete_jpeg(VA_FOURCC_NV12, "NV12", 0); complete_jpeg(VA_FOURCC_I420, "I420", 1); complete_jpeg(VA_FOURCC_YV12, "YV12", 2);

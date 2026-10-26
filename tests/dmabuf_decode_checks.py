@@ -23,6 +23,18 @@ def validate_imports(paths, minimum):
                 raise ValueError(f'{path}: failed or invalid PRIME allocation: {row}')
 
 
+def validate_gpu_copies(path, minimum):
+    copies = set()
+    for line in path.read_text().splitlines():
+        row = dict(field.split('=', 1) for field in line.split('\t'))
+        if row.get('STAGE') != 'capture-gpu-copy' or row.get('STATUS') != '0': continue
+        key = tuple(row.get(name, '') for name in ('PID', 'CONTEXT', 'FRAME', 'ARG'))
+        if not all(value.isdecimal() for value in key): raise ValueError('invalid GPU completion identity')
+        copies.add(key)
+    if len(copies) < minimum: raise ValueError(f'expected at least {minimum} GPU copy completions, got {len(copies)}')
+    return len(copies)
+
+
 def run(root, build, output, ffmpeg, render):
     output.mkdir(parents=True, exist_ok=True)
     current = Path(tempfile.mkdtemp(prefix='run.', dir=output))
@@ -31,6 +43,7 @@ def run(root, build, output, ffmpeg, render):
     env = dict(os.environ, LIBVA_DRIVER_NAME='v4l2', LIBVA_DRIVERS_PATH=str(build), VAV4L2_ADVERTISE_AV1='0',
                VAV4L2_RENDER_NODE=render, VAV4L2_PRIME_TRACE_DIR=str(current))
     env['LD_PRELOAD'] = str(shim) + (':' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else '')
+    gpu_check = env.get('VAV4L2_GPU_COPY') == '1' and env.get('VAV4L2_CAPTURE_DMABUF') not in ('1', 'required')
     with (current / 'commands.jsonl').open('w') as commands, (current / 'results.tsv').open('w') as results:
         def command(args, environment=None):
             process = subprocess.run(args, cwd=root, env=environment)
@@ -47,6 +60,7 @@ def run(root, build, output, ffmpeg, render):
             identity['export'] = env.get('VAV4L2_EXPBUF_EXPORT', 'default')
             identity['capture_dmabuf'] = env.get('VAV4L2_CAPTURE_DMABUF', '0')
             identity['prime_canonical'] = env.get('VAV4L2_PRIME_CANONICAL', '0')
+            identity['gpu_copy'] = env.get('VAV4L2_GPU_COPY', '0')
             (current / 'source.json').write_text(json.dumps(identity, indent=2) + '\n')
             stage = 'packet-imports'
             command([sys.executable, str(root / 'tests/hevc_slice_checks.py'), str(build), str(current / 'packets'), ffmpeg, render], env)
@@ -60,14 +74,21 @@ def run(root, build, output, ffmpeg, render):
                      '-c:v', 'libx264', '-preset', 'fast', '-profile:v', 'main', '-x264-params', 'keyint=8:min-keyint=8:scenecut=0:bframes=2', '-frames:v', '8', '-y', str(clip)])
             command([ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-i', str(clip), '-pix_fmt', 'nv12', '-frames:v', '8', '-f', 'framemd5', '-y', str(software)])
             stage = 'h264-import'
+            decode_env = dict(env, VAV4L2_DECODE_TRACE=str(current / 'h264-gpu.tsv')) if gpu_check else env
             command([ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-hwaccel', 'vaapi', '-hwaccel_output_format', 'vaapi', '-vaapi_device', render,
-                     '-i', str(clip), '-vf', 'hwdownload,format=nv12', '-pix_fmt', 'nv12', '-frames:v', '8', '-f', 'framemd5', '-y', str(hardware)], env)
+                     '-i', str(clip), '-vf', 'hwdownload,format=nv12', '-pix_fmt', 'nv12', '-frames:v', '8', '-f', 'framemd5', '-y', str(hardware)], decode_env)
             if packets.frames(software, 8) != packets.frames(hardware, 8):
                 raise ValueError('H264 imported target frame hashes differ')
             passed += 1; results.write('PASS\th264-import\n'); results.flush()
             stage = 'import-evidence'
             validate_imports(list(current.glob('prime-*.tsv')), 59)
-            passed += 1; results.write('PASS\timport-evidence\n'); complete, failed, stage = 1, 0, 'done'
+            passed += 1; results.write('PASS\timport-evidence\n')
+            if gpu_check:
+                stage = 'gpu-copy-evidence'
+                copies = validate_gpu_copies(current / 'h264-gpu.tsv', 8)
+                print(f'GPU copy completions: {copies}', flush=True)
+                passed += 1; results.write('PASS\tgpu-copy-evidence\n')
+            complete, failed, stage = 1, 0, 'done'
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             (current / 'failure.txt').write_text(str(error) + '\n'); results.write(f'FAIL\t{stage}\n'); print(f'FAIL {error}', flush=True)
         summary = f'PASS={passed} FAIL={failed} COMPLETE={complete} EXIT={failed} STAGE={stage}\nRUN={current}\n'

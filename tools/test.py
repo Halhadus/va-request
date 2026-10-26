@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import threading
 import xml.etree.ElementTree as ET
 import importlib.util
 
@@ -35,12 +36,32 @@ def source_identity(root, build):
     return result
 
 
+def sample_process(pid, stop, metrics):
+    """Linux process observations; peak samples are not a leak qualification."""
+    root = Path('/proc') / str(pid)
+    while not stop.is_set():
+        try:
+            fields = dict(line.split(':', 1) for line in (root / 'status').read_text().splitlines() if ':' in line)
+            rss = int(fields.get('VmRSS', '0 kB').split()[0])
+            descriptors = len(list((root / 'fd').iterdir()))
+            metrics['samples'] += 1
+            metrics['peak_rss_kib'] = max(metrics['peak_rss_kib'], rss)
+            metrics['peak_fds'] = max(metrics['peak_fds'], descriptors)
+        except (OSError, ValueError): pass
+        stop.wait(0.1)
+
+
 def execute(name, command, output, cwd=ROOT, env=None):
     started = time.monotonic()
     print(f"[RUN] {name}: {' '.join(map(str, command))}", flush=True)
     with (output / f"{name}.log").open("w") as log:
         # stderr stays attached to the terminal. Meson also retains its own per-test diagnostics.
         with subprocess.Popen(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, bufsize=1, start_new_session=True) as child:
+            metrics = {'samples': 0, 'peak_rss_kib': 0, 'peak_fds': 0}
+            stop = threading.Event(); observer = None
+            if name.startswith('conformance-') and name.endswith(('-hardware', '-software')):
+                observer = threading.Thread(target=sample_process, args=(child.pid, stop, metrics), daemon=True)
+                observer.start()
             try:
                 for line in child.stdout:
                     print(line, end="", flush=True); log.write(line)
@@ -51,7 +72,12 @@ def execute(name, command, output, cwd=ROOT, env=None):
                     try: child.wait(timeout=5)
                     except subprocess.TimeoutExpired: os.killpg(child.pid, signal.SIGKILL); child.wait()
                 raise
-    return {"name": name, "status": "SKIP" if code == 77 else "PASS" if code == 0 else "FAIL", "exit_code": code, "duration_s": round(time.monotonic() - started, 6)}
+            finally:
+                stop.set()
+                if observer is not None: observer.join()
+    result = {"name": name, "status": "SKIP" if code == 77 else "PASS" if code == 0 else "FAIL", "exit_code": code, "duration_s": round(time.monotonic() - started, 6)}
+    if observer is not None: result['resources'] = metrics
+    return result
 
 
 def meson_cases(path):
@@ -130,12 +156,18 @@ def write_report(record, output):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=("unit", "hardware", "smoke", "acceptance", "rk3588"), default="unit")
+    parser.add_argument("--suite", choices=("unit", "hardware", "smoke", "acceptance", "rk3588", "conformance"), default="unit")
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "verify")
     parser.add_argument("--render-node", default="/dev/dri/renderD128")
     parser.add_argument("--sanitize", action="store_true")
+    parser.add_argument("--manifest", type=Path, help="conformance corpus manifest")
+    parser.add_argument("--previous", type=Path, help="previous conformance report for regression checks")
+    parser.add_argument("--repeat", type=int, default=1, help="repeat each conformance stream in one decoder session (1..100000)")
     args = parser.parse_args(argv)
+    if args.suite == "conformance" and not args.manifest: parser.error("conformance requires --manifest")
+    if not 1 <= args.repeat <= 100000 or (args.repeat != 1 and args.suite != "conformance"): parser.error("--repeat requires conformance and a value from 1 to 100000")
+    if args.suite != "conformance" and (args.manifest or args.previous): parser.error("--manifest/--previous require --suite conformance")
     build = args.build_dir.resolve(); parent = args.output_dir.resolve(); parent.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     record = {"schema": SCHEMA, "run_id": output.name, "started_at": datetime.now(timezone.utc).isoformat(), "profile": args.suite,
@@ -148,7 +180,7 @@ def main(argv=None):
         interrupted_code = 128 + signum
         raise KeyboardInterrupt
     previous_term = signal.signal(signal.SIGTERM, terminated)
-    try:
+    def run_suites():
         if not shutil.which("meson"): raise RuntimeError("meson is required")
         options = ["-Dtests=true", "-Dhardware_tests=" + ("enabled" if args.suite in ("acceptance", "rk3588") else "auto"), "-Db_ndebug=false", "-Db_sanitize=" + ("address,undefined" if args.sanitize else "none")]
         command = ["meson", "setup", "--reconfigure", str(build), *options] if (build / "meson-private/coredata.dat").is_file() else ["meson", "setup", str(build), str(ROOT), *options]
@@ -174,6 +206,13 @@ def main(argv=None):
             for result in hardware.run_hardware(run, output, build, args.render_node, extended=args.suite == "hardware"):
                 if not any(result is old for old in record["suites"]): record["suites"].append(result)
             if any(item["status"] == "FAIL" for item in record["suites"]): record["complete"] = True; return 1
+        elif args.suite == "conformance":
+            spec = importlib.util.spec_from_file_location("hardware", ROOT / "tools/hardware.py")
+            hardware = importlib.util.module_from_spec(spec); spec.loader.exec_module(hardware)
+            result = hardware.run_conformance(lambda name, command, env: execute(name, command, output, env=env),
+                output, build, args.render_node, args.manifest, args.previous, args.repeat)
+            record["suites"].append(result)
+            if result["exit_code"]: record["complete"] = True; return 1
         elif args.suite in ("acceptance", "rk3588"):
             env = dict(os.environ, VAV4L2_BUILD_DIR=str(build), VAV4L2_REPORT_FILE=str(output / "hardware.tar.gz"), VAV4L2_RENDER_NODE=args.render_node)
             result = run("acceptance", ["bash", "tests/run_dmabuf_completion.sh"], env)
@@ -183,11 +222,12 @@ def main(argv=None):
                 result["cases"] = hardware.acceptance_cases(output / "hardware.tar.gz")
                 if any(case["status"] == "FAIL" for case in result["cases"]): result.update(status="FAIL", exit_code=1)
             if result["exit_code"]: record["complete"] = True; return 1
-        record["complete"] = True; code = 0; return code
+        record["complete"] = True; return 0
+    try: code = run_suites()
     except KeyboardInterrupt:
-        code = interrupted_code; print("Interrupted; preserving partial report", file=sys.stderr); return code
-    except (OSError, RuntimeError, ValueError, ET.ParseError, tarfile.TarError) as error:
-        record["error"] = str(error); record["suites"].append({"name": "runner-error", "status": "FAIL", "exit_code": 1, "duration_s": 0}); print(error, file=sys.stderr); return 1
+        code = interrupted_code; print("Interrupted; preserving partial report", file=sys.stderr)
+    except (OSError, RuntimeError, ValueError, KeyError, ET.ParseError, tarfile.TarError) as error:
+        record["error"] = str(error); record["suites"].append({"name": "runner-error", "status": "FAIL", "exit_code": 1, "duration_s": 0}); print(error, file=sys.stderr)
     finally:
         signal.signal(signal.SIGTERM, previous_term)
         record["exit_code"] = code
@@ -206,7 +246,8 @@ def main(argv=None):
         archive = parent / f"libva-v4l2-{output.name}.tar.gz"
         with tarfile.open(archive, "w:gz") as tar: tar.add(output, arcname=output.name)
         print((output / "summary.txt").read_text().strip()); print(f"REPORT={archive}")
-        if sanitation_failed: return 1
+        if sanitation_failed: code = 1
+    return code
 
 
 if __name__ == "__main__": sys.exit(main())

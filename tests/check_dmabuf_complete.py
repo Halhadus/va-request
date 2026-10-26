@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 import sys
 
-FORMATS = ('NV12', 'NV21', 'I420', 'YV12', 'P010', 'YUY2', 'UYVY', 'VYUY', 'YVYU', '422H', 'YV16', 'Y210', 'ARGB', 'BGRA', 'BGRX', 'RGB565', 'RGBA', 'RGBX')
+FORMATS = ('NV12', 'NV21', 'I420', 'YV12', 'P010', 'YUY2', 'UYVY', 'VYUY', 'YVYU', '422H', 'YV16', 'Y210', 'ARGB', 'BGRA', 'BGRX', 'RGB565', 'BGR565', 'RGBA', 'RGBX', 'XRGB', 'ABGR', 'XBGR')
 RGB = {'RGB565': 'RG16', 'RGBA': 'RGBA', 'RGBX': 'RGBX'}
 CASES = {f'complete-prime3-{name}-{layer}' for name in FORMATS for layer in ('composed', 'separate')}
 CASES |= {f'complete-rgb-{kind}-{name}' for name in RGB for kind in ('warm', 'cold')}
@@ -26,7 +26,7 @@ def check(results, vpp, jpeg):
     if sum(row[:2] == ['COMPLETE', '1'] for row in rows) != 1 or len(cases) != len(CASES) or {row[1] for row in cases if len(row) > 1} != CASES or any(row[0] != 'PASS' for row in cases):
         raise ValueError('missing, duplicate, failed, skipped or incomplete closure case')
     prime = [row for row in rows if row and row[0] == 'PRIME_EVIDENCE']
-    if len(prime) != 36 or {(row[1], row[2]) for row in prime if len(row) == 6} != {(name, layer) for name in FORMATS for layer in ('composed', 'separate')} or any(row[3:] != ['32', '3', '1'] for row in prime):
+    if len(prime) != 2 * len(FORMATS) or {(row[1], row[2]) for row in prime if len(row) == 6} != {(name, layer) for name in FORMATS for layer in ('composed', 'separate')} or any(row[3:] != ['32', '3', '1'] for row in prime):
         raise ValueError('missing or incomplete PRIME3 cycle/rejection/inherited-FD evidence')
     counts, contexts = Counter(), defaultdict(set)
     for row in table(vpp, ['STATUS', 'SRC_FOURCC', 'DST_FOURCC', 'QUEUE_VALID', 'OUTPUT_MEMORY', 'CAPTURE_MEMORY', 'OUTPUT_PLANES', 'CAPTURE_PLANES', 'CONTEXT']):
@@ -57,4 +57,4 @@ if __name__ == '__main__':
     try: vpp, jpeg = check(*sys.argv[1:])
     except (OSError, ValueError, KeyError, TypeError, csv.Error) as error:
         print('DMA closure evidence:', error, file=sys.stderr); sys.exit(1)
-    print(f'DMA closure evidence:47 cases,18 PRIME3 formats,1152 batch cycles,{vpp} RGB DMA jobs,{jpeg} JPEG DMA jobs')
+    print(f'DMA closure evidence:{len(CASES)} cases,{len(FORMATS)} PRIME3 formats,{len(FORMATS)*2*32} batch cycles,{vpp} RGB DMA jobs,{jpeg} JPEG DMA jobs')

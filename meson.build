@@ -177,6 +177,7 @@ if get_option('tests')
   test('hevc_slice_runner', python, args: files('tests/test_hevc_slice_runner.py'), suite: 'unit', timeout: 120)
   test('matrix_results', python, args: files('tests/test_matrix_results.py'), suite: 'unit', timeout: 120)
   test('mpeg2_reference', python, args: files('tests/test_mpeg2_reference.py'), suite: 'unit', timeout: 120)
+  test('conformance', python, args: files('tests/test_conformance.py'), suite: 'unit', timeout: 120)
   test('hardware_runner', python, args: files('tests/test_hardware_runner.py'), suite: 'unit', timeout: 120)
   test('report_runner', python, args: files('tests/test_report_runner.py'), suite: 'unit', timeout: 120)
 endif

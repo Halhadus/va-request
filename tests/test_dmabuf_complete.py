@@ -28,6 +28,15 @@ class CompleteEvidence(unittest.TestCase):
             return evidence.check(*paths)
 
     def test_complete(self): self.assertEqual(self.run_fixture(), (120, 12))
+    def test_extended_formats_are_required(self):
+        self.assertEqual(len(evidence.FORMATS), 22)
+        self.assertEqual(len(evidence.CASES), 55)
+        for name in ('BGR565', 'XRGB', 'ABGR', 'XBGR'):
+            with self.subTest(format=name), self.assertRaises(ValueError):
+                def remove_case(rows):
+                    rows[0] = [row for row in rows[0] if len(row) < 2 or row[1] != 'complete-prime3-' + name + '-composed']
+                self.run_fixture(remove_case)
+
     def test_failures(self):
         for change in [lambda r: r[0].pop(), lambda r: r[0].pop(0), lambda r: r[0].append(r[0][0]),
                        lambda r: r[0][-1].__setitem__(3, '31'), lambda r: r[0][-1].__setitem__(4, '2'),

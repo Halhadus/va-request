@@ -5,6 +5,8 @@ import tarfile
 from pathlib import Path
 import tempfile
 import unittest
+import sys
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 spec = importlib.util.spec_from_file_location("report_runner", Path(__file__).parents[1] / "tools/test.py")
 runner = importlib.util.module_from_spec(spec)
@@ -12,6 +14,34 @@ spec.loader.exec_module(runner)
 
 
 class Reports(unittest.TestCase):
+    def test_main_preserves_exit_codes_and_finalizes_reports(self):
+        for failure in (None, "configure", "build", "unit", "interrupt", "runner", "sanitation"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)
+                def execute(name, command, output, env=None):
+                    if failure == "interrupt": raise KeyboardInterrupt
+                    if failure == "runner": raise RuntimeError("runner test failure")
+                    return {"name": name, "status": "FAIL" if name == failure else "PASS", "exit_code": int(name == failure), "duration_s": 0}
+                with patch.object(runner, "source_identity", return_value={}), patch.object(runner.shutil, "which", return_value="/meson"), patch.object(runner, "execute", side_effect=execute), patch.object(runner, "sanitize_report_logs", side_effect=ValueError("sanitation test failure") if failure == "sanitation" else None):
+                    code = runner.main(["--suite", "unit", "--build-dir", str(path / "build"), "--output-dir", str(path / "reports")])
+                expected = 130 if failure == "interrupt" else int(failure is not None)
+                self.assertEqual(code, expected)
+                report = json.loads(next((path / "reports").glob("run-*/report.json")).read_text())
+                self.assertEqual(report["exit_code"], expected)
+                self.assertEqual(report["complete"], failure not in ("configure", "build", "interrupt", "runner"))
+                self.assertEqual(len(list((path / "reports").glob("libva-v4l2-run-*.tar.gz"))), 1)
+
+    def test_conformance_collects_process_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            command = [sys.executable, '-c', "import time; data = bytearray(4*1024*1024); time.sleep(0.3); print(len(data))"]
+            result = runner.execute('conformance-fixture-hardware', command, path)
+            self.assertEqual(result['exit_code'], 0)
+            if Path('/proc/self/status').is_file():
+                self.assertGreater(result['resources']['samples'], 0)
+                self.assertGreater(result['resources']['peak_rss_kib'], 4096)
+                self.assertGreaterEqual(result['resources']['peak_fds'], 3)
+
     def test_failed_primary_is_not_hidden_by_passing_retry(self):
         record = {"suites": [{"name": "primary", "status": "FAIL", "exit_code": 1}, {"name": "retry", "status": "PASS", "exit_code": 0}], "complete": True, "exit_code": 1}
         with tempfile.TemporaryDirectory() as directory:

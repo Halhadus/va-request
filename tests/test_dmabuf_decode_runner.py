@@ -11,7 +11,7 @@ spec.loader.exec_module(runner)
 
 
 class ImportRunner(unittest.TestCase):
-    def run_case(self, fault=None):
+    def run_case(self, fault=None, gpu=False, direct=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); build = root / 'build'; build.mkdir(); output = root / 'out'
             for name in ['v4l2_drv_video.so', 'hevc_slice_interpose.so', 'prime_surface_interpose.so']:
@@ -32,6 +32,10 @@ class ImportRunner(unittest.TestCase):
                     if fault == 'incomplete': (packets / 'summary.txt').write_text('PASS=27 FAIL=0 COMPLETE=0 EXIT=0 STAGE=done\n')
                 elif '-hwaccel' in args:
                     current = Path(env['VAV4L2_PRIME_TRACE_DIR'])
+                    if gpu and not direct and fault != 'gpu-missing':
+                        trace = Path(env['VAV4L2_DECODE_TRACE'])
+                        trace.write_text(''.join(f'STAGE=capture-gpu-copy\tSTATUS={-1 if fault == "gpu-error" else 0}\tPID=1\tCONTEXT=1\tFRAME={0 if fault == "gpu-duplicate" else i}\tARG=0\n'
+                            for i in range(7 if fault == 'gpu-short' else 8)))
                     if fault != 'unhooked': (current / 'prime-h264.tsv').write_text('842094158\t320\t240\t8\t' + ('1' if fault == 'import-error' else '0') + '\n')
                     if fault == 'hardware-exit': return subprocess.CompletedProcess(args, 2)
                     Path(args[-1]).write_text('#dimensions 0: 320x240\n' + ''.join(f'0, {i}, {i}, 1, 115200, {('f' * 32) if fault == 'pixels' and i == 7 else format(i, '032x')}\n' for i in range(8)))
@@ -39,7 +43,7 @@ class ImportRunner(unittest.TestCase):
                     Path(args[-1]).write_text('#dimensions 0: 320x240\n' + ''.join(f'0, {i}, {i}, 1, 115200, {i:032x}\n' for i in range(8)))
                 return subprocess.CompletedProcess(args, 0)
 
-            with patch.object(runner.subprocess, 'run', side_effect=execute), patch.object(runner.subprocess, 'check_output', side_effect=['a' * 40 + '\n', '']):
+            with patch.dict(runner.os.environ, {'VAV4L2_GPU_COPY': '1' if gpu else '0', 'VAV4L2_CAPTURE_DMABUF': '1' if direct else '0'}), patch.object(runner.subprocess, 'run', side_effect=execute), patch.object(runner.subprocess, 'check_output', side_effect=['a' * 40 + '\n', '']):
                 code = runner.run(root, build, output, 'fixture-ffmpeg', 'fixture-render')
             summary = (output / 'summary.txt').read_text()
             self.assertIn('RUN=', summary)
@@ -50,6 +54,19 @@ class ImportRunner(unittest.TestCase):
         code, summary = self.run_case()
         self.assertEqual(code, 0)
         self.assertIn('PASS=60 FAIL=0 COMPLETE=1 EXIT=0 STAGE=done', summary)
+
+    def test_gpu_mode_requires_real_completion_evidence_with_exact_pixels(self):
+        code, summary = self.run_case(gpu=True)
+        self.assertEqual(code, 0)
+        self.assertIn('PASS=61 FAIL=0 COMPLETE=1 EXIT=0', summary)
+        for fault in ('gpu-missing', 'gpu-short', 'gpu-duplicate', 'gpu-error'):
+            with self.subTest(fault=fault):
+                code, summary = self.run_case(fault, gpu=True)
+                self.assertEqual(code, 1)
+                self.assertIn('FAIL=1 COMPLETE=0 EXIT=1 STAGE=gpu-copy-evidence', summary)
+        code, summary = self.run_case(gpu=True, direct=True)
+        self.assertEqual(code, 0)
+        self.assertIn('PASS=60 FAIL=0 COMPLETE=1 EXIT=0', summary)
 
     def test_failures_cannot_be_hidden_by_old_pass(self):
         for fault in ['missing', 'unhooked', 'import-error', 'pixels', 'packet-exit', 'incomplete', 'hardware-exit']:

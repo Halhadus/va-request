@@ -7,7 +7,7 @@
   "properties": {
     "schema": {"const": "libva-v4l2.test-report/v1"},
     "run_id": {"type": "string"},
-    "profile": {"enum": ["unit", "hardware", "smoke", "acceptance", "rk3588"]},
+    "profile": {"enum": ["unit", "hardware", "smoke", "acceptance", "rk3588", "conformance"]},
     "complete": {"type": "boolean"},
     "exit_code": {"type": "integer"},
     "source": {"type": "object", "required": ["commit", "tree", "dirty", "driver_sha256"]},
@@ -16,6 +16,7 @@
     "summary": {"type": "object", "required": ["pass", "fail", "skip", "complete", "exit_code"], "properties": {"pass": {"type": "integer", "minimum": 0}, "fail": {"type": "integer", "minimum": 0}, "skip": {"type": "integer", "minimum": 0}, "complete": {"type": "boolean"}, "exit_code": {"type": "integer"}}}
   },
   "$defs": {
-    "result": {"type": "object", "required": ["name", "status", "exit_code"], "properties": {"name": {"type": "string"}, "status": {"enum": ["PASS", "FAIL", "SKIP"]}, "exit_code": {"type": ["integer", "null"]}, "duration_s": {"type": "number", "minimum": 0}, "cases": {"type": "array", "items": {"$ref": "#/$defs/result"}}}}
+    "resources": {"type": "object", "required": ["samples", "peak_rss_kib", "peak_fds"], "properties": {"samples": {"type": "integer", "minimum": 0}, "peak_rss_kib": {"type": "integer", "minimum": 0}, "peak_fds": {"type": "integer", "minimum": 0}}},
+    "result": {"type": "object", "required": ["name", "status", "exit_code"], "properties": {"name": {"type": "string"}, "status": {"enum": ["PASS", "FAIL", "SKIP"]}, "exit_code": {"type": ["integer", "null"]}, "duration_s": {"type": "number", "minimum": 0}, "cases": {"type": "array", "items": {"$ref": "#/$defs/result"}}, "resources": {"$ref": "#/$defs/resources"}, "hardware_resources": {"$ref": "#/$defs/resources"}, "software_resources": {"$ref": "#/$defs/resources"}}}
   }
 }

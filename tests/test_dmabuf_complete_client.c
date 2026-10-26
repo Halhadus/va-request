@@ -33,7 +33,8 @@ struct dirent *__wrap_readdir(DIR *d)
 struct dirent64 *__wrap_readdir64(DIR *d) { struct dirent *e = __wrap_readdir(d); static struct dirent64 out; if (!e) return NULL; snprintf(out.d_name, sizeof(out.d_name), "%s", e->d_name); return &out; }
 #endif
 int __wrap_closedir(DIR *d) { (void)d; return 0; }
-static const struct dmabuf_format *format_at(unsigned n) { return n < 15 ? &dmabuf_formats[n] : &additions[n - 15]; }
+enum { format_count = sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]) };
+static const struct dmabuf_format *format_at(unsigned n) { return &dmabuf_formats[n]; }
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL complete client %s fault=%u\n", tag, fault); errors++; } }
 pid_t __real_fork(void);
 pid_t __wrap_fork(void) { pid_t p = __real_fork(); if (!p) in_child = 1; return p; }
@@ -88,15 +89,15 @@ int __wrap_munmap(void *a, size_t n)
     if (in_child && fault == 4) { errno = EIO; return -1; }
     return ret;
 }
-int vaMaxNumImageFormats(VADisplay d) { (void)d; return 18; }
+int vaMaxNumImageFormats(VADisplay d) { (void)d; return format_count; }
 VAStatus vaQueryImageFormats(VADisplay d, VAImageFormat *f, int *n)
 {
-    (void)d; for (unsigned i = 0; i < 18; i++) f[i] = (VAImageFormat){.fourcc = format_at(i)->va}; *n = 18; return 0;
+    (void)d; for (unsigned i = 0; i < format_count; i++) f[i] = (VAImageFormat){.fourcc = format_at(i)->va}; *n = format_count; return 0;
 }
 VAStatus vaCreateImage(VADisplay d, VAImageFormat *f, int w, int h, VAImage *im)
 {
     (void)d; const struct dmabuf_format *fmt = NULL;
-    for (unsigned i = 0; i < 18; i++) if (format_at(i)->va == f->fourcc) { fmt = format_at(i); current_format = i; }
+    for (unsigned i = 0; i < format_count; i++) if (format_at(i)->va == f->fourcc) { fmt = format_at(i); current_format = i; }
     if (!fmt) return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     *im = (VAImage){.format = *f, .width = w, .height = h, .num_planes = fmt->planes}; unsigned offset = 0, stride = (w * fmt->bytes + 63) & ~63u;
     for (unsigned p = 0; p < fmt->planes; p++) {
@@ -155,7 +156,7 @@ VAStatus vaCreateSurfaces(VADisplay display_arg, unsigned rt, unsigned w, unsign
             memset(d, 0, sizeof(*d)); memcpy(d, (const char *)external + i * stride, offsetof(VADRMPRIME3SurfaceDescriptor, flags));
             for (unsigned o = 0; o < d->num_objects; o++) { d->objects[o].fd = fcntl(d->objects[o].fd, F_DUPFD_CLOEXEC, 0); expect(d->objects[o].fd >= 0 && d->objects[o].fd < 256, "retained-FD-in-inventory-range"); }
         } else {
-            const struct dmabuf_format *f = NULL; for (unsigned j = 0; j < 18; j++) if (format_at(j)->va == fourcc) f = format_at(j);
+            const struct dmabuf_format *f = NULL; for (unsigned j = 0; j < format_count; j++) if (format_at(j)->va == fourcc) f = format_at(j);
             if (!f) return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
             unsigned stride = (w * f->bytes + 63) & ~63u, offset = 0;
             *d = (VADRMPRIMESurfaceDescriptor){.fourcc = fourcc, .width = w, .height = h, .num_objects = 1, .num_layers = 1};
@@ -222,12 +223,12 @@ int main(void)
 {
     int report_fd = memfd_create("complete client results", MFD_CLOEXEC);
     results = report_fd >= 0 ? fdopen(report_fd, "w+") : NULL; if (!results) { perror("complete results"); if (report_fd >= 0) close(report_fd); return 1; }
-    for (unsigned n = 0; n < 18; n++) for (unsigned layer = 0; layer < 2; layer++) {
+    for (unsigned n = 0; n < format_count; n++) for (unsigned layer = 0; layer < 2; layer++) {
         next_id = 0; memset(surfaces, 0, sizeof(surfaces));
         complete_prime(format_at(n), layer ? VA_EXPORT_SURFACE_SEPARATE_LAYERS : VA_EXPORT_SURFACE_COMPOSED_LAYERS);
         for (unsigned id = 1; id <= next_id; id++) expect(!surfaces[id].live, "every-created-surface-destroyed");
     }
-    expect(passed == 36 && !failed, "all-public-lifetime-cases-with-map-only-FDs");
+    expect(passed == 2 * format_count && !failed, "all-public-lifetime-cases-with-map-only-FDs");
     child_failures(); inventory_failures(); fclose(results);
-    printf("complete client:%s,36 lifetime cases,1152 cycles,seven child access/cleanup cases,FD identity and transient/persistent/replacement/read-error cases\n", errors ? "FAIL" : "PASS"); return errors != 0;
+    printf("complete client:%s,%u lifetime cases,%u cycles,seven child access/cleanup cases,FD identity and transient/persistent/replacement/read-error cases\n", errors ? "FAIL" : "PASS", 2 * format_count, 2 * format_count * 32); return errors != 0;
 }
