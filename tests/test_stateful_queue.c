@@ -20,6 +20,7 @@ static uint64_t timestamps[8];
 static int no_complete, bad_format, stop_error, short_buffer, extra_event, hold_output, probe_only;
 static uint32_t active_coded, capture_format = V4L2_PIX_FMT_NV12;
 static unsigned output_stops;
+static unsigned display_mode, delay_queries, delay_sets, output_started, output_allocations, complete_on_poll;
 static int qbuf_error, output_error, empty_event_error;
 static unsigned discovery_calls;
 static int vp9, av1, one_output;
@@ -66,12 +67,36 @@ static int mock(int fd, unsigned long request, void *arg)
     if (request == VIDIOC_SUBSCRIBE_EVENT || request == VIDIOC_UNSUBSCRIBE_EVENT || request == VIDIOC_TRY_DECODER_CMD) return 0;
     if (request == VIDIOC_QUERYCTRL) {
         struct v4l2_queryctrl *q = arg;
+        if (q->id == V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY || q->id == V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE) {
+            assert(!output_started && !output_allocations); delay_queries++;
+            int enable = q->id == V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE;
+            if (!display_mode || (display_mode == 3 && enable)) { errno = enable ? ENOTTY : EINVAL; return -1; }
+            if (display_mode == 8) { errno = EIO; return -1; }
+            q->type = enable ? V4L2_CTRL_TYPE_BOOLEAN : V4L2_CTRL_TYPE_INTEGER; q->minimum = 0; q->maximum = 1; q->step = 1;
+            if (display_mode == 2) q->flags = V4L2_CTRL_FLAG_READ_ONLY;
+            if (display_mode == 4 || (display_mode == 10 && enable)) q->minimum = 1;
+            if (display_mode == 5 && enable) q->flags = V4L2_CTRL_FLAG_INACTIVE;
+            if (display_mode == 6 && !enable) { q->minimum = -1; q->step = 2; }
+            if (display_mode == 7 && enable) q->type = V4L2_CTRL_TYPE_INTEGER;
+            if (display_mode == 11) q->step = 0;
+            if (display_mode == 12) q->flags = V4L2_CTRL_FLAG_DISABLED;
+            if (display_mode == 13) q->flags = V4L2_CTRL_FLAG_GRABBED;
+            return 0;
+        }
         assert(q->id == (active_coded == V4L2_PIX_FMT_HEVC ? V4L2_CID_MPEG_VIDEO_HEVC_PROFILE :
             active_coded == V4L2_PIX_FMT_AV1 ? V4L2_CID_MPEG_VIDEO_AV1_PROFILE :
             active_coded == V4L2_PIX_FMT_VP9 ? V4L2_CID_MPEG_VIDEO_VP9_PROFILE : V4L2_CID_MPEG_VIDEO_H264_PROFILE));
         q->type = V4L2_CTRL_TYPE_MENU; q->maximum = 17; return 0;
     }
     if (request == VIDIOC_QUERYMENU) return 0;
+    if (request == VIDIOC_S_EXT_CTRLS) {
+        struct v4l2_ext_controls *set = arg; delay_sets++;
+        assert(!output_started && !output_allocations && !active_context->output_bufs_allocd && set->which == V4L2_CTRL_WHICH_CUR_VAL && set->count == 2);
+        assert(set->controls[0].id == V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY && !set->controls[0].value);
+        assert(set->controls[1].id == V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE && set->controls[1].value == 1);
+        if (display_mode == 9) { errno = EIO; return -1; }
+        return 0;
+    }
     if (request == VIDIOC_S_FMT || request == VIDIOC_G_FMT) {
         struct v4l2_format *f = arg;
         if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
@@ -106,6 +131,7 @@ static int mock(int fd, unsigned long request, void *arg)
     if (request == VIDIOC_G_CTRL) { ((struct v4l2_control *)arg)->value = 4; return 0; }
     if (request == VIDIOC_REQBUFS) {
         struct v4l2_requestbuffers *b = arg;
+        if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE && b->count) output_allocations++;
         if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE && b->count && one_output) b->count = 1;
         if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE && b->count) { assert(b->count >= 8); captures++; }
         return 0;
@@ -120,6 +146,7 @@ static int mock(int fd, unsigned long request, void *arg)
         b->m.planes[0].m.mem_offset = b->index * 65536; return 0;
     }
     if (request == VIDIOC_STREAMON || request == VIDIOC_STREAMOFF) {
+        if (request == VIDIOC_STREAMON && *(unsigned *)arg == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) output_started++;
         if (request == VIDIOC_STREAMOFF) {
             if (*(unsigned *)arg == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) memset(queued, 0, sizeof(queued));
             else output_stops++;
@@ -170,10 +197,16 @@ static int mock(int fd, unsigned long request, void *arg)
     errno = EINVAL; return -1;
 }
 int __wrap_ioctl(int fd, unsigned long request, ...) { va_list ap; va_start(ap, request); void *p = va_arg(ap, void *); va_end(ap); return mock(fd, request, p); }
-int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout) { (void)timeout; for (nfds_t i = 0; i < count; i++) fds[i].revents = fds[i].events; return 1; }
+int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout) { (void)timeout; if (complete_on_poll) { result(0, timestamps[0], 0, 384); complete_on_poll = 0; } for (nfds_t i = 0; i < count; i++) fds[i].revents = fds[i].events; return 1; }
+#ifdef __GLIBC__
+/* Fortified glibc can redirect a bounded poll array to this entry point. */
+int __wrap___poll_chk(struct pollfd *fds, nfds_t count, int timeout, size_t size)
+{ assert(count <= size / sizeof(*fds)); return __wrap_poll(fds, count, timeout); }
+#endif
 static void init(struct vav4l2_context *c, struct vav4l2_driver_data *dd, struct vav4l2_surface *surfaces)
 {
     tail = head = stops = starts = captures = source = submitted = output_stops = 0;
+    delay_queries = delay_sets = output_started = output_allocations = complete_on_poll = 0;
     qbuf_error = output_error = 0; empty_event_error = ENOENT;
     no_complete = bad_format = stop_error = short_buffer = extra_event = hold_output = probe_only = 0;
     memset(output, 0, sizeof(output)); memset(queued, 0, sizeof(queued));
@@ -198,7 +231,9 @@ static void init(struct vav4l2_context *c, struct vav4l2_driver_data *dd, struct
     for (unsigned i = 0; i < 2; i++) {
         setenv(modes[i], "required", 1); assert(vav4l2_stateful_init(c) < 0 && !c->stateful); unsetenv(modes[i]);
     }
-    assert(vav4l2_stateful_init(c) == 0 && c->media_fd == -1 && c->request_fd == -1 && !captures);
+    int status = vav4l2_stateful_init(c);
+    if (display_mode == 8 || display_mode == 9) { assert(status < 0 && !output_started); return; }
+    assert(status == 0 && c->media_fd == -1 && c->request_fd == -1 && !captures);
 }
 static void submit(struct vav4l2_context *c, struct vav4l2_surface *surface, struct stateful_fixture *f, uint64_t timestamp)
 {
@@ -228,6 +263,20 @@ int main(void)
         assert(c.capture_layout && c.cap_pixelformat == V4L2_PIX_FMT_NV12 && captures == 1);
         finish(&c, surfaces);
     }
+    capture_format = V4L2_PIX_FMT_NV12;
+    for (display_mode = 0; display_mode <= 13; display_mode++) {
+        init(&c, &dd, surfaces);
+        if (display_mode == 8 || display_mode == 9) { assert(delay_sets == (display_mode == 9)); finish(&c, surfaces); continue; }
+        int enabled = display_mode == 1 || display_mode == 10;
+        assert(delay_sets == (unsigned)enabled && delay_queries && output_started == 1);
+        submit(&c, &surfaces[0], &f, 0);
+        assert(vav4l2_stateful_sync(&c, &surfaces[0], 0) == VA_STATUS_ERROR_TIMEDOUT && !stops);
+        complete_on_poll = enabled;
+        assert(vav4l2_stateful_sync(&c, &surfaces[0], 100000000) == VA_STATUS_SUCCESS && surfaces[0].status == VASurfaceReady);
+        assert(stops == (unsigned)!enabled && starts == (unsigned)!enabled);
+        finish(&c, surfaces);
+    }
+    display_mode = 0;
     capture_format = V4L2_PIX_FMT_P010; init(&c, &dd, surfaces);
     assert(vav4l2_stateful_pump(&c) == 0); empty_event_error = EAGAIN;
     assert(vav4l2_stateful_pump(&c) == 0); empty_event_error = ENOENT;

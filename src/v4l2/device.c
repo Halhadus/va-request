@@ -276,6 +276,8 @@ static int setup_output_queue(struct vav4l2_context *ctx, int fd, uint32_t codec
         if (ctx) { ctx->request_slice_based = slice; ctx->request_no_start_code = raw; }
     }
 
+    if (ctx && ctx->stateful && vav4l2_stateful_configure_output(ctx) < 0) return -1;
+
     /* Decode waits for OUTPUT DQBUF before the next submission. Four slots
      * are an optimization,not a DPB requirement;retry smaller pools only for
      * allocation pressure. Never shrink an individual coded buffer. */

@@ -463,6 +463,7 @@ int vav4l2_decoder_select(int fd, enum vav4l2_codec codec, uint32_t *format);
 
 /* Stateful decoder backend (v4l2/stateful.c). */
 int vav4l2_stateful_init(struct vav4l2_context *ctx);
+int vav4l2_stateful_configure_output(struct vav4l2_context *ctx);
 void vav4l2_stateful_finish(struct vav4l2_context *ctx);
 int vav4l2_stateful_pending(const struct vav4l2_context *ctx, VASurfaceID id);
 VAStatus vav4l2_stateful_translate(struct vav4l2_context *ctx, struct vav4l2_buffer **buffers, int count);

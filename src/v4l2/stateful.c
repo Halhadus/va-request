@@ -14,7 +14,7 @@ struct vav4l2_stateful {
     struct { VASurfaceID id; uint64_t timestamp; int active; } pending[PENDING_MAX];
     unsigned output_busy[VAV4L2_NUM_OUTPUT_BUFS], capture_busy[VAV4L2_MAX_CAPTURE_BUFS];
     unsigned rt_format;
-    int output_streaming, capture_streaming, source_change, draining, last, failed;
+    int output_streaming, capture_streaming, source_change, draining, last, failed, zero_delay;
 };
 static uint64_t monotonic_ns(void)
 {
@@ -46,6 +46,27 @@ int vav4l2_stateful_pending(const struct vav4l2_context *ctx, VASurfaceID id)
 {
     if (!ctx || !ctx->stateful) return 0;
     for (unsigned i = 0; i < PENDING_MAX; i++) if (ctx->stateful->pending[i].active && ctx->stateful->pending[i].id == id) return 1;
+    return 0;
+}
+int vav4l2_stateful_configure_output(struct vav4l2_context *ctx)
+{
+    const uint32_t ids[] = {V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY, V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE};
+    const int values[] = {0, 1};
+    struct v4l2_ext_control controls[2] = {{.id = ids[0], .value = 0}, {.id = ids[1], .value = 1}};
+    for (unsigned i = 0; i < 2; i++) {
+        struct v4l2_queryctrl q = {.id = ids[i]};
+        if (vav4l2_xioctl(ctx->v4l2_fd, VIDIOC_QUERYCTRL, &q) < 0) {
+            if (errno == EINVAL || errno == ENOTTY) return 0;
+            return -1;
+        }
+        if ((q.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_INACTIVE | V4L2_CTRL_FLAG_GRABBED)) ||
+            q.type != (i ? V4L2_CTRL_TYPE_BOOLEAN : V4L2_CTRL_TYPE_INTEGER) || q.minimum > values[i] ||
+            q.maximum < values[i] || q.step <= 0 || ((int64_t)values[i] - q.minimum) % q.step) return 0;
+    }
+    struct v4l2_ext_controls set = {.which = V4L2_CTRL_WHICH_CUR_VAL, .count = 2, .controls = controls};
+    if (vav4l2_codec_controls(ctx, -1, &set) < 0) return -1;
+    ctx->stateful->zero_delay = 1;
+    vav4l2_decode_trace(ctx, "stateful-display-delay", 0, 0);
     return 0;
 }
 int vav4l2_stateful_init(struct vav4l2_context *ctx)
@@ -237,7 +258,7 @@ VAStatus vav4l2_stateful_sync(struct vav4l2_context *ctx, struct vav4l2_surface 
         if (!timeout) return VA_STATUS_ERROR_TIMEDOUT;
         /* VA has no end-of-stream callback. Drain submitted pictures when a
          * client needs one; START resumes without a seek or DPB destruction. */
-        if (ctx->stateful->capture_streaming && !ctx->stateful->draining && !ctx->stateful->source_change) {
+        if (!ctx->stateful->zero_delay && ctx->stateful->capture_streaming && !ctx->stateful->draining && !ctx->stateful->source_change) {
             if (command(ctx, V4L2_DEC_CMD_STOP) < 0) { fail(ctx); return VA_STATUS_ERROR_DECODING_ERROR; }
             ctx->stateful->draining = 1;
         }

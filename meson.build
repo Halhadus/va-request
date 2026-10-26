@@ -130,7 +130,7 @@ if get_option('tests')
     'gpu_copy': ['gbm_create_device', 'gbm_device_destroy', 'dlopen', 'dlsym', 'dlclose', 'vav4l2_capture_expbuf', 'vav4l2_surface_fill_prime_gbm'],
     'request_slices': ['vav4l2_decode_submit', 'vav4l2_decode_submit_field', 'vav4l2_surface_pull_capture'],
     'drm_storage': ['drmGetVersion', 'drmFreeVersion', 'drmIoctl', 'drmPrimeHandleToFD'],
-    'stateful_queue': ['poll', 'ioctl', 'vav4l2_scan_all_cached', 'gbm_bo_create', 'gbm_bo_map', 'gbm_bo_unmap', 'gbm_bo_get_stride_for_plane', 'gbm_bo_get_modifier', 'gbm_bo_get_fd_for_plane', 'gbm_bo_destroy', 'gbm_device_destroy', 'vav4l2_alloc_shared_storage', 'vav4l2_alloc_coherent_storage', 'vav4l2_alloc_drm_storage'],
+    'stateful_queue': ['poll', '__poll_chk', 'ioctl', 'vav4l2_scan_all_cached', 'gbm_bo_create', 'gbm_bo_map', 'gbm_bo_unmap', 'gbm_bo_get_stride_for_plane', 'gbm_bo_get_modifier', 'gbm_bo_get_fd_for_plane', 'gbm_bo_destroy', 'gbm_device_destroy', 'vav4l2_alloc_shared_storage', 'vav4l2_alloc_coherent_storage', 'vav4l2_alloc_drm_storage'],
     'slice_packetization': ['vav4l2_decode_submit', 'vav4l2_ensure_capture'],
     'surface_ownership': [],
     'video_probe': [],
