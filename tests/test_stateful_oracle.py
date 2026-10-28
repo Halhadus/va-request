@@ -9,6 +9,7 @@ import tempfile
 from hevc_pps_vector import rewrite_pps_id
 from h264_poc_vector import rewrite_poc_type1
 from vp9_hidden_vector import hide_key_frames
+from encoder_pool import x265_pool
 
 
 def run(command, env=None):
@@ -35,7 +36,7 @@ def main():
               ('h264-poc1-cabac', 'h264', ['-profile:v', 'main', '-x264-params', 'threads=1:bframes=0:slices=4']),
               ('hevc-main10', 'hevc', ['-pix_fmt', 'yuv420p10le', '-x265-params', 'pools=none:frame-threads=1:log-level=error']),
               ('hevc-temporal', 'hevc', ['-x265-params', 'pools=none:frame-threads=1:log-level=error:temporal-layers=1'])]
-    cases += [('hevc-multiple-slices', 'hevc', ['-x265-params', 'pools=1:frame-threads=1:log-level=error:slices=2'])]
+    cases += [('hevc-multiple-slices', 'hevc', ['-x265-params', f'pools={x265_pool()}:frame-threads=1:log-level=error:slices=2'])]
     if 'libvpx-vp9' in encoders:
         cases += [('vp9-profile0', 'vp9', ['-deadline', 'realtime', '-cpu-used', '8', '-lag-in-frames', '0']),
                   ('vp9-profile2', 'vp9', ['-pix_fmt', 'yuv420p10le', '-deadline', 'realtime', '-cpu-used', '8', '-lag-in-frames', '0'])]

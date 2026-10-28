@@ -6,13 +6,17 @@ import re
 import os
 from pathlib import Path
 import shutil
+import sys
 import tarfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests'))
+from encoder_pool import x265_pool
 
 # profile, encoder, optional encoder settings. The stream has eight changing frames.
 CODECS = {
     "h264": ("VAProfileH264High", "libx264", ["-profile:v", "high"]),
-    "hevc": ("VAProfileHEVCMain", "libx265", ["-x265-params", "pools=1:frame-threads=1:log-level=error"]),
-    "hevc10": ("VAProfileHEVCMain10", "libx265", ["-x265-params", "pools=1:frame-threads=1:log-level=error"]),
+    "hevc": ("VAProfileHEVCMain", "libx265", ["-x265-params", f"pools={x265_pool()}:frame-threads=1:log-level=error"]),
+    "hevc10": ("VAProfileHEVCMain10", "libx265", ["-x265-params", f"pools={x265_pool()}:frame-threads=1:log-level=error"]),
     "vp9": ("VAProfileVP9Profile0", "libvpx-vp9", ["-deadline", "realtime", "-cpu-used", "8", "-lag-in-frames", "0"]),
     "vp9-10": ("VAProfileVP9Profile2", "libvpx-vp9", ["-deadline", "realtime", "-cpu-used", "8", "-lag-in-frames", "0"]),
     "vp8": ("VAProfileVP8Version0_3", "libvpx", []),

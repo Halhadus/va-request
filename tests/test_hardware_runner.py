@@ -4,6 +4,8 @@ import unittest
 import io
 import tarfile
 import tempfile
+from unittest.mock import patch
+from encoder_pool import x265_pool
 
 spec = importlib.util.spec_from_file_location("hardware", Path(__file__).parents[1] / "tools/hardware.py")
 hardware = importlib.util.module_from_spec(spec)
@@ -11,6 +13,25 @@ spec.loader.exec_module(hardware)
 
 
 class Hardware(unittest.TestCase):
+    def test_encoder_pool_uses_available_cpus_without_assuming_node_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for node, cpus in ((0, '0-1'), (1, ''), (2, '2-3,8'), (7, '9-10')):
+                path = root / f'node{node}'; path.mkdir(); (path / 'cpulist').write_text(cpus)
+            for allowed, expected, automatic in (({0}, '1,-', '1,-'), ({2, 3, 8}, '-,-,1,-', '-,-,3,-'),
+                ({9}, '-,-,-,-,-,-,-,1,-', '-,-,-,-,-,-,-,1,-')):
+                with self.subTest(allowed=allowed), patch('encoder_pool.os.sched_getaffinity', return_value=allowed):
+                    self.assertEqual(x265_pool(node_root=root), expected)
+                    self.assertEqual(x265_pool(None, root), automatic)
+            with patch('encoder_pool.os.sched_getaffinity', return_value={99}):
+                self.assertEqual(x265_pool(node_root=root), '1')
+                self.assertEqual(x265_pool(node_root=root / 'missing'), '1')
+                self.assertEqual(x265_pool(None, root / 'missing'), '*')
+            with patch('encoder_pool.os.sched_getaffinity', side_effect=OSError):
+                self.assertEqual(x265_pool(node_root=root), '1')
+            with patch('encoder_pool.Path.glob', side_effect=OSError):
+                self.assertEqual(x265_pool(node_root=root), '1')
+
     def test_acceptance_groups_follow_interfaces_without_board_identity(self):
         profiles = ["VAProfileH264ConstrainedBaseline", "VAProfileH264Main", "VAProfileH264High", "VAProfileH264High10", "VAProfileH264High422",
             "VAProfileHEVCMain", "VAProfileHEVCMain10", "VAProfileVP8Version0_3", "VAProfileMPEG2Simple", "VAProfileMPEG2Main"]

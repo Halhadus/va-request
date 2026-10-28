@@ -11,6 +11,7 @@ import tempfile
 
 from compare_framemd5 import read_frames
 from hevc_pps_vector import rewrite_pps_id
+from encoder_pool import x265_pool
 
 FRAMES = 8
 MODES = ('whole', 'offset', 'fragments', 'array', 'split-prefix')
@@ -176,7 +177,7 @@ def run_checks(root, build, output, ffmpeg, render):
                         '-frames:v', str(FRAMES), '-f', 'h264', '-y', str(clip)])
                 else:
                     command(source + ['-pix_fmt', software_fmt, '-c:v', 'libx265', '-preset', 'ultrafast', '-profile:v', 'main10' if depth == 10 else 'main', '-x265-params',
-                        f'keyint=8:min-keyint=8:scenecut=0:open-gop=0:repeat-headers=1:aud=1:slices={slices}:pools=1:frame-threads=1:log-level=error',
+                        f'keyint=8:min-keyint=8:scenecut=0:open-gop=0:repeat-headers=1:aud=1:slices={slices}:pools={x265_pool()}:frame-threads=1:log-level=error',
                         '-frames:v', str(FRAMES), '-f', 'hevc', '-y', str(clip)])
                 if tag.endswith('-pps15'): rewrite_pps_id(clip)
                 stage = f'{tag}:software'

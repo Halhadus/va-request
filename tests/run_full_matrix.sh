@@ -223,14 +223,15 @@ enc "$CLIP/h264_4k.mp4" -f lavfi -i testsrc=size=3840x2160:rate=30:duration=1 \
 	  -pix_fmt yuv420p -c:v libx264 -preset ultrafast -g 1 -keyint_min 1 -sc_threshold 0 -frames:v 8 -f h264
 
 # HEVC
+x265_pool=$(python3 "$ROOT/tests/encoder_pool.py" --auto) || exit 1
 enc "$CLIP/hevc_main.mp4" -f lavfi -i testsrc=size=1920x1080:rate=30:duration=4 \
-  -pix_fmt yuv420p -c:v libx265 -preset ultrafast -x265-params "log-level=error" -g 30
+  -pix_fmt yuv420p -c:v libx265 -preset ultrafast -x265-params "pools=$x265_pool:log-level=error" -g 30
 enc "$CLIP/hevc_wpp.mp4" -f lavfi -i testsrc=size=1920x1080:rate=30:duration=4 \
-  -pix_fmt yuv420p -c:v libx265 -preset ultrafast -x265-params "log-level=error:wpp=1" -g 30
+  -pix_fmt yuv420p -c:v libx265 -preset ultrafast -x265-params "pools=$x265_pool:log-level=error:wpp=1" -g 30
 enc "$CLIP/hevc_4k.mp4" -f lavfi -i testsrc=size=3840x2160:rate=30:duration=1 \
-  -pix_fmt yuv420p -c:v libx265 -preset ultrafast -x265-params "log-level=error" -g 30 -frames:v 8
+  -pix_fmt yuv420p -c:v libx265 -preset ultrafast -x265-params "pools=$x265_pool:log-level=error" -g 30 -frames:v 8
 enc "$CLIP/hevc10.mp4" -f lavfi -i testsrc=size=1280x720:rate=30:duration=1 \
-  -pix_fmt yuv420p10le -c:v libx265 -preset ultrafast -x265-params "log-level=error" -frames:v 8
+  -pix_fmt yuv420p10le -c:v libx265 -preset ultrafast -x265-params "pools=$x265_pool:log-level=error" -frames:v 8
 
 if [ "$av1" -eq 1 ]; then
 enc "$CLIP/av1_aom_1tile.mp4" -f lavfi -i testsrc=size=1280x720:rate=30:duration=2 \
