@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <gbm.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 static int fake_open(const char *, int, ...);
 static int fake_close(int);
 static int fake_ioctl(int, unsigned long, ...);
@@ -154,7 +155,7 @@ static int fake_alloc(unsigned bytes, unsigned rows)
 static int fake_validate(int fd, uint64_t need, uint32_t *size)
 {
     assert(live[fd - 201] && need == image_size);
-    *size = injected == OVERSIZED ? 65536 : image_size; return 0;
+    *size = injected == OVERSIZED ? vav4l2_test_page_align(image_size) + vav4l2_test_page_size() : image_size; return 0;
 }
 static struct probe_result exercise(unsigned format, unsigned mode, int order, enum fault fault, int exporter)
 {

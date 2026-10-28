@@ -9,9 +9,10 @@
 #include <va/va.h>
 #include <va/va_enc_jpeg.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 
 static int failures, mode, releases, stops;
-static unsigned out_bytes;
+static unsigned out_bytes, page_size;
 static struct v4l2_format jpeg_raw;
 static int jpeg_capture_set, jpeg_output_after_capture, jpeg_output_submitted, jpeg_quality_value;
 static void expect(int ok, const char *tag)
@@ -71,11 +72,11 @@ static int m2m_ioctl(int fd, unsigned long request, void *arg)
             b->m.planes[0].length = 48;
             b->m.planes[0].m.mem_offset = 0;
             b->m.planes[1].length = 24;
-            b->m.planes[1].m.mem_offset = 4096;
+            b->m.planes[1].m.mem_offset = page_size;
         } else {
             b->length = 1;
             b->m.planes[0].length = 64;
-            b->m.planes[0].m.mem_offset = 8192;
+            b->m.planes[0].m.mem_offset = 2 * page_size;
         }
         return 0;
     }
@@ -119,6 +120,7 @@ static int m2m_ioctl(int fd, unsigned long request, void *arg)
 }
 static void jpeg_case(int test_mode)
 {
+    page_size = vav4l2_test_page_size();
     mode = test_mode; releases = 0; jpeg_quality_value = 0;
     uint8_t live[24]; memset(live, 0x6a, sizeof(live));
     struct vav4l2_surface src = {.width = 4, .height = 4, .format = VA_FOURCC_NV12,
@@ -128,7 +130,7 @@ static void jpeg_case(int test_mode)
     c.v4l2_fd = (mode == 6 || mode == 13 || mode == 18) ? memfd_create("jpeg-negotiation", MFD_CLOEXEC) : open("/dev/null", O_RDWR | O_CLOEXEC);
     if (mode == 6 || mode == 13 || mode == 18) {
         uint8_t payload[64]; memset(payload, 0x9b, sizeof(payload));
-        if (c.v4l2_fd < 0 || ftruncate(c.v4l2_fd, 12288) < 0 || pwrite(c.v4l2_fd, payload, sizeof(payload), 8192) != (ssize_t)sizeof(payload)) {
+        if (c.v4l2_fd < 0 || ftruncate(c.v4l2_fd, 3 * page_size) < 0 || pwrite(c.v4l2_fd, payload, sizeof(payload), 2 * page_size) != (ssize_t)sizeof(payload)) {
             perror("jpeg test backing"); exit(1);
         }
         jpeg_capture_set = jpeg_output_after_capture = jpeg_output_submitted = 0;

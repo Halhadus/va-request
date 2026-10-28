@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 #include "probe.h"
 static int failures, selections, formats, ioctls, clamp_selection, rotation, hflip, vflip, rga3_mode, control_calls, tries, submissions;
 static int odd422_stride;
@@ -82,7 +83,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
         if (raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_P010 || raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_Y210 ||
             raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_XRGB32 || raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_BGRA32 || raw[cap].fmt.pix_mp.pixelformat == V4L2_PIX_FMT_BGRX32)
             b->m.planes[0].length = 512;
-        b->m.planes[0].m.mem_offset = b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ? 0 : 4096;
+        b->m.planes[0].m.mem_offset = b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ? 0 : vav4l2_test_page_size();
         return 0;
     }
     if (request == VIDIOC_QBUF) {
@@ -152,7 +153,7 @@ int main(void)
     dd.surfaces[1] = &src;
     struct vav4l2_context c = {.codec = VAV4L2_CODEC_VPP, .driver_data = &dd, .current_surface = &dst};
     c.v4l2_fd = memfd_create("vpp-feature-queues", MFD_CLOEXEC);
-    if (c.v4l2_fd < 0 || ftruncate(c.v4l2_fd, 8192) < 0) return 1;
+    if (c.v4l2_fd < 0 || ftruncate(c.v4l2_fd, 2 * vav4l2_test_page_size()) < 0) return 1;
     VARectangle in = {2, 2, 4, 4}, out = {2, 2, 4, 4};
     VAProcPipelineParameterBuffer pipe = {.surface = 1, .surface_region = &in, .output_region = &out};
     vav4l2_set_ioctl_hook(mock_ioctl);

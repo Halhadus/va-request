@@ -9,10 +9,12 @@
 #include <linux/dma-buf.h>
 #include <drm_fourcc.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 static int failures, fault, qcount, syncs, releases, dma_output, dma_capture, mmap_output, mmap_capture, poll_count, format_calls, stream_on, stream_off, selections, allocation_calls;
 static int out_fd = -1, cap_fd = -1, cap_fds[2] = {-1, -1};
 static struct vav4l2_context *current;
 static int native_fd = -1, native_error, native_exports;
+static unsigned page_size;
 static void expect(int value, const char *tag) { if (!value) { fprintf(stderr, "FAIL %s fault=%d\n", tag, fault); failures++; } }
 int __wrap_poll(struct pollfd *p, nfds_t n, int timeout)
 {
@@ -67,7 +69,7 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
     if (req == VIDIOC_QUERYBUF) {
         struct v4l2_buffer *b = arg;
         b->m.planes[0].length = 48;
-        b->m.planes[0].m.mem_offset = b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ? 4096 : 0;
+        b->m.planes[0].m.mem_offset = b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ? page_size : 0;
         return 0;
     }
     if (req == VIDIOC_QBUF) {
@@ -86,7 +88,7 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
             "queue-has-negotiated-plane-count-and-memory");
         if ((capture && fault == 4) || (!capture && fault == 5)) { errno = EIO; return -1; }
         for (unsigned p = 0; p < b->length; p++) {
-            unsigned length = native_fd >= 0 && !capture ? lseek(native_fd, 0, SEEK_END) : fault == 21 || fault == 23 ? 8192u : 4096u;
+            unsigned length = native_fd >= 0 && !capture ? lseek(native_fd, 0, SEEK_END) : fault == 21 || fault == 23 ? 2 * page_size : page_size;
             expect(b->m.planes[p].length == length && (fcntl(b->m.planes[p].m.fd, F_GETFD) & FD_CLOEXEC), "queue-borrows-owned-cloexec-fd-and-full-object-length");
             if (capture) { cap_fds[p] = b->m.planes[p].m.fd; cap_fd = cap_fds[0]; expect(!b->m.planes[p].bytesused, "capture-has-no-input-payload"); }
             else {
@@ -114,7 +116,7 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
         if (fault == 9) b->index = 1;
         if (fault == 10) b->m.planes[0].data_offset = 1;
         if (fault == 11) b->m.planes[0].bytesused = 47;
-        if (fault == 12) b->m.planes[0].bytesused = 4097;
+        if (fault == 12) b->m.planes[0].bytesused = page_size + 1;
         return 0;
     }
     return 0;
@@ -124,7 +126,7 @@ static void imported(struct vav4l2_surface *s, int fd, int uv_fd)
     *s = (struct vav4l2_surface){.width = 4, .height = 4, .format = VA_FOURCC_NV12,
         .memfd_fd = -1, .buf_index = -1, .import_fd = -1, .gbm_external_fd = -1, .cpu_stride = 8, .cpu_size = 48};
     VADRMPRIMESurfaceDescriptor d = {.fourcc = VA_FOURCC_NV12, .width = 4, .height = 4, .num_objects = 1, .num_layers = 1};
-    d.objects[0].fd = fd; d.objects[0].size = fault == 21 || fault == 23 ? 8192 : 4096;
+    d.objects[0].fd = fd; d.objects[0].size = fault == 21 || fault == 23 ? 2 * page_size : page_size;
     d.layers[0].drm_format = DRM_FORMAT_NV12; d.layers[0].num_planes = 2;
     d.layers[0].pitch[0] = d.layers[0].pitch[1] = 8; d.layers[0].offset[1] = 32;
     if (uv_fd >= 0) {
@@ -155,11 +157,11 @@ static void native_capture_checks(int *owners, const char *alternative)
             .input = {V4L2_PIX_FMT_NV12}, .output = {V4L2_PIX_FMT_NV12}, .num_input = 1, .num_output = 1};
         strcpy(dd.vpp_devices[0].path, "mock-dma"); dd.vpp_devices[1] = dd.vpp_devices[0]; strcpy(dd.vpp_devices[1].path, alternative);
         if (scenario == RETRY_IMPORTER) strcpy(dd.vpp_devices[0].identity.card, "rga2");
-        unsigned length = scenario == SHORT_OBJECT ? 16 : scenario == EXTRA_STORAGE || scenario == RETRY_IMPORTER ? 8192 : 4096;
-        expect(!ftruncate(owners[0], length) && !ftruncate(owners[1], 4096), "native-object-fixture");
+        unsigned length = scenario == SHORT_OBJECT ? 16 : scenario == EXTRA_STORAGE || scenario == RETRY_IMPORTER ? 2 * page_size : page_size;
+        expect(!ftruncate(owners[0], length) && !ftruncate(owners[1], page_size), "native-object-fixture");
         unsigned char pixels[48], got[48]; memset(pixels, 0x59, sizeof(pixels)); memset(got, 0xa5, sizeof(got));
         expect(pwrite(owners[0], pixels, length < 48 ? length : 48, 0) > 0 && pwrite(owners[1], got, sizeof(got), 0) == sizeof(got), "native-pixel-fixture");
-        struct vav4l2_context decoder = {.v4l2_fd = owners[0], .capture_bufs_allocd = 1, .cap_sizeimage = scenario == SHORT_SIZEIMAGE ? 8192 : 48};
+        struct vav4l2_context decoder = {.v4l2_fd = owners[0], .capture_bufs_allocd = 1, .cap_sizeimage = scenario == SHORT_SIZEIMAGE ? 2 * page_size : 48};
         struct vav4l2_surface src = {.surface_id = 1, .width = 4, .height = 4, .format = VA_FOURCC_NV12, .memfd_fd = -1,
             .buf_index = 0, .stride = 8, .aligned_h = scenario == PADDED ? 6 : 4, .capture_ctx = scenario == NO_CONTEXT ? NULL : &decoder,
             .cap_fourcc = scenario == WRONG_FORMAT ? V4L2_PIX_FMT_NV15 : V4L2_PIX_FMT_NV12, .has_pic = scenario != NO_PICTURE,
@@ -171,7 +173,7 @@ static void native_capture_checks(int *owners, const char *alternative)
         struct vav4l2_surface dst; fault = 0; imported(&dst, owners[1], -1); dd.surfaces[1] = &src;
         struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_VPP, .driver_data = &dd, .device_path = strdup("mock-dma"),
             .current_surface = &dst, .v4l2_fd = memfd_create("native-vpp", MFD_CLOEXEC)};
-        expect(ctx.v4l2_fd >= 0 && !ftruncate(ctx.v4l2_fd, 8192), "native-node-fixture");
+        expect(ctx.v4l2_fd >= 0 && !ftruncate(ctx.v4l2_fd, 2 * page_size), "native-node-fixture");
         native_fd = owners[0]; native_error = scenario == NO_EXPORT ? EINVAL : scenario == EXPORT_ERROR ? EIO : 0;
         qcount = syncs = native_exports = region_mode = 0;
         int success = scenario == VALID || scenario == INTERNAL || scenario == EXTRA_STORAGE || scenario == RETRY_IMPORTER;
@@ -189,25 +191,26 @@ static void native_capture_checks(int *owners, const char *alternative)
 
 int main(void)
 {
+    page_size = vav4l2_test_page_size();
     struct vav4l2_driver_data dd = {.vpp_devices_scanned = 1, .num_vpp_devices = 1};
     dd.vpp_devices[0].num_input = dd.vpp_devices[0].num_output = 2;
     dd.vpp_devices[0].input[1] = dd.vpp_devices[0].output[1] = V4L2_PIX_FMT_NV12M;
     dd.vpp_devices[0].input[0] = dd.vpp_devices[0].output[0] = V4L2_PIX_FMT_NV12;
     strcpy(dd.vpp_devices[0].identity.driver, "rockchip-rga"); strcpy(dd.vpp_devices[0].path, "mock-dma"); strcpy(dd.vpp_devices[0].identity.card, "rga3");
     int owners[] = {memfd_create("dma-input", MFD_CLOEXEC), memfd_create("dma-output", MFD_CLOEXEC), memfd_create("dma-input-uv", MFD_CLOEXEC), memfd_create("dma-output-uv", MFD_CLOEXEC)};
-    if (owners[0] < 0 || owners[1] < 0 || ftruncate(owners[0], 4096) || ftruncate(owners[1], 4096)) return 1;
-    if (owners[2] < 0 || owners[3] < 0 || ftruncate(owners[2], 4096) || ftruncate(owners[3], 4096)) return 1;
+    if (owners[0] < 0 || owners[1] < 0 || ftruncate(owners[0], page_size) || ftruncate(owners[1], page_size)) return 1;
+    if (owners[2] < 0 || owners[3] < 0 || ftruncate(owners[2], page_size) || ftruncate(owners[3], page_size)) return 1;
     vav4l2_set_ioctl_hook(mock_ioctl);
     setenv("VAV4L2_VPP_DMABUF", "required", 1);
     char alternative[] = "vpp-dma-alternative.XXXXXX"; int alternative_fd = mkstemp(alternative);
-    if (alternative_fd < 0 || ftruncate(alternative_fd, 8192)) return 1;
+    if (alternative_fd < 0 || ftruncate(alternative_fd, 2 * page_size)) return 1;
     dd.vpp_devices[1] = dd.vpp_devices[0]; strcpy(dd.vpp_devices[1].path, alternative);
     for (unsigned scenario = 0; scenario < 33; scenario++) {
         dd.num_vpp_devices = (scenario >= 19 && scenario <= 22) || (scenario >= 28 && scenario <= 30) ? 2 : 1;
         strcpy(dd.vpp_devices[0].identity.driver, "rockchip-rga"); strcpy(dd.vpp_devices[0].path, "mock-dma");
         strcpy(dd.vpp_devices[0].identity.card, scenario >= 21 ? "rga2" : "rga3");
-        expect(!ftruncate(owners[0], scenario == 21 || scenario == 23 ? 8192 : 4096) &&
-               !ftruncate(owners[1], scenario == 21 || scenario == 23 ? 8192 : 4096), "object-span-fixture");
+        expect(!ftruncate(owners[0], scenario == 21 || scenario == 23 ? 2 * page_size : page_size) &&
+               !ftruncate(owners[1], scenario == 21 || scenario == 23 ? 2 * page_size : page_size), "object-span-fixture");
         fault = 0; qcount = syncs = poll_count = format_calls = 0;
         stream_on = stream_off = selections = allocation_calls = region_mode = 0;
         unsetenv("VAV4L2_VPP_DMABUF_SESSION");
@@ -222,7 +225,7 @@ int main(void)
         dd.surfaces[1] = &src;
         struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_VPP, .driver_data = &dd,
             .device_path = strdup(dd.vpp_devices[0].path), .current_surface = &dst, .v4l2_fd = memfd_create("mock-node", MFD_CLOEXEC)};
-        if (ctx.v4l2_fd < 0 || ftruncate(ctx.v4l2_fd, 8192)) return 1;
+        if (ctx.v4l2_fd < 0 || ftruncate(ctx.v4l2_fd, 2 * page_size)) return 1;
         current = &ctx; syncs = 0; fault = scenario < 15 || scenario >= 19 ? scenario : 0;
         if (scenario == 16) { unsetenv("VAV4L2_VPP_DMABUF"); fault = 1; }
         if (scenario == 17) setenv("VAV4L2_VPP_DMABUF", "0", 1);
@@ -274,7 +277,7 @@ int main(void)
         if (scenario >= 28 && scenario <= 30) {
             if (scenario == 28) {
                 vav4l2_prime_destroy(&src); vav4l2_prime_destroy(&dst);
-                expect(!ftruncate(owners[0], 8192) && !ftruncate(owners[1], 8192), "warm-object-growth-fixture");
+                expect(!ftruncate(owners[0], 2 * page_size) && !ftruncate(owners[1], 2 * page_size), "warm-object-growth-fixture");
                 fault = 21; imported(&src, owners[0], -1); imported(&dst, owners[1], -1);
             } else fault = scenario == 29 ? 20 : 8;
             VAStatus st = run(&ctx);

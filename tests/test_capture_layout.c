@@ -9,9 +9,10 @@
 #include <sys/mman.h>
 #include <drm_fourcc.h>
 #include "v4l2/internal.h"
+#include "page_size.h"
 static int native_fd, exported[2], fail_plane = -1, queued, mode;
 static int waits, fail_wait;
-static unsigned plane_count = 2, plane_length[3] = {2048, 2048}, plane_step = 4096;
+static unsigned plane_count = 2, plane_length[3] = {2048, 2048}, plane_step;
 int __wrap_vav4l2_dmabuf_wait(int fd, int write)
 {
     assert(write && fcntl(fd, F_GETFD) >= 0); waits++;
@@ -87,11 +88,12 @@ static void layouts(void)
 }
 int main(void)
 {
+    plane_step = vav4l2_test_page_align(2048);
     setenv("VAV4L2_EXPBUF_EXPORT", "1", 1);
-    native_fd = memfd_create("nv12m-native", MFD_CLOEXEC); assert(native_fd >= 0 && !ftruncate(native_fd, 8192));
-    uint8_t *native = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, native_fd, 0); assert(native != MAP_FAILED);
-    memset(native, 0x11, 2048); memset(native + 4096, 0x99, 2048);
-    for (unsigned y = 0; y < 16; y++) memset(native + 4096 + y * 128, 0x22, 64);
+    native_fd = memfd_create("nv12m-native", MFD_CLOEXEC); assert(native_fd >= 0 && !ftruncate(native_fd, 2 * plane_step));
+    uint8_t *native = mmap(NULL, 2 * plane_step, PROT_READ | PROT_WRITE, MAP_SHARED, native_fd, 0); assert(native != MAP_FAILED);
+    memset(native, 0x11, 2048); memset(native + plane_step, 0x99, 2048);
+    for (unsigned y = 0; y < 16; y++) memset(native + plane_step + y * 128, 0x22, 64);
     for (unsigned p = 0; p < 2; p++) { exported[p] = memfd_create("nv12m-export", MFD_CLOEXEC); assert(exported[p] >= 0 && !ftruncate(exported[p], 2048)); }
     struct vav4l2_context ctx = {.v4l2_fd = native_fd, .capture_bufs_allocd = 1};
     struct v4l2_pix_format_mplane fmt = {.width = 64, .height = 32, .pixelformat = V4L2_PIX_FMT_NV12M, .field = V4L2_FIELD_NONE, .num_planes = 2};
@@ -129,7 +131,7 @@ int main(void)
     VADRMPRIMESurfaceDescriptor d, poison; memset(&d, 0xa5, sizeof(d)); poison = d; fail_plane = 1;
     assert(vav4l2_capture_layout_export(&ctx, &s, VA_EXPORT_SURFACE_COMPOSED_LAYERS, &d) != VA_STATUS_SUCCESS && !memcmp(&d, &poison, sizeof(d)));
     s.cap_view = NULL; vav4l2_unmap_capture_buffers(&ctx); assert(!ctx.capture_layout && !ctx.capture_buf_ptr[0]);
-    munmap(native, 8192); close(native_fd);
+    munmap(native, 2 * plane_step); close(native_fd);
     for (unsigned p = 0; p < 2; p++) close(exported[p]);
     layouts(); vav4l2_set_ioctl_hook(NULL);
     puts("Planar capture pitches, tile addressing, native objects, LAST and atomic export: PASS"); return 0;

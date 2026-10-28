@@ -11,6 +11,7 @@
 #include <linux/dma-buf.h>
 #include <drm_fourcc.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 static unsigned failures, jobs, syncs, active_sync, maps, image_size, expected_raw, selections, padded_formats;
 static int fault, capture_fd, last_output, last_capture, processing;
 static void expect(int ok, const char *tag) { if (!ok) { fprintf(stderr, "FAIL extended DMA %s fault=%d\n", tag, fault); failures++; } }
@@ -63,7 +64,7 @@ static int mock_ioctl(int fd, unsigned long req, void *arg)
             if (f->fmt.pix_mp.width == 128) padded_formats++;
             f->fmt.pix_mp.plane_fmt[0].bytesperline = f->fmt.pix_mp.width;
             f->fmt.pix_mp.plane_fmt[0].sizeimage = f->fmt.pix_mp.width * f->fmt.pix_mp.height * 3 / 2;
-            if (fault == 13) f->fmt.pix_mp.plane_fmt[0].sizeimage *= 2;
+            if (fault == 13) f->fmt.pix_mp.plane_fmt[0].sizeimage = vav4l2_test_page_align(image_size) + 1;
         } else f->fmt.pix_mp.plane_fmt[0].sizeimage = image_size;
         return 0;
     }
@@ -113,10 +114,10 @@ static void exercise(uint32_t format, unsigned scenario)
     if (rgb && scenario == 6) pixels[51 * pitch + 51 * 4 + alpha] = 127;
     for (unsigned i = 0; i < 2; i++) {
         if (i) memset(pixels, 0xb9, image_size);
-        expect(owner[i] >= 0 && !ftruncate(owner[i], (image_size + 4095) & ~4095u), "real storage fixture");
+        expect(owner[i] >= 0 && !ftruncate(owner[i], vav4l2_test_page_align(image_size)), "real storage fixture");
         expect(pwrite(owner[i], pixels, image_size, 0) == (ssize_t)image_size, "initialize producer/target");
         VADRMPRIMESurfaceDescriptor d = {.fourcc = format, .width = width, .height = width, .num_objects = 1, .num_layers = 1};
-        d.objects[0].fd = owner[i]; d.objects[0].size = (image_size + 4095) & ~4095u;
+        d.objects[0].fd = owner[i]; d.objects[0].size = vav4l2_test_page_align(image_size);
         d.layers[0].drm_format = l.drm_format; d.layers[0].num_planes = l.planes;
         unsigned offset = 0;
         for (unsigned p = 0; p < l.planes; p++) {

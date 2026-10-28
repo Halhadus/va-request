@@ -9,8 +9,10 @@
 #include <va/va.h>
 #include <va/va_enc_jpeg.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 
 static int failures, fallback, fault, calls, setups, submitted;
+static unsigned page_size;
 static struct v4l2_format raw;
 static void expect(int ok, const char *tag)
 {
@@ -49,10 +51,10 @@ static int jpeg_ioctl(int fd, unsigned long request, void *arg)
         if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
             b->length = raw.fmt.pix_mp.num_planes;
             for (unsigned p = 0; p < b->length; p++) {
-                b->m.planes[p].m.mem_offset = p * 4096;
+                b->m.planes[p].m.mem_offset = p * page_size;
                 b->m.planes[p].length = p == 0 ? (b->length == 1 ? 72 : 48) : p == 1 ? (b->length == 3 ? 15 : 24) : fault == 1 ? 20 : 21;
             }
-        } else { b->length = 1; b->m.planes[0].length = 64; b->m.planes[0].m.mem_offset = 12288; }
+        } else { b->length = 1; b->m.planes[0].length = 64; b->m.planes[0].m.mem_offset = 3 * page_size; }
     }
     if (request == VIDIOC_QBUF) {
         struct v4l2_buffer *b = arg;
@@ -85,13 +87,14 @@ static void source_pixels(unsigned char data[48], unsigned fourcc, unsigned fram
 }
 static void run_case(int route, int broken)
 {
+    page_size = vav4l2_test_page_size();
     fallback = route; fault = broken; calls = setups = submitted = 0;
     unsigned char pixels[48], saved[48], payload[64]; memset(payload, 0x9b, sizeof(payload));
     struct vav4l2_surface src = {.width = 4, .height = 4, .cpu_ptr = pixels, .cpu_stride = 8,
         .cpu_size = sizeof(pixels), .last_writer = VAV4L2_WRITER_CPU, .memfd_fd = -1};
     struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_JPEG_ENC, .current_surface = &src};
     ctx.v4l2_fd = memfd_create("jpeg420-queues", MFD_CLOEXEC);
-    if (ctx.v4l2_fd < 0 || ftruncate(ctx.v4l2_fd, 16384) || pwrite(ctx.v4l2_fd, payload, 64, 12288) != 64) exit(1);
+    if (ctx.v4l2_fd < 0 || ftruncate(ctx.v4l2_fd, 4 * page_size) || pwrite(ctx.v4l2_fd, payload, 64, 3 * page_size) != 64) exit(1);
     struct vav4l2_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = 64, .num_elements = 1};
     coded.data = calloc(1, sizeof(VACodedBufferSegment) + 64); if (!coded.data) exit(1); ctx.buffers = &coded;
     VAEncPictureParameterBufferJPEG pic = {.coded_buf = 1, .picture_width = 4, .picture_height = 4, .quality = 50};

@@ -11,6 +11,7 @@
 #include <va/va.h>
 #include <va/va_enc_jpeg.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 static unsigned failures, jobs, syncs, expected_planes, held[3], active, scenario;
 static struct v4l2_format format;
 static void expect(int ok, const char *s) { if (!ok) { fprintf(stderr, "FAIL JPEG DMA %s scenario=%u\n", s, scenario); failures++; } }
@@ -52,7 +53,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
         struct v4l2_buffer *b = arg;
         expect(b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE || scenario == 13, "raw-input-is-never-MMAP-allocated");
         b->length = b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ? 1 : 2;
-        for (unsigned p = 0; p < b->length; p++) { b->m.planes[p].length = p ? 32 : 64; b->m.planes[p].m.mem_offset = p * 4096; }
+        for (unsigned p = 0; p < b->length; p++) { b->m.planes[p].length = p ? 32 : 64; b->m.planes[p].m.mem_offset = p * vav4l2_test_page_size(); }
     }
     if (request == VIDIOC_QBUF) {
         struct v4l2_buffer *b = arg;
@@ -106,7 +107,7 @@ static void run(unsigned fourcc, unsigned planes, unsigned fault)
     struct vav4l2_buffer coded = {.buffer_id = 1, .type = VAEncCodedBufferType, .size = 64, .num_elements = 1};
     coded.data = calloc(1, sizeof(VACodedBufferSegment) + 64);
     struct vav4l2_context ctx = {.codec = VAV4L2_CODEC_JPEG_ENC, .current_surface = &s, .buffers = &coded};
-    ctx.v4l2_fd = memfd_create("JPEG coded queue", MFD_CLOEXEC); expect(ctx.v4l2_fd >= 0 && !ftruncate(ctx.v4l2_fd, 8192), "coded-storage");
+    ctx.v4l2_fd = memfd_create("JPEG coded queue", MFD_CLOEXEC); expect(ctx.v4l2_fd >= 0 && !ftruncate(ctx.v4l2_fd, 2 * vav4l2_test_page_size()), "coded-storage");
     VAEncPictureParameterBufferJPEG pic = {.coded_buf = 1, .quality = 50};
     struct vav4l2_buffer params = {.type = VAEncPictureParameterBufferType, .data = &pic, .size = sizeof(pic)};
     struct vav4l2_buffer *buffers[] = {&params};

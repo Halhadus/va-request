@@ -9,8 +9,9 @@
 #include <sys/mman.h>
 #include <linux/dma-heap.h>
 #include "va_v4l2.h"
+#include "page_size.h"
 static int exact_enabled, exact_only, exact_fault, exact_fd[1024], exact_exports;
-static unsigned exact_size;
+static unsigned exact_size, page_size, small_size;
 static int owner, fault, failures, queried, allocated, exported, jobs;
 static int heap_mode, heap_calls, heap_export = -1;
 static void expect(int value, const char *tag) { if (!value) { fprintf(stderr, "FAIL %s fault=%d\n", tag, fault); failures++; } }
@@ -39,7 +40,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
         expect(a->len == 6144 && a->fd_flags == (O_RDWR | O_CLOEXEC) && !a->heap_flags, "heap-allocation-uses-standard-span-and-flags");
         if (heap_mode == 2) { errno = ENOMEM; return -1; }
         heap_export = memfd_create("system-heap-fixture", MFD_CLOEXEC);
-        expect(heap_export >= 0 && !ftruncate(heap_export, heap_mode == 3 ? 1 : 8192), "heap-export-fixture");
+        expect(heap_export >= 0 && !ftruncate(heap_export, heap_mode == 3 ? 1 : small_size), "heap-export-fixture");
         a->fd = heap_export; return 0;
     }
     if (exact_fd[fd]) {
@@ -56,19 +57,19 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
             expect(f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE && f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_JPEG && exact_size,
                 "coded-allocator-requests-explicit-byte-span");
             if (exact_fault == 2) { errno = EIO; return -1; }
-            if (exact_fault == 3) f->fmt.pix_mp.plane_fmt[0].sizeimage += 32768;
+            if (exact_fault == 3) f->fmt.pix_mp.plane_fmt[0].sizeimage += page_size;
             if (exact_fault == 4) f->fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
             if (exact_fault == 5) f->fmt.pix_mp.num_planes = 2;
             return 0;
         }
         if (request == VIDIOC_QUERYBUF) {
-            struct v4l2_buffer *b = arg; b->m.planes[0].length = (exact_size + 4095) & ~4095u; return 0;
+            struct v4l2_buffer *b = arg; b->m.planes[0].length = vav4l2_test_page_align(exact_size); return 0;
         }
         if (request == VIDIOC_EXPBUF) {
             struct v4l2_exportbuffer *e = arg; exact_exports++;
             e->fd = memfd_create("exact-coherent-export", MFD_CLOEXEC);
-            unsigned size = (exact_size + 4095) & ~4095u;
-            expect(e->fd >= 0 && ftruncate(e->fd, size + (exact_fault == 6 ? 4096 : 0)) == 0, "exact-export-fixture");
+            unsigned size = vav4l2_test_page_align(exact_size);
+            expect(e->fd >= 0 && ftruncate(e->fd, size + (exact_fault == 6 ? page_size : 0)) == 0, "exact-export-fixture");
             return 0;
         }
     }
@@ -115,6 +116,7 @@ static int mock_ioctl(int fd, unsigned long request, void *arg)
 }
 int main(void)
 {
+    page_size = vav4l2_test_page_size(); small_size = vav4l2_test_page_align(6144);
     setenv("VAV4L2_SHARED_STORAGE", "auto", 1); /* Heap cases use the normal provider policy. */
     unsetenv("VAV4L2_ALLOC_TRACE"); /* Mock discovery is never hardware evidence. */
     owner = memfd_create("coherent-export-fixture", MFD_CLOEXEC); if (owner < 0) return 2;
@@ -137,7 +139,7 @@ int main(void)
         expect((fd >= 0) == (!exact_only || !exact_fault), "exact-size-or-recognized-rga3-fallback");
         if (fd >= 0) {
             unsigned actual = 0;
-            expect(vav4l2_export_fd_validate(fd, 6144, &actual) == 0 && actual == (exact_fault ? 65536u : 8192u),
+            expect(vav4l2_export_fd_validate(fd, 6144, &actual) == 0 && actual == (exact_fault || (!exact_only && small_size >= 24576) ? 65536u : small_size),
                 "small-image-storage-has-no-extra-imported-pages"); close(fd);
         }
     }
@@ -151,7 +153,7 @@ int main(void)
         vav4l2_allocator_cleanup(); int calls = heap_calls;
         int fd = vav4l2_alloc_shared_storage(64, 96);
         expect((fd >= 0) == (heap_mode == 1), "standard-system-heap-fallback-without-video-provider");
-        if (fd >= 0) { expect((fcntl(fd, F_GETFD) & FD_CLOEXEC) && lseek(fd, 0, SEEK_END) == 8192, "heap-exports-complete-owned-object"); close(fd); }
+        if (fd >= 0) { expect((fcntl(fd, F_GETFD) & FD_CLOEXEC) && lseek(fd, 0, SEEK_END) == small_size, "heap-exports-complete-owned-object"); close(fd); }
         if (heap_mode == 2) expect(errno == ENOMEM && heap_calls == calls + 1, "heap-allocation-failure-is-not-masked");
         if (heap_mode == 3) expect(fcntl(heap_export, F_GETFD) < 0, "short-heap-object-is-closed");
         if (heap_mode == 4) expect(errno == EACCES && heap_calls == calls, "heap-permission-failure-is-not-masked");
